@@ -31,8 +31,8 @@ Useful options:
 
 ## Limits
 
-- **Board peripherals:** the emulator models the chip, not the CoreS3 board. There is no screen, camera, touch, speaker, IMU or servos. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them. For StackChan, the [`tr_emu`](../components/tr_emu) component gives a virtual screen and head servos that the browser emulator shows.
-- **Original ESP32:** native esp-emu does not support it yet. BALA2 Fire examples run in the browser (QEMU) or in [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html) on your computer. The browser does not show cores, GPIO or speed for this chip.
+- **Board peripherals:** both engines model the chip, not the board (CoreS3 or Fire). There is no screen, camera, touch, speaker, IMU, servos or motors. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them. For StackChan, the [`tr_emu`](../components/tr_emu) component gives a virtual screen and head servos that the browser emulator shows.
+- **Original ESP32:** native esp-emu does not support it yet. BALA2 Fire examples run in the browser (QEMU) or in [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html) on your computer. In the browser it needs a recent Chrome, Edge or Firefox, and does not show cores, GPIO or speed.
 - **Network:** the browser version has no real network.
-- **Speed:** the browser version is 2 to 5 times slower than native. Timing-sensitive code may behave differently than on the robot.
-- **Flash size:** the emulator reports 2 MB; a real CoreS3 has 16 MB.
+- **Speed:** the ESP32-S3 engine in the browser is 2 to 5 times slower than native. Timing-sensitive code may behave differently than on the robot.
+- **Flash size:** the ESP32-S3 engine reports 2 MB; a real CoreS3 has 16 MB. The ESP32 (QEMU) has 16 MB of flash and 4 MB of PSRAM.

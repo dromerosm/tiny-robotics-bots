@@ -48,7 +48,7 @@ t=  5.21 s  tilt= -0.02 deg  rate=  -2.52 deg/s  wheel accel= -0.05 m/s^2
 I (...) balance: balanced at t=6.13 s
 ```
 
-These values come from the same model, gains and `tr_pid` code compiled on a PC. The ESP32 uses the same float math, so the numbers should match closely.
+This is the output of the release image in QEMU, the same engine the browser emulator uses. On the robot the numbers should match closely, because the ESP32 does the same float math.
 
 ## Tuning
 

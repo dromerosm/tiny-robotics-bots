@@ -6,7 +6,7 @@ Good examples are small, focused and easy to run. Please follow these guidelines
 
 1. **One idea per example.** If you need to explain two unrelated things, make two examples.
 2. **Runs out of the box.** It builds with `scripts/build.sh` and needs no extra setup.
-3. **Emulator first (StackChan).** If the example can run in esp-emu, make it run there. Simulate missing hardware, and keep the simulation behind a small function that is easy to swap for the real driver.
+3. **Emulator first.** Make the example run in the browser emulator: esp-emu for StackChan (ESP32-S3), QEMU for BALA2 Fire (ESP32). Simulate missing hardware, and keep the simulation behind a small function that is easy to swap for the real driver.
 4. **Safe on the robot.** Never drive servos or motors beyond safe limits. StackChan's tilt servo must stay between 5° and 85°.
 5. **Readable over clever.** Short functions, clear names, comments that explain *why*.
 
