@@ -1,12 +1,12 @@
 # Running examples without the robot
 
-StackChan examples run in Espressif's [ESP Emulator](https://github.com/espressif/esp-emulator) (esp-emu), which emulates the ESP32-S3: CPU, memory, flash, UART, GPIO, timers and more.
+StackChan examples run in Espressif's [ESP Emulator](https://github.com/espressif/esp-emulator) (esp-emu), which emulates the ESP32-S3: CPU, memory, flash, UART, GPIO, timers and more. BALA2 Fire uses the original ESP32, which esp-emu does not support. The browser emulator runs it in Espressif's QEMU instead.
 
 ## Browser
 
-1. Build an example: `scripts/build.sh examples/stackchan/01-hello`.
+1. Build an example: `scripts/build.sh examples/stackchan/01-hello` (or `examples/bala2-fire/01-balance-sim`).
 2. Open https://robotics.diegoromero.es/emulator/.
-3. Keep **ESP32-S3** selected and drop the `.bin` from `out/`. It starts on its own.
+3. Pick the chip (**ESP32-S3** for StackChan, **ESP32** for BALA2 Fire) and drop the `.bin` from `out/`. It starts on its own.
 4. Type commands in the input under the console and press Enter.
 
 The firmware runs in your browser (WebAssembly) and is never uploaded.
@@ -32,7 +32,7 @@ Useful options:
 ## Limits
 
 - **Board peripherals:** the emulator models the chip, not the CoreS3 board. There is no screen, camera, touch, speaker, IMU or servos. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them. For StackChan, the [`tr_emu`](../components/tr_emu) component gives a virtual screen and head servos that the browser emulator shows.
-- **Original ESP32:** not supported yet, so BALA2 Fire examples cannot run here. Use the robot or [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html).
+- **Original ESP32:** native esp-emu does not support it yet. BALA2 Fire examples run in the browser (QEMU) or in [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html) on your computer. The browser does not show cores, GPIO or speed for this chip.
 - **Network:** the browser version has no real network.
 - **Speed:** the browser version is 2 to 5 times slower than native. Timing-sensitive code may behave differently than on the robot.
 - **Flash size:** the emulator reports 2 MB; a real CoreS3 has 16 MB.

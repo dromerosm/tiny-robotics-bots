@@ -6,7 +6,7 @@ A PID loop that balances a simulated two-wheeled robot. The physics of an invert
 | --- | --- |
 | **Robot** | BALA2 Fire (M5Stack Fire, ESP32) |
 | **Level** | Intermediate |
-| **Emulator** | Not in esp-emu (original ESP32). Use the robot or Espressif QEMU |
+| **Emulator** | Yes, in the [browser](https://robotics.diegoromero.es/emulator/) (pick **ESP32**) or with Espressif QEMU |
 | **Hardware used** | None (simulated physics) |
 
 ## What you learn
@@ -27,6 +27,7 @@ Output: `out/bala2-fire-01-balance-sim-esp32.bin`
 ## Run it
 
 - **Robot:** `esptool --chip esp32 write-flash 0x0 out/bala2-fire-01-balance-sim-esp32.bin`, then open a serial monitor at 115200 baud. The motors do not move: everything is simulated.
+- **Browser:** open https://robotics.diegoromero.es/emulator/, pick **ESP32 · BALA2 Fire** and drop the `.bin`. It runs in QEMU, inside your browser.
 - **QEMU:** with ESP-IDF installed, run `idf.py -C examples/bala2-fire/01-balance-sim qemu monitor`. See [Espressif's QEMU guide](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html).
 
 ## Expected output

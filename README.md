@@ -5,9 +5,9 @@
 [![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-red.svg)](https://docs.espressif.com/projects/esp-idf/en/v6.1/)
 [![Website](https://img.shields.io/badge/website-robotics.diegoromero.es-orange.svg)](https://robotics.diegoromero.es)
 
-**Website:** [robotics.diegoromero.es](https://robotics.diegoromero.es) · **Try the examples in your browser:** [ESP32-S3 Emulator](https://robotics.diegoromero.es/emulator/)
+**Website:** [robotics.diegoromero.es](https://robotics.diegoromero.es) · **Try the examples in your browser:** [ESP32 Emulator](https://robotics.diegoromero.es/emulator/)
 
-Small, focused ESP-IDF examples for two M5Stack robots: **StackChan** and **BALA2 Fire**. Each example teaches one idea, builds with one command and, for StackChan, runs in your browser without the robot.
+Small, focused ESP-IDF examples for two M5Stack robots: **StackChan** and **BALA2 Fire**. Each example teaches one idea, builds with one command and runs in your browser without the robot.
 
 They are part of [Tiny Robotics](https://robotics.diegoromero.es), a personal project to learn these robots inside out and push them to their limits.
 
@@ -27,7 +27,7 @@ They are part of [Tiny Robotics](https://robotics.diegoromero.es), a personal pr
 | Robot | Controller | Chip | Emulator |
 | --- | --- | --- | --- |
 | [StackChan](https://docs.m5stack.com/en/StackChan) | CoreS3 | ESP32-S3 | Yes, in the [browser](https://robotics.diegoromero.es/emulator/) and with native `esp-emu` |
-| [BALA2 Fire](https://docs.m5stack.com/en/app/Bala2-Fire) | M5Stack Fire | ESP32 | Not yet in esp-emu. Use the robot or [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html) |
+| [BALA2 Fire](https://docs.m5stack.com/en/app/Bala2-Fire) | M5Stack Fire | ESP32 | Yes, in the [browser](https://robotics.diegoromero.es/emulator/) (QEMU) and with [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html) |
 
 ## Examples
 
@@ -46,7 +46,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 
 | # | Example | What you learn | Emulator |
 | --- | --- | --- | --- |
-| 01 | [balance-sim](examples/bala2-fire/01-balance-sim) | A PID loop that balances a simulated two-wheeled robot | QEMU |
+| 01 | [balance-sim](examples/bala2-fire/01-balance-sim) | A PID loop that balances a simulated two-wheeled robot | ✅ |
 
 ### Shared components
 
@@ -80,7 +80,7 @@ To build everything: `scripts/build-all.sh`.
 ### In the browser
 
 1. Open **https://robotics.diegoromero.es/emulator/**.
-2. Keep **ESP32-S3** selected and drop the `.bin` from `out/`.
+2. Pick the chip (**ESP32-S3** for StackChan, **ESP32** for BALA2 Fire) and drop the `.bin` from `out/`.
 3. It starts on its own. Type commands in the input under the console.
 
 The firmware runs in your browser and is never uploaded. More details, including the limits, are in [docs/emulator.md](docs/emulator.md).
