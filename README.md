@@ -3,6 +3,9 @@
 [![CI](https://github.com/dromerosm/tiny-robotics-bots/actions/workflows/ci.yml/badge.svg)](https://github.com/dromerosm/tiny-robotics-bots/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-red.svg)](https://docs.espressif.com/projects/esp-idf/en/v6.1/)
+[![Website](https://img.shields.io/badge/website-robotics.diegoromero.es-orange.svg)](https://robotics.diegoromero.es)
+
+**Website:** [robotics.diegoromero.es](https://robotics.diegoromero.es) · **Try the examples in your browser:** [ESP32-S3 Emulator](https://robotics.diegoromero.es/emulator/)
 
 Small, focused ESP-IDF examples for two M5Stack robots: **StackChan** and **BALA2 Fire**. Each example teaches one idea, builds with one command and, for StackChan, runs in your browser without the robot.
 
