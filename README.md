@@ -40,6 +40,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 01 | [hello](examples/stackchan/01-hello) | Boot, print to the serial console, read commands from UART | ✅ |
 | 02 | [console](examples/stackchan/02-console) | An interactive command line with ESP-IDF's `console` component | ✅ |
 | 03 | [tasks](examples/stackchan/03-tasks) | FreeRTOS tasks, queues and event groups: read, filter, react | ✅ |
+| 04 | [face](examples/stackchan/04-face) | Draw a face on the screen and move the head servos from the console | ✅ |
 
 ### BALA2 Fire
 
@@ -52,6 +53,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | Component | What it is |
 | --- | --- |
 | [tr_pid](components/tr_pid) | Portable PID controller with anti-windup and derivative on measurement. Unit-tested on the host. |
+| [tr_emu](components/tr_emu) | Virtual screen and head servos for StackChan. The browser emulator shows them next to the console. Emulator only for now. |
 
 ## Quick start
 

@@ -31,7 +31,7 @@ Useful options:
 
 ## Limits
 
-- **Board peripherals:** the emulator models the chip, not the CoreS3 board. There is no screen, camera, touch, speaker, IMU or servos. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them.
+- **Board peripherals:** the emulator models the chip, not the CoreS3 board. There is no screen, camera, touch, speaker, IMU or servos. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them. For StackChan, the [`tr_emu`](../components/tr_emu) component gives a virtual screen and head servos that the browser emulator shows.
 - **Original ESP32:** not supported yet, so BALA2 Fire examples cannot run here. Use the robot or [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html).
 - **Network:** the browser version has no real network.
 - **Speed:** the browser version is 2 to 5 times slower than native. Timing-sensitive code may behave differently than on the robot.
