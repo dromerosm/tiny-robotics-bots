@@ -1,0 +1,39 @@
+name: Bug report
+description: Something does not build, run or behave as described.
+labels: [bug]
+body:
+  - type: input
+    id: example
+    attributes:
+      label: Example
+      placeholder: examples/stackchan/01-hello
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - Build
+        - Browser emulator
+        - Native esp-emu
+        - Real robot
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Output or log
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+      placeholder: v0.1.0 or a commit hash

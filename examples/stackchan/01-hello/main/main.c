@@ -15,7 +15,7 @@
 static const char *TAG = "hello";
 
 #define UART_PORT UART_NUM_0
-#define CMD_MAX  64
+#define CMD_MAX   64
 
 static void print_info(void)
 {
@@ -23,16 +23,16 @@ static void print_info(void)
     uint32_t flash = 0;
     esp_chip_info(&chip);
     esp_flash_get_size(NULL, &flash);
-    printf("chip: %s, %d core(s), revision %d.%d, %lu MB flash\n",
-           CONFIG_IDF_TARGET, chip.cores, chip.revision / 100, chip.revision % 100,
-           (unsigned long)(flash / (1024 * 1024)));
-    printf("free heap: %lu bytes, uptime: %lld ms\n",
-           (unsigned long)esp_get_free_heap_size(), esp_timer_get_time() / 1000);
+    printf("chip: %s, %d core(s), revision %d.%d, %lu MB flash\n", CONFIG_IDF_TARGET, chip.cores,
+           chip.revision / 100, chip.revision % 100, (unsigned long)(flash / (1024 * 1024)));
+    printf("free heap: %lu bytes, uptime: %lld ms\n", (unsigned long)esp_get_free_heap_size(),
+           esp_timer_get_time() / 1000);
 }
 
 static void handle(char *line)
 {
-    for (char *p = line; *p; p++) *p = (char)tolower((unsigned char)*p);
+    for (char *p = line; *p; p++)
+        *p = (char)tolower((unsigned char)*p);
     if (strcmp(line, "ping") == 0) {
         printf("pong\n");
     } else if (strcmp(line, "info") == 0) {
@@ -66,8 +66,10 @@ void app_main(void)
     size_t len = 0;
     uint8_t c;
     for (;;) {
-        if (uart_read_bytes(UART_PORT, &c, 1, portMAX_DELAY) != 1) continue;
-        if (c == '\r') continue;
+        if (uart_read_bytes(UART_PORT, &c, 1, portMAX_DELAY) != 1)
+            continue;
+        if (c == '\r')
+            continue;
         if (c == '\n') {
             line[len] = '\0';
             handle(line);

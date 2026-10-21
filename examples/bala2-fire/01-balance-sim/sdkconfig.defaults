@@ -1,0 +1,4 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_LOG_COLORS=y
+# 1 ms ticks so the 200 Hz control loop can run on time.
+CONFIG_FREERTOS_HZ=1000

@@ -1,0 +1,38 @@
+# Running examples without the robot
+
+StackChan examples run in Espressif's [ESP Emulator](https://github.com/espressif/esp-emulator) (esp-emu), which emulates the ESP32-S3: CPU, memory, flash, UART, GPIO, timers and more.
+
+## Browser
+
+1. Build an example: `scripts/build.sh examples/stackchan/01-hello`.
+2. Open https://robotics.diegoromero.es/emulator/.
+3. Keep **ESP32-S3** selected and drop the `.bin` from `out/`. It starts on its own.
+4. Type commands in the input under the console and press Enter.
+
+The firmware runs in your browser (WebAssembly) and is never uploaded.
+
+## Native
+
+```bash
+scripts/install-esp-emu.sh
+.tools/bin/esp-emu --chip esp32s3 --firmware out/stackchan-01-hello-esp32s3.bin
+```
+
+Useful options:
+
+| Option | Use |
+| --- | --- |
+| `--timeout 20s` | Stop after a while |
+| `--exit-on "text"` | Stop when the output contains `text` |
+| `--inject "ping\n" --inject-on "help"` | Type into UART0 when some text appears |
+| `--gdb 1234` | Debug with `xtensa-esp32s3-elf-gdb` |
+
+`scripts/smoke.sh <example>` wraps these with the values in the example's `smoke.env`. That is what CI runs.
+
+## Limits
+
+- **Board peripherals:** the emulator models the chip, not the CoreS3 board. There is no screen, camera, touch, speaker, IMU or servos. Firmware that waits for them will stop or fail at start-up. Examples in this repo avoid them or simulate them.
+- **Original ESP32:** not supported yet, so BALA2 Fire examples cannot run here. Use the robot or [Espressif QEMU](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-guides/tools/qemu.html).
+- **Network:** the browser version has no real network.
+- **Speed:** the browser version is 2 to 5 times slower than native. Timing-sensitive code may behave differently than on the robot.
+- **Flash size:** the emulator reports 2 MB; a real CoreS3 has 16 MB.

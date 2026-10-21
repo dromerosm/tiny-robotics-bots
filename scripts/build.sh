@@ -1,19 +1,25 @@
 #!/bin/sh
-# Build one project and write a merged image you can drop in the emulator.
-# Usage: scripts/build.sh <project dir>   e.g. scripts/build.sh stackchan/hello
-# Output: out/<robot>-<project>-<target>.bin
-# Runs ESP-IDF in Docker, unless IDF_PATH is set (as in CI's IDF container).
+# Build one example into a merged image you can flash or drop in the emulator.
+#
+#   scripts/build.sh examples/stackchan/01-hello
+#
+# Output: out/<robot>-<example>-<chip>.bin (for example out/stackchan-01-hello-esp32s3.bin)
+# Uses ESP-IDF from Docker (image pinned in tools.env), or the local ESP-IDF
+# when IDF_PATH is set (as in CI's ESP-IDF container).
 set -eu
 cd "$(dirname "$0")/.."
-. ./idf.env
+. ./tools.env
 
-PROJECT="${1:?usage: scripts/build.sh <project dir>}"
-[ -f "$PROJECT/CMakeLists.txt" ] || { echo "not an ESP-IDF project: $PROJECT" >&2; exit 1; }
-TARGET="$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' "$PROJECT/sdkconfig.defaults" 2>/dev/null)"
-[ -n "$TARGET" ] || { echo "set CONFIG_IDF_TARGET in $PROJECT/sdkconfig.defaults" >&2; exit 1; }
-NAME="$(echo "$PROJECT" | tr '/' '-')-$TARGET"
+EXAMPLE="${1:?usage: scripts/build.sh examples/<robot>/<example>}"
+EXAMPLE="${EXAMPLE%/}"
+[ -f "$EXAMPLE/CMakeLists.txt" ] || { echo "error: not an ESP-IDF project: $EXAMPLE" >&2; exit 1; }
+TARGET="$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' "$EXAMPLE/sdkconfig.defaults" 2>/dev/null)"
+[ -n "$TARGET" ] || { echo "error: set CONFIG_IDF_TARGET in $EXAMPLE/sdkconfig.defaults" >&2; exit 1; }
 
-BUILD="idf.py -C '$PROJECT' set-target $TARGET && idf.py -C '$PROJECT' build && idf.py -C '$PROJECT' merge-bin"
+ROBOT="$(basename "$(dirname "$EXAMPLE")")"
+NAME="$ROBOT-$(basename "$EXAMPLE")-$TARGET"
+
+BUILD="idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' set-target $TARGET && idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' build && idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' merge-bin"
 if [ -n "${IDF_PATH:-}" ]; then
   sh -c "$BUILD"
 else
@@ -21,5 +27,5 @@ else
 fi
 
 mkdir -p out
-cp "$PROJECT/build/merged-binary.bin" "out/$NAME.bin"
-ls -lh "out/$NAME.bin"
+cp "$EXAMPLE/build/merged-binary.bin" "out/$NAME.bin"
+echo "built out/$NAME.bin"

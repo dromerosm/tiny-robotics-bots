@@ -1,0 +1,26 @@
+name: Example request
+description: Suggest a new example or an improvement to one.
+labels: [example]
+body:
+  - type: dropdown
+    id: robot
+    attributes:
+      label: Robot
+      options:
+        - StackChan
+        - BALA2 Fire
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What should it teach?
+      description: One idea per example. What would someone learn from it?
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware it needs
+      description: Screen, servos, IMU, a Unit, nothing... Can it run in the emulator?
