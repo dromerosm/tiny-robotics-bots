@@ -1,0 +1,7 @@
+.DS_Store
+build/
+out/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
