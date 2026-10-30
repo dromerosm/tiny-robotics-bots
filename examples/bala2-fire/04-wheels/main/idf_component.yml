@@ -1,0 +1,3 @@
+dependencies:
+  # Screen driver for the Fire's ILI9342C (and other M5Stack boards).
+  m5stack/m5gfx: "0.2.36"

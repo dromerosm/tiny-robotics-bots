@@ -1,0 +1,10 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_LOG_COLORS=y
+CONFIG_FREERTOS_HZ=1000
+# A stuck control loop resets the chip, and the new boot sends speed 0.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=1
+# 16 MB flash and two app slots, for updates over Wi-Fi.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
