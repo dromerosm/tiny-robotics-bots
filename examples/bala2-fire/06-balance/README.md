@@ -1,6 +1,6 @@
 # BALA2 Fire 06: balance
 
-Keep BALA2 upright and move as little as possible. It starts from M5Stack's balancing app, and changes what our measurements and seven tests on the robot showed. It talks over Wi-Fi: you can watch it, change the gains while it runs, and send new firmware without a cable.
+Keep BALA2 upright and move as little as possible. It starts from M5Stack's balancing app, and changes what our measurements and nine tests on the robot showed. It talks over Wi-Fi: you can watch it, change the gains while it runs, and send new firmware without a cable.
 
 | | |
 | --- | --- |
@@ -85,7 +85,7 @@ Start values, all can be changed while it runs:
 | --- | --- | --- | --- |
 | `kp` | 3.5 | m/s per rad | P on the tilt (about 52 PWM per degree) |
 | `ki` | 10 | m/s per rad·s | I on the tilt |
-| `kd` | 0.10 | m/s per rad/s | D on the tilt |
+| `kd` | 0.07 | m/s per rad/s | D on the tilt |
 | `kv` | 0.3 | m/s per m/s | speed term, like M5Stack's |
 | `kx` | 0.5 | m/s per m | position term, like M5Stack's, at most 0.094 m/s |
 | `kpos` | 10 | degrees per m | position loop |
@@ -117,7 +117,7 @@ The control loop runs alone on core 1, at 200 Hz. The I2C bus is created on core
 
 ## What we tried on the robot
 
-Tests on 2026-10-30. Most tests changed one thing; test 7 changed two.
+Tests on 2026-10-30. Most tests changed one thing; test 7 changed two. From test 7 on, the robot was also pushed by hand during the test.
 
 | Test | Law | Result |
 | --- | --- | --- |
@@ -127,7 +127,9 @@ Tests on 2026-10-30. Most tests changed one thing; test 7 changed two.
 | 4 | Plus a 15 Hz filter on the D term | The fast shake was gone, a 3 to 5 Hz rocking was left. |
 | 5 | PID on the tilt (M5Stack's PD, plus I) | **40 s up, twice.** Fell when the slow balance point trim drifted to -5 degrees. |
 | 6 | Trim off (`kt 0`) | Tilt held well (±1.5 degrees), but it crept forward to the 0.3 m stop. Still shaking. |
-| 7 | Position loop, smoother dead band (`ramp` 0.03 → 0.1) | **48 s up until stopped by hand.** Tilt ±1.2 degrees, half the shaking, less than 18 cm of travel. |
+| 7 | Position loop, smoother dead band (`ramp` 0.03 → 0.1) | **48 s up while we pushed it, until stopped by hand.** Tilt ±1.2 degrees, half the shaking, less than 18 cm of travel. |
+| 8 | `ramp` 0.2 | The fine shaking felt a little smaller, but it swayed more and drifted to the 0.3 m stop twice. Back to 0.1. |
+| 9 | `kd` 0.10 → 0.07 | **Best so far: 35, 45 and 54 s, with pushes.** Changes of direction down from 3.6 to about 2 per second, less than 15 cm of travel. Left alone, it stood fully still: tilt ±0.03 degrees, rate ±1 deg/s. |
 
 What we learned:
 
@@ -141,7 +143,7 @@ What we learned:
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3.50 ki 10.0 kd 0.100 kv 0.30 kx 0.50 kpos 10.0 kvel 3.0 kt 0.000 off 31 ramp 0.100 vmax 0.50 max 500
+gains kp 3.50 ki 10.0 kd 0.070 kv 0.30 kx 0.50 kpos 10.0 kvel 3.0 kt 0.000 off 31 ramp 0.100 vmax 0.50 max 500
 t_ms,state,tilt,rate,speed,position,u,setpoint
 28816,0,84.29,0.6,0.000,0.000,0,0.00
 ...
@@ -161,6 +163,6 @@ sim: done, balancing
 
 ## Try next
 
-- A little shaking is left (about 3 to 4 changes of direction per second). Try `ramp 0.2`, then a lower `kd`.
-- The robot sits about 8 cm ahead of where it started. Try a higher `kpos`.
+- Lower `kd` a bit more (0.05) and see if the last shaking goes away without slow rocking.
+- The robot sits a few cm ahead of where it started. Try a higher `kpos`.
 - Move: add a speed setpoint to drive forward, and a turn term (left and right wheels get `v_cmd ± turn`).

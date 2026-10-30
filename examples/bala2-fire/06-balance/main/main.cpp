@@ -143,7 +143,7 @@ static float gyro_offset;
 static struct {
     volatile float kp = 3.5f;        // m/s per rad of tilt (about 52 PWM per degree)
     volatile float ki = 10.0f;       // m/s per (rad*s)
-    volatile float kd = 0.10f;       // m/s per rad/s
+    volatile float kd = 0.07f;       // m/s per rad/s (0.10 shook more, test 9)
     volatile float kv = 0.3f;        // m/s per m/s
     volatile float kx = 0.5f;        // m/s per m, at most KX_LIMIT
     volatile float kpos = 10.0f;     // lean back this many degrees per m ahead
