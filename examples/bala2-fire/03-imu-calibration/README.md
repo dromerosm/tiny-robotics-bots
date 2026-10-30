@@ -62,7 +62,15 @@ Each boot gives slightly different offsets, because the offset changes with temp
 
 The screen also shows the offsets that the factory firmware saved on our unit (x -167, y 0, z 74), so you can compare them.
 
+### Check on the robot
+
+On 2026-10-30 we turned the robot by hand around the wheel axle: from lying on one side, through upright, to lying on the other side, and back, twice. Results:
+
+- The tilt went from +84.5 to -82.8 degrees and passed through 0 near upright.
+- The gyro and the accelerometer agreed on the direction in 63 of 66 moving samples. So the sign of `rate` is right.
+- During fast moves the filter and the accelerometer differed by up to 13 degrees. While the robot moves, the accelerometer also feels that movement, not only gravity. That is why the filter trusts the gyro more.
+- Back at rest, the tilt came back to 83.4 degrees, the same as the accelerometer. It did not drift.
+
 ## Try next
 
-- Tilt the robot by hand and check that the gyro and the accelerometer agree. If the tilt jumps back after each move, the sign of `rate` is wrong.
 - Use this tilt instead of the simulation in [01-balance-sim](../01-balance-sim).
