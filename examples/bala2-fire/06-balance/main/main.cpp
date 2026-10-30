@@ -60,6 +60,8 @@
 #include "esp_timer.h"
 #include <M5GFX.h>
 #include "link.h"
+#include "m5law.h"
+#include "rec.h"
 
 static const char *TAG = "balance";
 
@@ -124,11 +126,12 @@ static const char *TAG = "balance";
 #define UPRIGHT_RATE_DPS 15.0f
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
 #define LYING_DEG        45.0f
-#define MIN_BATTERY      25 // %, the IP5306 gives 0, 25, 50, 75 or 100
+#define MIN_BATTERY      25    // %, the IP5306 gives 0, 25, 50, 75 or 100
+#define M5_POINT_DEG     -1.5f // factory balance point, as saved in our unit
 
 #define CAL_SAMPLES 1000
 
-typedef enum { ST_WAIT, ST_BALANCE, ST_STOPPED } state_t;
+typedef enum { ST_WAIT, ST_BALANCE, ST_STOPPED, ST_FALL } state_t;
 
 // Written by the control task, read by the screen and log task.
 typedef struct {
@@ -146,7 +149,10 @@ static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
 static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot"};
-static float gyro_offset, yaw_offset;
+static float gyro_offset, yaw_offset, gy_offset;
+// Last raw IMU and encoder values, for the factory law (m5law.cpp).
+static float last_ax, last_ay, last_az, last_gy;
+static int32_t last_enc_sum;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
 static struct {
@@ -166,12 +172,14 @@ static struct {
                                      // the encoders)
     volatile float nf = 0.0f;        // notch filter frequency, Hz (0 = off; try 8.5)
     volatile float nq = 2.0f;        // notch filter Q (higher = narrower)
+    volatile int law = 0;            // 0 = ours, 1 = factory (M5Stack), to compare
     volatile float vmax = 0.5f;      // m/s, asked speed limit
     volatile float max = MAX_PWM;
 } gain;
 
 static volatile bool stop_request;
-static volatile bool ready; // set by the control task after calibration
+static volatile bool fall_request; // next start is a fall test, not a balance
+static volatile bool ready;        // set by the control task after calibration
 static volatile float setpoint_trim;
 
 // --- Simulated robot (emulator only) --------------------------------------
@@ -291,6 +299,10 @@ static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
         *acc_tilt = sm.th * RAD_TO_DEG_F + ((int)(esp_random() % 41) - 20) * 0.01f;
         *gyro_raw = sm.thd * RAD_TO_DEG_F * GYRO_LSB_PER_DPS - 150 + (int)(esp_random() % 17) - 8;
         *yaw_raw = 60 + (int)(esp_random() % 17) - 8;
+        last_ax = 0;
+        last_ay = sinf(sm.th) * 4096;
+        last_az = cosf(sm.th) * 4096;
+        last_gy = 0;
         return true;
     }
     const uint8_t reg = REG_ACCEL_XOUT_H;
@@ -304,6 +316,10 @@ static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
     *acc_tilt = atan2f(ay, sqrtf(ax * ax + az * az)) * RAD_TO_DEG_F;
     *gyro_raw = (int16_t)(b[8] << 8 | b[9]);
     *yaw_raw = (int16_t)(b[12] << 8 | b[13]);
+    last_ax = ax;
+    last_ay = ay;
+    last_az = az;
+    last_gy = (int16_t)(b[10] << 8 | b[11]);
     return true;
 }
 
@@ -325,6 +341,7 @@ static bool read_position(float *pos, float *right_ahead)
     const int32_t r = (int32_t)((uint32_t)b[4] << 24 | b[5] << 16 | b[6] << 8 | b[7]);
     *pos = -(l + r) * 0.5f * M_PER_COUNT;
     *right_ahead = (l - r) * M_PER_COUNT;
+    last_enc_sum = l + r;
     return true;
 }
 
@@ -374,7 +391,7 @@ static void read_battery(void)
 static bool calibrate_gyro(void)
 {
     for (int tries = 1;; tries++) {
-        double sum = 0, sum_sq = 0, sum_yaw = 0;
+        double sum = 0, sum_sq = 0, sum_yaw = 0, sum_gy = 0;
         for (int i = 0; i < CAL_SAMPLES; i++) {
             float acc, g, yaw;
             if (sim) {
@@ -387,6 +404,7 @@ static bool calibrate_gyro(void)
             sum += g;
             sum_sq += (double)g * g;
             sum_yaw += yaw;
+            sum_gy += last_gy;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
         const double mean = sum / CAL_SAMPLES;
@@ -394,6 +412,7 @@ static bool calibrate_gyro(void)
         if (sd < 20 || tries == 5) {
             gyro_offset = (float)mean;
             yaw_offset = (float)(sum_yaw / CAL_SAMPLES);
+            gy_offset = (float)(sum_gy / CAL_SAMPLES);
             printf("gyro offset %.1f raw (noise %.1f), yaw offset %.1f raw, try %d\n", mean, sd,
                    yaw_offset, tries);
             return true;
@@ -516,6 +535,10 @@ static void control_task(void *arg)
         }
         errors = 0;
         const float rate = (g - gyro_offset) / GYRO_LSB_PER_DPS;
+        // Factory law's angle filter runs all the time, so it has settled
+        // when a start with "law 1" comes.
+        m5_filter(last_ax, last_ay, last_az, rate, (last_gy - gy_offset) / GYRO_LSB_PER_DPS,
+                  (yaw - yaw_offset) / GYRO_LSB_PER_DPS, DT);
         const float yaw_rate = gain.ys * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
         rate_f += RATE_LPF * (rate - rate_f);
         tilt = GYRO_WEIGHT * (tilt + rate * DT) + (1 - GYRO_WEIGHT) * acc;
@@ -575,9 +598,19 @@ static void control_task(void *arg)
                     notch.z1 = notch.z2 = 0;
                     trim = 0;
                     stop_request = false;
+                    if (fall_request) {
+                        // Fall test: record 4 s at 200 Hz from now; let go.
+                        fall_request = false;
+                        rec_start(4 * LOOP_HZ);
+                        st.state = ST_FALL;
+                        st.reason = "fall test: let go";
+                        ESP_LOGI(TAG, "fall test");
+                        break;
+                    }
+                    m5_start(last_enc_sum);
                     st.state = ST_BALANCE;
-                    st.reason = "balancing";
-                    ESP_LOGI(TAG, "start");
+                    st.reason = gain.law == 1 ? "balancing (factory law)" : "balancing";
+                    ESP_LOGI(TAG, "start, law %d", gain.law);
                     if (sim) {
                         sm.held = false; // let go
                     }
@@ -642,14 +675,43 @@ static void control_task(void *arg)
                 const float v_cmd =
                     clampf(notch_run(&notch, v_pid, gain.nf, fmaxf(gain.nq, 0.3f)), vlim);
                 const float lim = fminf(gain.max, HARD_MAX_PWM);
-                const float ul = clampf(pwm_for(v_cmd - turn), lim);
-                const float ur = clampf(pwm_for(v_cmd + turn), lim);
+                float ul = clampf(pwm_for(v_cmd - turn), lim);
+                float ur = clampf(pwm_for(v_cmd + turn), lim);
+                if (gain.law == 1) {
+                    // Factory law instead of ours, with our limits. Same PWM on
+                    // both wheels, as in the original.
+                    const float m5 = m5_control(last_enc_sum, M5_POINT_DEG + setpoint_trim);
+                    ul = ur = clampf(m5, lim * ramp);
+                }
                 st.u = (ul + ur) / 2;
                 if (!set_wheels((int16_t)ul, (int16_t)ur) && ++errors >= 3) {
                     stop("I2C error");
                 }
                 break;
             }
+
+            case ST_FALL: {
+                // Fall test: the wheels hold their place (slowly, at most
+                // 0.1 m/s), so the body turns around the axle like a plain
+                // inverted pendulum. We record how fast the tilt grows.
+                const float x = pos - start_pos;
+                st.position = x;
+                const float u = clampf(pwm_for(clampf(-3.0f * x, 0.1f)), 200);
+                st.u = u;
+                set_speed((int16_t)u);
+                if (fabsf(tilt) > 40 || !rec_active() || stop_request) {
+                    stop("fall test done");
+                }
+                break;
+            }
+        }
+
+        // 200 Hz recorder (rec.h): every tick while it records.
+        if (rec_active()) {
+            const rec_sample_t s = {
+                (uint32_t)(now / 1000),        tilt, rate, acc, st.position, speed, st.u,
+                gain.law == 1 ? m5_angle() : 0};
+            rec_add(&s);
         }
     }
 }
@@ -710,9 +772,9 @@ static void say(const char *fmt, ...)
 static void say_gains(void)
 {
     say("gains kp %.2f ki %.1f kd %.3f kv %.2f kx %.2f kpos %.1f kvel %.1f kt %.3f off %.0f "
-        "ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f vmax %.2f max %.0f\n",
+        "ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f law %d vmax %.2f max %.0f\n",
         gain.kp, gain.ki, gain.kd, gain.kv, gain.kx, gain.kpos, gain.kvel, gain.kt, gain.off,
-        gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.vmax, gain.max);
+        gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.law, gain.vmax, gain.max);
 }
 
 // Change a gain while it runs, from the serial monitor or over Wi-Fi:
@@ -731,6 +793,16 @@ static void handle_command(const char *line)
     }
     if (!strcmp(name, "stop")) {
         stop_request = true;
+        return;
+    }
+    if (!strcmp(name, "fall")) {
+        fall_request = true;
+        say("fall test: lay it down, then hold it upright and still, and let go\n");
+        return;
+    }
+    if (n == 2 && !strcmp(name, "rec")) {
+        rec_start((int)(v * LOOP_HZ));
+        say("recording %.1f s at %d Hz\n", v, LOOP_HZ);
         return;
     }
     if (n == 2 && !strcmp(name, "kp")) {
@@ -759,6 +831,8 @@ static void handle_command(const char *line)
         gain.ys = v < 0 ? -1.0f : 1.0f;
     } else if (n == 2 && !strcmp(name, "nf")) {
         gain.nf = fminf(fmaxf(v, 0), 40);
+    } else if (n == 2 && !strcmp(name, "law")) {
+        gain.law = v >= 1 ? 1 : 0;
     } else if (n == 2 && !strcmp(name, "nq")) {
         gain.nq = fminf(fmaxf(v, 0.3f), 10);
     } else if (n == 2 && !strcmp(name, "ramp")) {
@@ -857,6 +931,11 @@ extern "C" void app_main(void)
             if (pressed(BTN_C, &last_c)) {
                 setpoint_trim += 0.25f;
             }
+        }
+        // Send the 200 Hz recording, a few lines at a time.
+        char rline[96];
+        for (int k = 0; k < 8 && rec_next_line(rline, sizeof(rline)); k++) {
+            say("%s", rline);
         }
         { // 50 Hz log
             say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d\n", ms,

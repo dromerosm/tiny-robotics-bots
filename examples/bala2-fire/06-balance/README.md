@@ -103,7 +103,11 @@ Start values, all can be changed while it runs:
 | `vmax` | 0.5 | m/s | speed limit (at most 0.55) |
 | `max` | 500 | PWM | PWM limit (at most 600) |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`.
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And three for tests:
+
+- `rec 3`: record 3 s (at most 5) of every control tick, at 200 Hz, then send it as `rec,...` lines. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
+- `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
+- `law 1`: balance with M5Stack's factory law instead of ours, to compare them with the same telemetry and limits; `law 0` goes back. See `m5law.h` for what is the same and what is not.
 
 The gains came from a search on a simulated robot. We kept the sets that worked for many guesses of the center of mass height (5 to 16 cm), motor lag (30 to 150 ms) and extra delay (0 to 40 ms). Then we tuned them on the robot.
 
@@ -149,6 +153,16 @@ What we learned:
 - Two slow integrators (the PID's I and the balance point trim) fight each other. A position loop with a P part is calmer.
 - The simulated robot was good enough to show the problem in test 1, but not to set the final gains. The robot and live tuning over Wi-Fi did that.
 - From test 11 data: the wheel follows the command with about 20 ms delay and an 80 ms lag, and with the robot's weight it reaches about 20% less speed than with no load (about 0.44 m/s at PWM 500). To stop after a push, the robot must first lean back. With 5 degrees of lean it can brake at about 0.86 m/s², so from 0.3 m/s the best stop is about 0.5 s and 5 to 8 cm.
+
+## A physical model
+
+The control needs one number above all: the pendulum length L = I / (m·d), where m is the mass, d the height of the center of mass over the axle, and I the moment of inertia around the axle. For small tilts, a robot whose wheels do not move falls as
+
+```
+tilt'' = (g / L) · tilt      so      tilt(t) ≈ tilt0 · e^(λt),   λ = √(g / L)
+```
+
+The `fall` test measures λ from the 200 Hz recording, and so L. A scale and a pencil give m and d (lay the robot on the pencil and find where it balances). A string pendulum gives I as a check: hang the robot by a point at a known distance from its center of mass and time the swing with the IMU.
 
 ## Expected output
 
