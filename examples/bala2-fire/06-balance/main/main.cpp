@@ -70,6 +70,7 @@ static const char *TAG = "balance";
 #define I2C_TIMEOUT  5 // ms, short: the loop has 5 ms
 #define MPU6886_ADDR 0x68
 #define BASE_ADDR    0x3A
+#define IP5306_ADDR  0x75 // power chip, as in example 02
 #define BTN_A        GPIO_NUM_39
 #define BTN_B        GPIO_NUM_38
 #define BTN_C        GPIO_NUM_37
@@ -100,6 +101,9 @@ static const char *TAG = "balance";
 #define TRIM_LIMIT  5.0f   // degrees
 #define KX_LIMIT    0.094f // m/s, like M5Stack's 80 PWM
 #define OUTER_LIMIT 5.0f   // degrees, most the position loop may lean the robot
+#define TRACK_M     0.077f // m between the wheel centers (measured)
+#define TURN_LIMIT  0.1f   // m/s, most the heading loop may add to one wheel
+#define HEADING_ENC 0.01f  // heading filter: share of the encoder heading per tick
 // Low-pass filter on the rate used by the D term, at about 15 Hz. Without it,
 // a jerk of the wheels shakes the body, the gyro sees it, and the D term
 // answers with another jerk: our second test shook at 12 Hz or more.
@@ -120,6 +124,7 @@ static const char *TAG = "balance";
 #define UPRIGHT_RATE_DPS 15.0f
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
 #define LYING_DEG        45.0f
+#define MIN_BATTERY      25 // %, the IP5306 gives 0, 25, 50, 75 or 100
 
 #define CAL_SAMPLES 1000
 
@@ -129,15 +134,19 @@ typedef enum { ST_WAIT, ST_BALANCE, ST_STOPPED } state_t;
 typedef struct {
     volatile state_t state;
     volatile float tilt, rate, speed, position, u, setpoint;
+    volatile float heading_enc, heading, yaw_rate, turn; // deg, deg, deg/s, m/s
+    volatile int battery;                                // %, -1 = unknown
+    volatile bool charging;
     volatile bool seen_lying;
     const char *volatile reason;
 } status_t;
 
 static M5GFX display;
-static i2c_master_dev_handle_t imu, base;
+static i2c_master_dev_handle_t imu, base, power;
+static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, false, "boot"};
-static float gyro_offset;
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot"};
+static float gyro_offset, yaw_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
 static struct {
@@ -148,9 +157,15 @@ static struct {
     volatile float kx = 0.5f;        // m/s per m, at most KX_LIMIT
     volatile float kpos = 10.0f;     // lean back this many degrees per m ahead
     volatile float kvel = 3.0f;      // and this many per m/s forward
-    volatile float kt = 0.0f;        // slow balance point trim, rad per (m*s); off
+    volatile float kt = -0.05f;      // slow balance point trim, rad per (m*s); off
     volatile float off = PWM_OFFSET; // dead band jump, PWM
     volatile float ramp = 0.1f;      // m/s over which the jump grows from 0
+    volatile float kh = 0.1f;        // heading hold, m/s per rad (test 11)
+    volatile float khr = 0.0f;       // heading rate damping, m/s per rad/s
+    volatile float ys = -1.0f;       // sign of the gyro Z axis (test 10: opposite to
+                                     // the encoders)
+    volatile float nf = 0.0f;        // notch filter frequency, Hz (0 = off; try 8.5)
+    volatile float nq = 2.0f;        // notch filter Q (higher = narrower)
     volatile float vmax = 0.5f;      // m/s, asked speed limit
     volatile float max = MAX_PWM;
 } gain;
@@ -232,6 +247,12 @@ static bool hw_init(void)
     dev.device_address = MPU6886_ADDR;
     dev.scl_speed_hz = 400000;
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &imu));
+    if (i2c_master_probe(bus, IP5306_ADDR, 50) == ESP_OK) {
+        dev.device_address = IP5306_ADDR;
+        dev.scl_speed_hz = 100000;
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &power));
+        have_power = true;
+    }
 
     // MPU6886, as in example 03: +-2000 deg/s, +-8 g, 500 Hz.
     imu_write(REG_PWR_MGMT_1, 0x80);
@@ -246,23 +267,30 @@ static bool hw_init(void)
     return true;
 }
 
-static bool set_speed(int16_t u)
+static bool set_wheels(int16_t left, int16_t right)
 {
     if (sim) {
-        sm.u = u;
+        sm.u = (left + right) / 2;
         return true;
     }
-    const uint8_t buf[5] = {REG_SPEED, (uint8_t)(u >> 8), (uint8_t)u, (uint8_t)(u >> 8),
-                            (uint8_t)u};
+    const uint8_t buf[5] = {REG_SPEED, (uint8_t)(left >> 8), (uint8_t)left, (uint8_t)(right >> 8),
+                            (uint8_t)right};
     return i2c_master_transmit(base, buf, sizeof(buf), I2C_TIMEOUT) == ESP_OK;
 }
 
-// Tilt from the accelerometer (deg) and gyro X rate (raw).
-static bool read_imu(float *acc_tilt, float *gyro_raw)
+static bool set_speed(int16_t u)
+{
+    return set_wheels(u, u);
+}
+
+// Tilt from the accelerometer (deg), gyro X rate (raw, the tilt axis) and
+// gyro Z rate (raw, the yaw axis when the robot stands).
+static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
 {
     if (sim) {
         *acc_tilt = sm.th * RAD_TO_DEG_F + ((int)(esp_random() % 41) - 20) * 0.01f;
         *gyro_raw = sm.thd * RAD_TO_DEG_F * GYRO_LSB_PER_DPS - 150 + (int)(esp_random() % 17) - 8;
+        *yaw_raw = 60 + (int)(esp_random() % 17) - 8;
         return true;
     }
     const uint8_t reg = REG_ACCEL_XOUT_H;
@@ -275,14 +303,17 @@ static bool read_imu(float *acc_tilt, float *gyro_raw)
     const float az = (int16_t)(b[4] << 8 | b[5]);
     *acc_tilt = atan2f(ay, sqrtf(ax * ax + az * az)) * RAD_TO_DEG_F;
     *gyro_raw = (int16_t)(b[8] << 8 | b[9]);
+    *yaw_raw = (int16_t)(b[12] << 8 | b[13]);
     return true;
 }
 
-// Forward position in meters: both encoders count down going forward.
-static bool read_position(float *pos)
+// Forward position in meters (the mean of both wheels), and how far the right
+// wheel is ahead of the left one. Both encoders count down going forward.
+static bool read_position(float *pos, float *right_ahead)
 {
     if (sim) {
         *pos = sm.x;
+        *right_ahead = 0;
         return true;
     }
     const uint8_t reg = REG_ENCODER;
@@ -293,7 +324,48 @@ static bool read_position(float *pos)
     const int32_t l = (int32_t)((uint32_t)b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
     const int32_t r = (int32_t)((uint32_t)b[4] << 24 | b[5] << 16 | b[6] << 8 | b[7]);
     *pos = -(l + r) * 0.5f * M_PER_COUNT;
+    *right_ahead = (l - r) * M_PER_COUNT;
     return true;
+}
+
+// Battery level in 25% steps and charging state, from the IP5306 (registers
+// from example 02). Under load the battery voltage drops, so the level reads
+// lower while the motors work.
+static void read_battery(void)
+{
+    if (sim) {
+        st.battery = 100;
+        return;
+    }
+    if (!have_power) {
+        return;
+    }
+    uint8_t r0, r3;
+    uint8_t reg = 0x70;
+    if (i2c_master_transmit_receive(power, &reg, 1, &r0, 1, I2C_TIMEOUT) != ESP_OK) {
+        return;
+    }
+    reg = 0x78;
+    if (i2c_master_transmit_receive(power, &reg, 1, &r3, 1, I2C_TIMEOUT) != ESP_OK) {
+        return;
+    }
+    st.charging = r0 & 0x08;
+    switch (r3 & 0xF0) {
+        case 0x00:
+            st.battery = 100;
+            break;
+        case 0x80:
+            st.battery = 75;
+            break;
+        case 0xC0:
+            st.battery = 50;
+            break;
+        case 0xE0:
+            st.battery = 25;
+            break;
+        default:
+            st.battery = 0;
+    }
 }
 
 // --- Gyro calibration (as in example 03) -----------------------------------
@@ -302,25 +374,28 @@ static bool read_position(float *pos)
 static bool calibrate_gyro(void)
 {
     for (int tries = 1;; tries++) {
-        double sum = 0, sum_sq = 0;
+        double sum = 0, sum_sq = 0, sum_yaw = 0;
         for (int i = 0; i < CAL_SAMPLES; i++) {
-            float acc, g;
+            float acc, g, yaw;
             if (sim) {
                 sim_step();
             }
-            if (!read_imu(&acc, &g)) {
+            if (!read_imu(&acc, &g, &yaw)) {
                 printf("calibration: IMU read failed\n");
                 return false;
             }
             sum += g;
             sum_sq += (double)g * g;
+            sum_yaw += yaw;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
         const double mean = sum / CAL_SAMPLES;
         const double sd = sqrt(sum_sq / CAL_SAMPLES - mean * mean);
         if (sd < 20 || tries == 5) {
             gyro_offset = (float)mean;
-            printf("gyro offset %.1f raw (noise %.1f), try %d\n", mean, sd, tries);
+            yaw_offset = (float)(sum_yaw / CAL_SAMPLES);
+            printf("gyro offset %.1f raw (noise %.1f), yaw offset %.1f raw, try %d\n", mean, sd,
+                   yaw_offset, tries);
             return true;
         }
         printf("it moved (noise %.1f), calibrating again\n", sd);
@@ -328,6 +403,49 @@ static bool calibrate_gyro(void)
 }
 
 // --- Control task ----------------------------------------------------------
+
+// Notch filter: removes one frequency and lets the rest through. Test 11 showed
+// that 75% of the shaking is at 6-10 Hz, with a peak at 8.5 Hz, while the
+// balance itself works below about 3 Hz. Biquad, direct form II transposed.
+typedef struct {
+    float b0, b1, b2, a1, a2, z1, z2, f, q;
+} notch_t;
+
+static float notch_run(notch_t *n, float x, float f, float q)
+{
+    if (f <= 0) {
+        return x;
+    }
+    if (f != n->f || q != n->q) { // new settings: new coefficients
+        const float w = 2 * (float)M_PI * f / LOOP_HZ;
+        const float al = sinf(w) / (2 * q), c = cosf(w), a0 = 1 + al;
+        n->b0 = 1 / a0;
+        n->b1 = -2 * c / a0;
+        n->b2 = 1 / a0;
+        n->a1 = -2 * c / a0;
+        n->a2 = (1 - al) / a0;
+        n->f = f;
+        n->q = q;
+    }
+    const float y = n->b0 * x + n->z1;
+    n->z1 = n->b1 * x - n->a1 * y + n->z2;
+    n->z2 = n->b2 * x - n->a2 * y;
+    return y;
+}
+
+// PWM for a wheel speed, from the line measured in example 05.
+static float pwm_for(float v)
+{
+    if (fabsf(v) <= MIN_SPEED) {
+        return 0;
+    }
+    // The dead band jump grows smoothly from 0. If it grows too fast, the
+    // gain near 0 is twice as high and the robot shakes around its balance
+    // point (test 6, ramp 0.03).
+    const float u =
+        fabsf(v) / M_S_PER_PWM + gain.off * fminf(1.0f, fabsf(v) / fmaxf(gain.ramp, 0.001f));
+    return v > 0 ? u : -u;
+}
 
 static void stop(const char *reason)
 {
@@ -365,11 +483,13 @@ static void control_task(void *arg)
     ready = true;
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
-    float acc, g, pos = 0;
-    read_imu(&acc, &g);
+    float acc, g, yaw, pos = 0, ahead = 0;
+    read_imu(&acc, &g, &yaw);
     float tilt = acc, speed = 0, last_pos = 0, start_pos = 0, integral = 0, trim = 0, rate_f = 0;
-    read_position(&last_pos);
-    int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0;
+    float start_ahead = 0, heading = 0; // heading in rad, + = turned left
+    notch_t notch = {};
+    read_position(&last_pos, &ahead);
+    int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, battery_ticks = 0;
     int64_t last_us = esp_timer_get_time();
     TickType_t wake = xTaskGetTickCount();
 
@@ -383,8 +503,12 @@ static void control_task(void *arg)
             sim_step();
         }
 
-        // Sense.
-        if (!read_imu(&acc, &g) || !read_position(&pos)) {
+        // Sense. The battery once a second.
+        if (++battery_ticks >= LOOP_HZ) {
+            battery_ticks = 0;
+            read_battery();
+        }
+        if (!read_imu(&acc, &g, &yaw) || !read_position(&pos, &ahead)) {
             if (++errors >= 3 && st.state == ST_BALANCE) {
                 stop("I2C error");
             }
@@ -392,6 +516,7 @@ static void control_task(void *arg)
         }
         errors = 0;
         const float rate = (g - gyro_offset) / GYRO_LSB_PER_DPS;
+        const float yaw_rate = gain.ys * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
         rate_f += RATE_LPF * (rate - rate_f);
         tilt = GYRO_WEIGHT * (tilt + rate * DT) + (1 - GYRO_WEIGHT) * acc;
         speed = (1 - SPEED_LPF) * speed + SPEED_LPF * (pos - last_pos) / DT;
@@ -423,6 +548,15 @@ static void control_task(void *arg)
             case ST_WAIT:
                 set_speed(0);
                 st.u = 0;
+                // Do not start on a nearly empty battery (unless it charges): the
+                // motors get weak, and the robot can switch off mid-balance (it
+                // did after about 4 hours of tests).
+                if (st.battery >= 0 && st.battery < MIN_BATTERY && !st.charging) {
+                    st.reason = "battery low, charge me";
+                    upright_ticks = 0;
+                    break;
+                }
+                st.reason = "stand me up";
                 // Start only after it was lying down, then held upright and still.
                 if (st.seen_lying && fabsf(err) < UPRIGHT_DEG && fabsf(rate) < UPRIGHT_RATE_DPS) {
                     upright_ticks++;
@@ -434,8 +568,11 @@ static void control_task(void *arg)
                     balance_ticks = 0;
                     fast_ticks = 0;
                     start_pos = pos;
+                    start_ahead = ahead;
+                    heading = 0;
                     speed = 0;
                     integral = 0;
+                    notch.z1 = notch.z2 = 0;
                     trim = 0;
                     stop_request = false;
                     st.state = ST_BALANCE;
@@ -477,27 +614,38 @@ static void control_task(void *arg)
                 const float outer = clampf(-gain.kpos * x - gain.kvel * speed, OUTER_LIMIT);
                 st.setpoint = setpoint + outer;
 
+                // Heading: the gyro is good over short times and does not care
+                // if a wheel slips; the encoders do not drift. Mix both.
+                const float heading_enc = (ahead - start_ahead) / TRACK_M;
+                heading = (1 - HEADING_ENC) * (heading + yaw_rate / RAD_TO_DEG_F * DT) +
+                          HEADING_ENC * heading_enc;
+                // Heading hold: the two motors are not the same (the left one is
+                // 3-5% faster, example 05), so the robot slowly turns. Give the
+                // right wheel a little more when it has turned right, and less
+                // when it has turned left.
+                const float turn =
+                    clampf(-(gain.kh * heading + gain.khr * yaw_rate / RAD_TO_DEG_F), TURN_LIMIT);
+                st.heading_enc = heading_enc * RAD_TO_DEG_F;
+                st.heading = heading * RAD_TO_DEG_F;
+                st.yaw_rate = yaw_rate;
+                st.turn = turn;
+
                 // Soft start: the speed limit grows from 0 in RAMP_S.
                 const float ramp = fminf(1.0f, balance_ticks * DT / RAMP_S);
                 const float vlim = fminf(gain.vmax, HARD_MAX_V) * ramp;
                 const float th = (err - outer) / RAD_TO_DEG_F;
                 integral = clampf(integral + gain.ki * th * DT, vlim);
-                const float v_cmd =
+                const float v_pid =
                     clampf(gain.kp * th + integral + gain.kd * rate_f / RAD_TO_DEG_F +
                                gain.kv * speed + clampf(gain.kx * x, KX_LIMIT),
                            vlim);
-                float u = 0;
-                if (fabsf(v_cmd) > MIN_SPEED) {
-                    // The dead band jump grows smoothly from 0. If it grows too
-                    // fast, the gain near 0 is twice as high and the robot
-                    // shakes around its balance point (test 6, ramp 0.03).
-                    u = fabsf(v_cmd) / M_S_PER_PWM +
-                        gain.off * fminf(1.0f, fabsf(v_cmd) / fmaxf(gain.ramp, 0.001f));
-                    u = v_cmd > 0 ? u : -u;
-                }
-                u = clampf(u, fminf(gain.max, HARD_MAX_PWM));
-                st.u = u;
-                if (!set_speed((int16_t)u) && ++errors >= 3) {
+                const float v_cmd =
+                    clampf(notch_run(&notch, v_pid, gain.nf, fmaxf(gain.nq, 0.3f)), vlim);
+                const float lim = fminf(gain.max, HARD_MAX_PWM);
+                const float ul = clampf(pwm_for(v_cmd - turn), lim);
+                const float ur = clampf(pwm_for(v_cmd + turn), lim);
+                st.u = (ul + ur) / 2;
+                if (!set_wheels((int16_t)ul, (int16_t)ur) && ++errors >= 3) {
                     stop("I2C error");
                 }
                 break;
@@ -562,13 +710,14 @@ static void say(const char *fmt, ...)
 static void say_gains(void)
 {
     say("gains kp %.2f ki %.1f kd %.3f kv %.2f kx %.2f kpos %.1f kvel %.1f kt %.3f off %.0f "
-        "ramp %.3f vmax %.2f max %.0f\n",
+        "ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f vmax %.2f max %.0f\n",
         gain.kp, gain.ki, gain.kd, gain.kv, gain.kx, gain.kpos, gain.kvel, gain.kt, gain.off,
-        gain.ramp, gain.vmax, gain.max);
+        gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.vmax, gain.max);
 }
 
 // Change a gain while it runs, from the serial monitor or over Wi-Fi:
-//     kp 3.5  ki 10  kd 0.1  kv 0.3  kx 0.5  kpos 10  kvel 3  kt 0  off 31  ramp 0.1
+//     kp 3.5  ki 10  kd 0.07  kv 0.3  kx 0.5  kpos 10  kvel 3  kt -0.05  off 31  ramp 0.1
+//     kh 0.1  khr 0  ys -1  nf 8.5  nq 2
 //     vmax 0.4  max 500  ?  stop
 // "hb" (heartbeat) only keeps the Wi-Fi link alive. Each change is printed, so
 // the log shows which values were used.
@@ -602,6 +751,16 @@ static void handle_command(const char *line)
         gain.kvel = v;
     } else if (n == 2 && !strcmp(name, "off")) {
         gain.off = fminf(fmaxf(v, 0), 60);
+    } else if (n == 2 && !strcmp(name, "kh")) {
+        gain.kh = v;
+    } else if (n == 2 && !strcmp(name, "khr")) {
+        gain.khr = v;
+    } else if (n == 2 && !strcmp(name, "ys")) {
+        gain.ys = v < 0 ? -1.0f : 1.0f;
+    } else if (n == 2 && !strcmp(name, "nf")) {
+        gain.nf = fminf(fmaxf(v, 0), 40);
+    } else if (n == 2 && !strcmp(name, "nq")) {
+        gain.nq = fminf(fmaxf(v, 0.3f), 10);
     } else if (n == 2 && !strcmp(name, "ramp")) {
         gain.ramp = fminf(fmaxf(v, 0.001f), 0.5f);
     } else if (n == 2 && !strcmp(name, "vmax")) {
@@ -680,7 +839,8 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
     say_gains();
-    say("t_ms,state,tilt,rate,speed,position,u,setpoint\n");
+    say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
+        "battery,charging\n");
     int last_a = 1, last_b = 1, last_c = 1;
     for (int n = 0;; n++) {
         const int64_t ms = esp_timer_get_time() / 1000;
@@ -699,8 +859,9 @@ extern "C" void app_main(void)
             }
         }
         { // 50 Hz log
-            say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f\n", ms, (int)st.state, st.tilt, st.rate,
-                st.speed, st.position, st.u, st.setpoint);
+            say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d\n", ms,
+                (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
+                st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging);
         }
         if (n % 10 == 0) { // 5 Hz screen
             const uint32_t color = st.state == ST_BALANCE ? TFT_GREEN
@@ -713,6 +874,8 @@ extern "C" void app_main(void)
             screen_line(98, TFT_WHITE, "position %+7.3f m", st.position);
             screen_line(116, TFT_WHITE, "motor    %+5.0f / %.0f", st.u, gain.max);
             screen_line(134, TFT_DARKGREY, "balance point %+.2f deg (A -, C +)", st.setpoint);
+            screen_line(152, st.battery >= 0 && st.battery < MIN_BATTERY ? TFT_RED : TFT_DARKGREY,
+                        "battery %d%%%s", st.battery, st.charging ? ", charging" : "");
             screen_line(170, TFT_DARKGREY, "B: stop");
             if (!sim) {
                 screen_line(196, TFT_CYAN, "Wi-Fi %s  pass %s", link_ssid(), link_password());
