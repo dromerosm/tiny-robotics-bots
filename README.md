@@ -47,6 +47,8 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | # | Example | What you learn | Emulator |
 | --- | --- | --- | --- |
 | 01 | [balance-sim](examples/bala2-fire/01-balance-sim) | A PID loop that balances a simulated two-wheeled robot | ✅ |
+| 02 | [battery](examples/bala2-fire/02-battery) | Read the battery level and charging state from the IP5306 over I2C | ✅ (simulated values) |
+| 03 | [imu-calibration](examples/bala2-fire/03-imu-calibration) | Calibrate the gyro at each boot and show the tilt on the screen | ✅ (simulated readings) |
 
 ### Shared components
 

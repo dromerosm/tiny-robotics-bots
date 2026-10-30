@@ -1,0 +1,4 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_LOG_COLORS=y
+# 1 ms ticks for the 500 Hz sampling during calibration.
+CONFIG_FREERTOS_HZ=1000
