@@ -63,6 +63,7 @@
       <button class="plain" data-view="audio">Audio</button>
       <button class="plain" data-view="camera">Camera</button>
     </div>
+    <div class="row"><button class="plain" id="calib">Calibrate sound (5 claps in front)</button></div>
   </section>
   <section>
     <h2>Side LEDs</h2>
@@ -141,6 +142,8 @@ async function face(path) {
 $("idleon").onclick = () => face("/face?idle=1");
 $("idleoff").onclick = () => face("/face?idle=0");
 $("blink").onclick = () => face("/face?blink=1");
+$("calib").onclick = () => face("/face?calibrate=1");
+setInterval(() => { if (!$("face").hidden) face("/face"); }, 2000);
 for (const b of document.querySelectorAll("button[data-view]")) {
   b.onclick = () => face("/face?view=" + b.dataset.view);
 }

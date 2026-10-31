@@ -18,7 +18,7 @@ static const char *TAG = "tr_mic";
 
 static esp_codec_dev_handle_t mic;
 
-esp_err_t tr_mic_start(uint32_t sample_rate)
+esp_err_t tr_mic_start(uint32_t sample_rate, int channels)
 {
     if (mic) {
         return ESP_OK;
@@ -32,8 +32,8 @@ esp_err_t tr_mic_start(uint32_t sample_rate)
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan, NULL, &rx), TAG, "I2S");
     const i2s_std_config_t std = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
-        .slot_cfg =
-            I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_16BIT, channels == 2 ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO),
         .gpio_cfg =
             {
                 .mclk = I2S_MCLK,
@@ -66,7 +66,7 @@ esp_err_t tr_mic_start(uint32_t sample_rate)
     ESP_RETURN_ON_FALSE(mic, ESP_FAIL, TAG, "codec device");
     esp_codec_dev_sample_info_t fs = {
         .bits_per_sample = 16,
-        .channel = 1,
+        .channel = channels == 2 ? 2 : 1,
         .sample_rate = sample_rate,
     };
     ESP_RETURN_ON_FALSE(esp_codec_dev_open(mic, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open");

@@ -131,10 +131,11 @@ bool tr_touch_read(int *x, int *y);
 // The head touch zones, 2 bits each (zone 1 in bits 0-1). 0 = no touch.
 int tr_head_touch(void);
 
-// The microphones (ES7210 on I2S: MCLK G0, BCLK G34, WS G33, data G14).
-// start sets them up once, mono, 16 bits, at sample_rate. read waits for
-// count samples.
-esp_err_t tr_mic_start(uint32_t sample_rate);
+// The two microphones (ES7210 on I2S: MCLK G0, BCLK G34, WS G33, data G14).
+// start sets them up once, 16 bits, at sample_rate: channels 1 gives MIC1
+// only, 2 gives MIC1 and MIC2 interleaved (L, R, L, R...). read waits for
+// count samples (count / channels frames).
+esp_err_t tr_mic_start(uint32_t sample_rate, int channels);
 esp_err_t tr_mic_read(int16_t *samples, int count);
 
 // The camera (GC0308 on the DVP port), 320 x 240 RGB565, frames in PSRAM

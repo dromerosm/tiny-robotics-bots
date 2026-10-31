@@ -249,9 +249,27 @@ esp_err_t tr_servo_read(tr_servo_t id, tr_servo_state_t *s)
 {
     ESP_RETURN_ON_FALSE(ready, ESP_ERR_INVALID_STATE, TAG, "not started");
     uint8_t d[8], t, m;
-    ESP_RETURN_ON_ERROR(scs_read(id, REG_POSITION, d, 8), TAG, "read %d", id);
-    ESP_RETURN_ON_ERROR(scs_read(id, REG_TORQUE, &t, 1), TAG, "torque %d", id);
-    ESP_RETURN_ON_ERROR(scs_read(id, REG_MOVING, &m, 1), TAG, "moving %d", id);
+    {
+        const esp_err_t err =
+            scs_read(id, REG_POSITION, d, 8); // no log: callers poll, and a miss is normal
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    {
+        const esp_err_t err =
+            scs_read(id, REG_TORQUE, &t, 1); // no log: callers poll, and a miss is normal
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    {
+        const esp_err_t err =
+            scs_read(id, REG_MOVING, &m, 1); // no log: callers poll, and a miss is normal
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
     s->raw = d[0] << 8 | d[1];
     s->degrees = (s->raw - zero[id]) / STEPS_PER_DEG;
     const int load = d[4] << 8 | d[5];

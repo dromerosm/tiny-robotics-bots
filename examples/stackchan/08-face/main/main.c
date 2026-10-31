@@ -10,6 +10,7 @@
 //   POST /face?idle=0|1         stop or start looking around (token needed)
 //   POST /face?blink=1          blink once (token needed)
 //   POST /face?view=face|status|audio|camera   change the screen (token needed)
+//   POST /face?calibrate=1      measure the microphones' offset from 5 sounds in front
 //
 // Tap the mouth on the screen: a status screen opens, with the same facts as
 // the page, the sensors and the update token. UP and DOWN scroll, X closes it.
@@ -408,10 +409,30 @@ static void face_task(void *arg)
 
 static esp_err_t face_get(httpd_req_t *req)
 {
-    char text[160];
-    snprintf(text, sizeof(text),
-             "looking around: %s\nhead: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
-             idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
+    char text[256];
+    int n =
+        snprintf(text, sizeof(text),
+                 "looking around: %s\nhead: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
+                 idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
+    float lag, match, db;
+    int64_t age;
+    if (audio_direction(&lag, &match, &db, &age)) {
+        snprintf(text + n, sizeof(text) - n,
+                 "sound: %s, %.0f deg (lag %+.2f samples, match %.2f, %.0f dBFS, %.1f s ago)\n",
+                 audio_side(lag), audio_angle(lag), lag, match, db, age / 1e6);
+    } else {
+        n += snprintf(text + n, sizeof(text) - n, "sound: open the Audio view to listen\n");
+    }
+    float offset;
+    int cal_left;
+    audio_calibration(&offset, &cal_left);
+    n = strlen(text);
+    if (cal_left > 0) {
+        snprintf(text + n, sizeof(text) - n, "calibrating: make %d more sounds straight in front\n",
+                 cal_left);
+    } else {
+        snprintf(text + n, sizeof(text) - n, "mic offset: %+.2f samples\n", offset);
+    }
     return httpd_resp_sendstr(req, text);
 }
 
@@ -427,6 +448,9 @@ static esp_err_t face_post(httpd_req_t *req)
         }
         if (httpd_query_key_value(query, "blink", value, sizeof(value)) == ESP_OK) {
             blink_now = true;
+        }
+        if (httpd_query_key_value(query, "calibrate", value, sizeof(value)) == ESP_OK) {
+            audio_calibrate(); // the next 5 clear sounds must come from the front
         }
         if (httpd_query_key_value(query, "view", value, sizeof(value)) == ESP_OK) {
             for (int v = 0; v < 4; v++) {
