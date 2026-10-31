@@ -1,7 +1,8 @@
 // 08-face: StackChan's face on the real screen, and a head that looks around.
 //
 // The eyes follow where the head really points: the example reads both servos
-// a few times a second. When idle, the head glances somewhere new every few
+// a few times a second. At boot the head goes home and stays still. With
+// "look around" on (POST /face?idle=1), it glances somewhere new every few
 // seconds, slowly and in a small range. A move from the page or curl pauses
 // that for IDLE_PAUSE_US.
 //
@@ -51,7 +52,8 @@ static const char *view_names[] = {"face", "status", "audio", "camera"};
 static volatile view_t want_view = VIEW_FACE; // set by POST /face?view=..
 static volatile bool view_request;
 
-static volatile bool idle = true;
+// Off at boot: the head goes home and stays still. The page can turn it on.
+static volatile bool idle = false;
 static volatile bool blink_now;
 static volatile float head_yaw, head_pitch; // read from the servos
 
@@ -89,6 +91,20 @@ static void read_head(void)
     }
     if (tr_servo_read(TR_SERVO_PITCH, &s) == ESP_OK) {
         head_pitch = s.degrees;
+    }
+}
+
+// Home: straight ahead, pitch at its low safe end. One slow move, then the
+// face task takes the torque off.
+#define HOME_YAW   0.0f
+#define HOME_PITCH 5.0f
+#define HOME_MS    1000
+
+static void go_home(void)
+{
+    if (tr_web_head_power() == ESP_OK) {
+        tr_servo_move(TR_SERVO_YAW, HOME_YAW, HOME_MS);
+        tr_servo_move(TR_SERVO_PITCH, HOME_PITCH, HOME_MS);
     }
 }
 
@@ -230,6 +246,10 @@ static void face_task(void *arg)
     }
     int64_t next_blink = esp_timer_get_time() + 2000000;
     int64_t blink_end = 0, next_glance = esp_timer_get_time() + 3000000, release_at = 0;
+    if (tr_web_servos()) {
+        go_home();
+        release_at = esp_timer_get_time() + (HOME_MS + 300) * 1000; // then torque off
+    }
     int64_t next_read = 0;
     face_t drawn = {.dx = 1000};
     bool status_open = false, audio_on = false, camera_on = false, was_down = false;

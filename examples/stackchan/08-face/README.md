@@ -1,6 +1,6 @@
 # StackChan 08: face and head
 
-StackChan's face on the real screen, with a head that looks around on its own. The eyes follow where the head really points, and they blink every few seconds. From the page at `http://stackchan.local/app` you can stop it, start it, make it blink, or move the head by hand.
+StackChan's face on the real screen. At boot the head goes home (straight ahead, pitch 5°) and stays still. From the page at `http://stackchan.local/app` you can make it look around on its own, stop it, make it blink, or move the head by hand. The eyes follow where the head really points, and they blink every few seconds.
 
 It brings together what 05 to 07 built: updates over Wi-Fi ([tr_ota](../../../components/tr_ota)), the screen and the servos ([tr_board](../../../components/tr_board)), and the page ([tr_web](../../../components/tr_web)).
 
@@ -76,6 +76,7 @@ head: yaw -35.9, pitch 8.4 degrees
 
 ## How it works
 
+- **At boot.** The head moves home in 1 s (yaw 0°, pitch 5°), then the torque goes off. Looking around is off until you turn it on.
 - **Looking around.** Every 2 to 5 seconds the head moves to a random spot: yaw -40° to 40°, pitch 5° to 35°, in 0.9 s. Then the torque goes off. After a move from the page or `curl`, it waits 20 seconds before it looks around again.
 - **The eyes.** The task reads both servos every 200 ms. The eyes move 0.5 pixel per degree of yaw and 0.6 pixel per degree of pitch, so they point where the head points. If the eyes look the opposite way to the head, flip the sign of `EYE_X_PER_DEG`.
 - **Drawing.** It only draws when the eyes move or blink. Each frame is the whole screen, sent in 15 bands of 16 rows. That takes about 40 ms, so there is no flicker.
