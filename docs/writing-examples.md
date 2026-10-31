@@ -26,6 +26,7 @@ examples/<robot>/<NN-name>/
 - `<robot>` is `stackchan` or `bala2-fire`.
 - `NN` is the next free two-digit number for that robot. Lower numbers are simpler.
 - Code shared by several examples goes in `components/<tr_name>/`, written in portable C with host tests in `tests/host/` when possible.
+- A StackChan example that runs on the robot calls `tr_ota_start()` at boot. Without it, an update over Wi-Fi rolls back on the next restart, and the robot can't take the next update. See [`tr_ota`](../components/tr_ota).
 
 ## README
 

@@ -28,7 +28,7 @@ SSID_02=second-network
 PWD_SSID_02=its-password
 ```
 
-Pass it with `WIFI_ENV`. `scripts/build.sh` gives its lines to the build as environment variables, and `main/Kconfig.projbuild` reads them:
+Pass it with `WIFI_ENV`. `scripts/build.sh` gives its lines to the build as environment variables, and the `Kconfig` of [`tr_ota`](../../../components/tr_ota) reads them:
 
 ```bash
 WIFI_ENV=../../../m5stack/wifi.env scripts/build.sh examples/stackchan/05-ota
@@ -84,6 +84,8 @@ ota v0.2.0-8-g64097a7-dirty, built Oct 31 2026 11:56:55, running from ota_1 (val
 ```
 
 ## How it works
+
+All the code is in the [`tr_ota`](../../../components/tr_ota) component. This example only calls `tr_ota_start()`. Every example that runs on the robot uses it the same way, so the robot can always take the next update.
 
 ### Wi-Fi
 

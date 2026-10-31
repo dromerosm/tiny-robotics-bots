@@ -1,0 +1,31 @@
+// tr_ota: home Wi-Fi, updates over Wi-Fi and rollback for StackChan examples.
+//
+// Every example that runs on the robot needs this. An app sent over Wi-Fi
+// boots "on trial" and must mark itself valid, or the robot goes back to the
+// old app on the next restart. An app without this code also can't take the
+// next update.
+//
+// After tr_ota_start() the robot:
+// - joins the strongest of the two networks set at build time (see README.md),
+//   and joins again when the link drops
+// - is at http://stackchan.local/ (mDNS)
+// - serves GET / (which firmware runs) and POST /update (a new app image, with
+//   the header "X-Token: <token>"; the token is shown only on the USB port)
+// - marks an app on trial valid once it has Wi-Fi and the web server runs, or
+//   goes back to the old app if there is no Wi-Fi within 60 seconds
+#pragma once
+
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Start all of the above. It returns at once and does not wait for Wi-Fi, so
+// the example can go on without a network. It sets up NVS, esp_netif and the
+// default event loop if the example has not done it yet. Call it once.
+esp_err_t tr_ota_start(void);
+
+#ifdef __cplusplus
+}
+#endif
