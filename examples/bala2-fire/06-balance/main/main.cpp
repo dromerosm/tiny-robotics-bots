@@ -106,11 +106,7 @@ static const char *TAG = "balance";
 #define TRACK_M     0.077f // m between the wheel centers (measured)
 #define TURN_LIMIT  0.1f   // m/s, most the heading loop may add to one wheel
 #define HEADING_ENC 0.01f  // heading filter: share of the encoder heading per tick
-// Low-pass filter on the rate used by the D term, at about 15 Hz. Without it,
-// a jerk of the wheels shakes the body, the gyro sees it, and the D term
-// answers with another jerk: our second test shook at 12 Hz or more.
-#define RATE_LPF   0.32f
-#define HARD_MAX_V 0.55f // m/s, never more
+#define HARD_MAX_V  0.55f  // m/s, never more
 
 // Safety limits. MAX_PWM is the start value; "max" over serial can change it
 // up to HARD_MAX_PWM and never more.
@@ -156,16 +152,23 @@ static int32_t last_enc_sum;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
 static struct {
-    volatile float kp = 3.5f;        // m/s per rad of tilt (about 52 PWM per degree)
-    volatile float ki = 10.0f;       // m/s per (rad*s)
-    volatile float kd = 0.07f;       // m/s per rad/s (0.10 shook more, test 9)
+    volatile float kp = 3.5f;  // m/s per rad of tilt (about 52 PWM per degree)
+    volatile float ki = 10.0f; // m/s per (rad*s)
+    volatile float kd = 0.07f; // m/s per rad/s (0.10 shook more, test 9)
+    // Low-pass filter on the rate used by the D term: share of the new sample
+    // per tick (0.32 is about 12 Hz, 0.45 about 19 Hz). Without it, a jerk of
+    // the wheels shakes the body, the gyro sees it, and the D term answers
+    // with another jerk: our second test shook at 12 Hz or more. But it also
+    // delays the D term, and the robot shakes at 6-8 Hz. 0.45 shook least in
+    // the sweep of test 13; 0.2 shook most.
+    volatile float rf = 0.45f;
     volatile float kv = 0.3f;        // m/s per m/s
     volatile float kx = 0.5f;        // m/s per m, at most KX_LIMIT
     volatile float kpos = 10.0f;     // lean back this many degrees per m ahead
     volatile float kvel = 3.0f;      // and this many per m/s forward
     volatile float kt = -0.05f;      // slow balance point trim, rad per (m*s); off
     volatile float off = PWM_OFFSET; // dead band jump, PWM
-    volatile float ramp = 0.1f;      // m/s over which the jump grows from 0
+    volatile float ramp = 0.3f;      // m/s over which the jump grows from 0 (test 13)
     volatile float kh = 0.1f;        // heading hold, m/s per rad (test 11)
     volatile float khr = 0.0f;       // heading rate damping, m/s per rad/s
     volatile float ys = -1.0f;       // sign of the gyro Z axis (test 10: opposite to
@@ -540,7 +543,7 @@ static void control_task(void *arg)
         m5_filter(last_ax, last_ay, last_az, rate, (last_gy - gy_offset) / GYRO_LSB_PER_DPS,
                   (yaw - yaw_offset) / GYRO_LSB_PER_DPS, DT);
         const float yaw_rate = gain.ys * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
-        rate_f += RATE_LPF * (rate - rate_f);
+        rate_f += gain.rf * (rate - rate_f);
         tilt = GYRO_WEIGHT * (tilt + rate * DT) + (1 - GYRO_WEIGHT) * acc;
         speed = (1 - SPEED_LPF) * speed + SPEED_LPF * (pos - last_pos) / DT;
         last_pos = pos;
@@ -760,7 +763,7 @@ static void sim_script(int64_t ms)
 // Print a line on the serial port and send it over Wi-Fi.
 static void say(const char *fmt, ...)
 {
-    char line[160];
+    char line[256];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
@@ -771,15 +774,16 @@ static void say(const char *fmt, ...)
 
 static void say_gains(void)
 {
-    say("gains kp %.2f ki %.1f kd %.3f kv %.2f kx %.2f kpos %.1f kvel %.1f kt %.3f off %.0f "
-        "ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f law %d vmax %.2f max %.0f\n",
-        gain.kp, gain.ki, gain.kd, gain.kv, gain.kx, gain.kpos, gain.kvel, gain.kt, gain.off,
-        gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.law, gain.vmax, gain.max);
+    say("gains kp %.2f ki %.1f kd %.3f rf %.2f kv %.2f kx %.2f kpos %.1f kvel %.1f kt %.3f "
+        "off %.0f ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f law %d vmax %.2f max %.0f\n",
+        gain.kp, gain.ki, gain.kd, gain.rf, gain.kv, gain.kx, gain.kpos, gain.kvel, gain.kt,
+        gain.off, gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.law, gain.vmax,
+        gain.max);
 }
 
 // Change a gain while it runs, from the serial monitor or over Wi-Fi:
-//     kp 3.5  ki 10  kd 0.07  kv 0.3  kx 0.5  kpos 10  kvel 3  kt -0.05  off 31  ramp 0.1
-//     kh 0.1  khr 0  ys -1  nf 8.5  nq 2
+//     kp 3.5  ki 10  kd 0.07  rf 0.45  kv 0.3  kx 0.5  kpos 10  kvel 3  kt -0.05  off 31
+//     ramp 0.3  kh 0.1  khr 0  ys -1  nf 8.5  nq 2
 //     vmax 0.4  max 500  ?  stop
 // "hb" (heartbeat) only keeps the Wi-Fi link alive. Each change is printed, so
 // the log shows which values were used.
@@ -833,6 +837,8 @@ static void handle_command(const char *line)
         gain.nf = fminf(fmaxf(v, 0), 40);
     } else if (n == 2 && !strcmp(name, "law")) {
         gain.law = v >= 1 ? 1 : 0;
+    } else if (n == 2 && !strcmp(name, "rf")) {
+        gain.rf = fminf(fmaxf(v, 0.05f), 1);
     } else if (n == 2 && !strcmp(name, "nq")) {
         gain.nq = fminf(fmaxf(v, 0.3f), 10);
     } else if (n == 2 && !strcmp(name, "ramp")) {

@@ -168,6 +168,10 @@ static esp_err_t update_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
         left -= n;
+        // Let the idle task on this core run. With fast Wi-Fi this loop never
+        // waits, and the task watchdog resets the robot after 1 s (seen on
+        // 2026-10-31, "IDLE0" with httpd running).
+        vTaskDelay(1);
     }
     // esp_ota_end() checks the image before we boot from it.
     if (esp_ota_end(ota) != ESP_OK || esp_ota_set_boot_partition(slot) != ESP_OK) {
