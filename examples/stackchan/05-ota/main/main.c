@@ -5,9 +5,12 @@
 // example that runs on the robot calls tr_ota_start() the same way, so it can
 // always take the next update.
 #include "esp_err.h"
+#include "tr_board.h"
 #include "tr_ota.h"
 
 void app_main(void)
 {
+    // GET / also shows the body battery.
+    ESP_ERROR_CHECK(tr_ota_add_status(tr_board_status));
     ESP_ERROR_CHECK(tr_ota_start());
 }

@@ -12,6 +12,7 @@
 #include "esp_ota_ops.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -43,6 +44,10 @@ static const network_t emulator = {"myssid", "mypassword"};
 #define LOST   BIT1
 static EventGroupHandle_t wifi_events;
 static char token[17];
+static esp_netif_t *sta;
+
+#define MAX_STATUS 4
+static tr_ota_status_fn status_fns[MAX_STATUS];
 
 static const char *state_name(esp_ota_img_states_t state)
 {
@@ -180,7 +185,7 @@ static esp_err_t start_wifi(void)
     wifi_events = xEventGroupCreate();
     ESP_RETURN_ON_ERROR(ok_if_done(esp_netif_init()), TAG, "netif");
     ESP_RETURN_ON_ERROR(ok_if_done(esp_event_loop_create_default()), TAG, "event loop");
-    esp_netif_t *sta = esp_netif_create_default_wifi_sta();
+    sta = esp_netif_create_default_wifi_sta();
     esp_netif_set_hostname(sta, HOSTNAME);
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "wifi init");
@@ -236,12 +241,81 @@ static esp_err_t update_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// GET /: which firmware runs.
+static const char *reset_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:
+            return "power on";
+        case ESP_RST_SW:
+            return "restart from software (an update?)";
+        case ESP_RST_PANIC:
+            return "crash";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            return "watchdog";
+        case ESP_RST_BROWNOUT:
+            return "brownout (low power)";
+        case ESP_RST_USB:
+            return "USB reset";
+        case ESP_RST_DEEPSLEEP:
+            return "wake from deep sleep";
+        default:
+            return "other";
+    }
+}
+
+static void describe_wifi(char *text, size_t size)
+{
+    wifi_ap_record_t ap;
+    esp_netif_ip_info_t ip = {0};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        snprintf(text, size, "Wi-Fi: not connected\n");
+        return;
+    }
+    esp_netif_get_ip_info(sta, &ip);
+    snprintf(text, size, "Wi-Fi: %s, %d dBm, channel %d, IP " IPSTR "\n", (const char *)ap.ssid,
+             ap.rssi, ap.primary, IP2STR(&ip.ip));
+}
+
+// GET /: the robot's status as plain text, one item per line.
 static esp_err_t info_handler(httpd_req_t *req)
 {
-    char text[160];
-    describe_app(text, sizeof(text));
-    return httpd_resp_sendstr(req, text);
+    char line[192];
+    describe_app(line, sizeof(line));
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr_chunk(req, line);
+
+    const int64_t s = esp_timer_get_time() / 1000000;
+    snprintf(line, sizeof(line), "uptime: %lld h %02lld min %02lld s\n", s / 3600, s / 60 % 60,
+             s % 60);
+    httpd_resp_sendstr_chunk(req, line);
+    snprintf(line, sizeof(line), "last restart: %s\n", reset_name(esp_reset_reason()));
+    httpd_resp_sendstr_chunk(req, line);
+    snprintf(line, sizeof(line), "free memory: %lu KB (lowest since boot %lu KB)\n",
+             (unsigned long)esp_get_free_heap_size() / 1024,
+             (unsigned long)esp_get_minimum_free_heap_size() / 1024);
+    httpd_resp_sendstr_chunk(req, line);
+    describe_wifi(line, sizeof(line));
+    httpd_resp_sendstr_chunk(req, line);
+
+    for (int i = 0; i < MAX_STATUS && status_fns[i]; i++) {
+        line[0] = 0;
+        status_fns[i](line, sizeof(line));
+        httpd_resp_sendstr_chunk(req, line);
+    }
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
+esp_err_t tr_ota_add_status(tr_ota_status_fn fn)
+{
+    for (int i = 0; i < MAX_STATUS; i++) {
+        if (!status_fns[i]) {
+            status_fns[i] = fn;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NO_MEM;
 }
 
 static esp_err_t start_http(void)

@@ -9,12 +9,14 @@
 // - joins the strongest of the two networks set at build time (see README.md),
 //   and joins again when the link drops
 // - is at http://stackchan.local/ (mDNS)
-// - serves GET / (which firmware runs) and POST /update (a new app image, with
+// - serves GET / (status: firmware, uptime, memory, Wi-Fi, and lines the
+//   example adds with tr_ota_add_status()) and POST /update (a new app image, with
 //   the header "X-Token: <token>"; the token is shown only on the USB port)
 // - marks an app on trial valid once it has Wi-Fi and the web server runs, or
 //   goes back to the old app if there is no Wi-Fi within 60 seconds
 #pragma once
 
+#include <stddef.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -25,6 +27,12 @@ extern "C" {
 // the example can go on without a network. It sets up NVS, esp_netif and the
 // default event loop if the example has not done it yet. Call it once.
 esp_err_t tr_ota_start(void);
+
+// Add a line (or a few) to the status on GET /. fn writes text ending in "\n"
+// into text. It runs in the web server's task each time someone asks. Up to
+// 4 functions; call before or after tr_ota_start().
+typedef void (*tr_ota_status_fn)(char *text, size_t size);
+esp_err_t tr_ota_add_status(tr_ota_status_fn fn);
 
 #ifdef __cplusplus
 }

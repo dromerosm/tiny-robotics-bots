@@ -7,7 +7,7 @@ StackChan joins your home Wi-Fi and takes new firmware over the network, so you 
 | **Robot** | StackChan (CoreS3, ESP32-S3) |
 | **Level** | Intermediate |
 | **Emulator** | ✅ Native `esp-emu`: it joins the emulator's own Wi-Fi network and starts the web server. You can't send an update to it from your computer |
-| **Hardware used** | Wi-Fi only |
+| **Hardware used** | Wi-Fi, and the battery monitor in the body (INA226) |
 
 ## What you learn
 
@@ -80,8 +80,15 @@ After an update over Wi-Fi:
 $ curl -H "X-Token: <token>" --data-binary @examples/stackchan/05-ota/build/ota.bin http://stackchan.local/update
 ok, restarting
 $ curl http://stackchan.local/
-ota v0.2.0-8-g64097a7-dirty, built Oct 31 2026 11:56:55, running from ota_1 (valid)
+ota v0.2.0-11-gfc74636-dirty, built Oct 31 2026 12:39:51, running from ota_1 (valid)
+uptime: 0 h 00 min 08 s
+last restart: restart from software (an update?)
+free memory: 253 KB (lowest since boot 250 KB)
+Wi-Fi: <network>, -43 dBm, channel 11, IP 192.168.1.45
+battery: 3.51 V, 0 mA (idle)
 ```
+
+The battery line comes from [tr_board](../../../components/tr_board). On USB it reads 0 mA; on battery about 116 mA, discharging. Its README says why the USB reading is not trusted yet.
 
 ## How it works
 

@@ -57,8 +57,10 @@ At boot the robot scans and joins the known network with the strongest signal. W
 | | |
 | --- | --- |
 | Name | `stackchan.local` (mDNS) |
-| `GET /` | Which firmware runs, from which slot, and its state |
+| `GET /` | Status as plain text: firmware, slot and its state, uptime, why it last restarted, free memory, Wi-Fi (network, signal, channel, IP), plus lines the example adds |
 | `POST /update` | A new app image (`build/<project>.bin`, not the merged image), with the header `X-Token: <token>` |
+
+An example adds its own lines to `GET /` with `tr_ota_add_status(fn)`, up to 4. `fn` writes text that ends in `\n`. It runs in the web server's task each time someone asks. For example, `tr_ota_add_status(tr_board_status)` adds the battery (see [tr_board](../tr_board)).
 
 The token is made at random on the first boot and saved in NVS. It is shown only on the USB port. A new flash over USB erases it and makes a new one.
 
