@@ -41,6 +41,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 02 | [console](examples/stackchan/02-console) | An interactive command line with ESP-IDF's `console` component | ✅ |
 | 03 | [tasks](examples/stackchan/03-tasks) | FreeRTOS tasks, queues and event groups: read, filter, react | ✅ |
 | 04 | [face](examples/stackchan/04-face) | Draw a face on the screen and move the head servos from the console | ✅ |
+| 05 | [ota](examples/stackchan/05-ota) | Join the home Wi-Fi and update over the air, with rollback | ✅ (Wi-Fi in esp-emu, no updates) |
 
 ### BALA2 Fire
 

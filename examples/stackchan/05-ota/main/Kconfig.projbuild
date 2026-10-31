@@ -1,0 +1,17 @@
+menu "05-ota home Wi-Fi"
+    # The defaults come from environment variables, so no password is in git.
+    # scripts/build.sh passes them from the file in WIFI_ENV (see README).
+    # With no SSID set, the robot joins esp-emu's built-in network.
+    config TR_WIFI_SSID_01
+        string "First network (SSID)"
+        default "$(SSID_01)"
+    config TR_WIFI_PASSWORD_01
+        string "First network password"
+        default "$(PWD_SSID_01)"
+    config TR_WIFI_SSID_02
+        string "Second network (SSID)"
+        default "$(SSID_02)"
+    config TR_WIFI_PASSWORD_02
+        string "Second network password"
+        default "$(PWD_SSID_02)"
+endmenu
