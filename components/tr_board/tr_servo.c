@@ -295,3 +295,52 @@ esp_err_t tr_servo_set_zero(tr_servo_t id, int raw)
     }
     return err;
 }
+
+// Side LEDs: 12 WS2812 driven by the PY32 on its pin 13. Colors go to its LED
+// memory (0x30, RGB565, low byte first); bit 6 of LED_CFG (0x24) shows them.
+#define PY32_LED_CFG  0x24
+#define PY32_LED_RAM  0x30
+#define PY32_MODE_H   0x04
+#define PY32_PULLUP_H 0x0A
+#define PY32_DRIVE_H  0x14 // 1 = open drain
+#define LED_PIN_H     0x20 // pin 13 is bit 5 of the high registers
+
+static bool leds_ready;
+
+static esp_err_t py32_write(uint8_t reg, const uint8_t *data, int n)
+{
+    uint8_t buf[8];
+    buf[0] = reg;
+    memcpy(buf + 1, data, n);
+    return i2c_master_transmit(py32, buf, n + 1, 50);
+}
+
+static esp_err_t leds_init(void)
+{
+    if (leds_ready) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_FALSE(py32, ESP_ERR_INVALID_STATE, TAG, "call tr_servo_init() first");
+    ESP_RETURN_ON_ERROR(py32_bit(PY32_MODE_H, LED_PIN_H, true), TAG, "LED pin");
+    ESP_RETURN_ON_ERROR(py32_bit(PY32_PULLUP_H, LED_PIN_H, true), TAG, "LED pull");
+    ESP_RETURN_ON_ERROR(py32_bit(PY32_DRIVE_H, LED_PIN_H, false), TAG, "LED drive");
+    const uint8_t count = TR_LED_COUNT;
+    ESP_RETURN_ON_ERROR(py32_write(PY32_LED_CFG, &count, 1), TAG, "LED count");
+    leds_ready = true;
+    return ESP_OK;
+}
+
+esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b)
+{
+    ESP_RETURN_ON_FALSE(index >= 0 && index < TR_LED_COUNT, ESP_ERR_INVALID_ARG, TAG, "index");
+    ESP_RETURN_ON_ERROR(leds_init(), TAG, "LEDs");
+    const uint16_t c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+    const uint8_t data[2] = {c & 0xFF, c >> 8};
+    return py32_write(PY32_LED_RAM + index * 2, data, 2);
+}
+
+esp_err_t tr_led_show(void)
+{
+    ESP_RETURN_ON_ERROR(leds_init(), TAG, "LEDs");
+    return py32_bit(PY32_LED_CFG, 0x40, true);
+}

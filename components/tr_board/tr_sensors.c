@@ -100,6 +100,11 @@ esp_err_t tr_sensors_init(void)
         return ESP_OK;
     }
     lock = xSemaphoreCreateMutex();
+    // The light sensor shares the camera's cable and power: without this it
+    // does not answer at 0x23.
+    if (tr_cam_power() == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     i2c_master_bus_handle_t bus;
     ESP_RETURN_ON_ERROR(tr_board_i2c(&bus), TAG, "I2C");
     for (int c = 0; c < COUNT; c++) {
@@ -124,6 +129,11 @@ esp_err_t tr_sensors_init(void)
     }
     if (dev[POWER]) {
         wr(POWER, 0x30, 0x3F); // all ADC channels on, as M5Unified does
+    }
+    // Light (LTR553): brightness on (ALS_CONTR 0x80 bit 0) and proximity on
+    // (PS_CONTR 0x81 bit 1), as M5CoreS3's LTR5XX driver does.
+    if (dev[LIGHT] && (wr(LIGHT, 0x80, 0x01) != ESP_OK || wr(LIGHT, 0x81, 0x02) != ESP_OK)) {
+        ESP_LOGW(TAG, "light sensor setup failed");
     }
     motion_ready = dev[MOTION] && motion_init() == ESP_OK;
     if (dev[MOTION] && !motion_ready) {
@@ -235,8 +245,14 @@ void tr_sensors_status(char *text, size_t size)
         at = add(text, size, at, "power chip: no answer\n");
     }
 
-    at = add(text, size, at, "light: %s\n",
-             dev[LIGHT] ? "LTR553 found, not read yet" : "LTR553 does not answer at 0x23");
+    // Light: two channels (visible + IR, IR) from 0x88, proximity (11 bits) from 0x8D.
+    if (dev[LIGHT] && rd(LIGHT, 0x88, b, 4) == ESP_OK && rd(LIGHT, 0x8D, b + 4, 2) == ESP_OK) {
+        const int ch1 = b[0] | b[1] << 8, ch0 = b[2] | b[3] << 8;
+        at = add(text, size, at, "light: %d (raw), proximity %d (0..2047)\n", (ch0 + ch1) / 2,
+                 b[4] | (b[5] & 0x07) << 8);
+    } else {
+        at = add(text, size, at, "light: no answer at 0x23\n");
+    }
 
     // Started on the first read, not at boot: esp-emu does not model it and
     // stops there, which would stop the example too.
@@ -268,4 +284,16 @@ bool tr_touch_read(int *x, int *y)
     *x = (b[1] & 0x0F) << 8 | b[2];
     *y = (b[3] & 0x0F) << 8 | b[4];
     return true;
+}
+
+int tr_head_touch(void)
+{
+    if (!lock || !dev[HEAD_TOUCH]) {
+        return 0;
+    }
+    uint8_t v = 0;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const bool ok = rd(HEAD_TOUCH, 0x10, &v, 1) == ESP_OK;
+    xSemaphoreGive(lock);
+    return ok ? v & 0x3F : 0;
 }

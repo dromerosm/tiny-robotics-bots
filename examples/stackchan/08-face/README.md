@@ -9,7 +9,7 @@ It brings together what 05 to 07 built: updates over Wi-Fi ([tr_ota](../../../co
 | **Robot** | StackChan (CoreS3, ESP32-S3) |
 | **Level** | Intermediate |
 | **Emulator** | ✅ Native `esp-emu`, without screen and servos: it checks that Wi-Fi and the server start. [04-face](../04-face) shows the same face in the browser emulator |
-| **Hardware used** | Screen, two head servos, PY32 (servo power), INA226 (battery), Wi-Fi |
+| **Hardware used** | Screen, touch, two head servos, PY32 (servo power, LEDs), microphones, camera, sensors, Wi-Fi |
 
 ## What you learn
 
@@ -48,6 +48,18 @@ All of [07-head](../07-head)'s requests work too (`/head`, `/head/off`, `/i2c`, 
 Tap the mouth on the screen. A status screen opens with the same facts as `http://stackchan.local/`, the sensors, and the **update token** on the last line. **UP** and **DOWN** at the bottom scroll, and **X** at the top right closes it. The numbers change every second. The head stays still while it is open.
 
 The token is shown here because only someone who holds the robot can see it. `tr_ota_token()` gives it to the example; never log it or send it over the network.
+
+## The other screens
+
+| Tap | Screen | How to leave |
+| --- | --- | --- |
+| The mouth | Status (see above) | X at the top right |
+| The left eye | **Audio analyzer**: 32 bars from 100 Hz to 8 kHz on a log scale, green to red, with falling peak marks. The bottom line shows the level (dBFS) and the strongest tone | X at the top right |
+| The right eye | **Camera**: what it sees, 320 x 240, as fast as it can | A tap anywhere, or a touch on the head. A red X in the corner shows it |
+
+`POST /face?view=face|status|audio|camera` (token needed) changes the screen too, and the page has buttons for it.
+
+The analyzer reads 512 samples at 16 kHz (32 ms), with a Hann window and a 512-point FFT (`audio.c`). Bars go up at once and fall slowly, so they are easy to read.
 
 ## Expected output
 

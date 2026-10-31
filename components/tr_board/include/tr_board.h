@@ -9,17 +9,24 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "driver/i2c_master.h"
+#include "esp_camera.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#define TR_I2C_PORT 0 // the internal bus; the camera driver shares it
+
 // The internal I2C bus. Made on the first call; later calls return the same bus.
 esp_err_t tr_board_i2c(i2c_master_bus_handle_t *bus);
 
 // Find the chips on the internal I2C bus. Returns how many addresses it put in found.
 int tr_board_scan(uint8_t *found, int max);
+
+// Set some AW9523 pins as outputs, high: port0 and port1 are bit masks
+// (P0_0 = 0x01 ... P1_7 = 0x80 of port1). The other pins stay as they are.
+esp_err_t tr_board_aw9523_on(uint8_t port0, uint8_t port1);
 
 typedef struct {
     int millivolts;
@@ -57,6 +64,11 @@ void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *
 // pictures that change, like a face. About 40 ms per frame.
 typedef uint16_t (*tr_lcd_pixel_fn)(int x, int y, void *ctx);
 void tr_lcd_render(tr_lcd_pixel_fn pixel, void *ctx);
+// Draw w x h pixels that are already in the screen's byte order (RGB565,
+// high byte first), as the camera gives them.
+void tr_lcd_blit(int x, int y, int w, int h, const uint8_t *pixels);
+// The same for rows y0 to y1 - 1 only, so text above or below stays.
+void tr_lcd_render_rows(int y0, int y1, tr_lcd_pixel_fn pixel, void *ctx);
 
 // The head servos: FEETECH SCS0009 on UART1 (TX G6, RX G7, 1 Mbps), power
 // through the PY32 in the body. Angles in degrees from the zero position,
@@ -91,6 +103,12 @@ esp_err_t tr_servo_torque(tr_servo_t id, bool on);
 // Save a new zero position (raw) in NVS.
 esp_err_t tr_servo_set_zero(tr_servo_t id, int raw);
 
+// The 12 side LEDs (0 to 5 on the left, 6 to 11 on the right), through the
+// PY32. Needs tr_servo_init(). Set the colors, then show them all at once.
+#define TR_LED_COUNT 12
+esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b);
+esp_err_t tr_led_show(void);
+
 // The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),
 // motion (BMI270), clock (BM8563), power chip (AXP2101), light (LTR553), and
 // the ESP32-S3's own temperature. init sets them up; a chip that does not
@@ -100,6 +118,22 @@ void tr_sensors_status(char *text, size_t size);
 // The first point touching the screen, in screen pixels. False if none.
 // Needs tr_sensors_init().
 bool tr_touch_read(int *x, int *y);
+// The head touch zones, 2 bits each (zone 1 in bits 0-1). 0 = no touch.
+int tr_head_touch(void);
+
+// The microphones (ES7210 on I2S: MCLK G0, BCLK G34, WS G33, data G14).
+// start sets them up once, mono, 16 bits, at sample_rate. read waits for
+// count samples.
+esp_err_t tr_mic_start(uint32_t sample_rate);
+esp_err_t tr_mic_read(int16_t *samples, int count);
+
+// The camera (GC0308 on the DVP port), 320 x 240 RGB565, frames in PSRAM
+// when there is PSRAM. Powers it on the first call. Then take frames with
+// esp_camera_fb_get() and give them back with esp_camera_fb_return().
+esp_err_t tr_cam_start(void);
+// Only the camera's power (AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0).
+// The light sensor needs it too.
+esp_err_t tr_cam_power(void);
 
 #ifdef __cplusplus
 }

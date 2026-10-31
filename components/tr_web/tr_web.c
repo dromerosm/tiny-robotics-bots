@@ -6,6 +6,8 @@
 //   POST /head/zero?yaw=436&pitch=585   save new zero positions, raw 0..1023 (token needed)
 //   GET  /i2c                           the chips on the internal I2C bus
 //   GET  /sensors                       touch, motion, clock, power chip, temperature
+//   GET  /leds, POST /leds?color=ff8800&side=left|right|all   side LEDs (token needed)
+//   GET  /camera.jpg                    one camera frame, JPEG
 //   GET  /app                           a page with all of the above
 //
 // Nothing moves at boot. After a move the torque goes off again, unless hold=1,
@@ -13,8 +15,10 @@
 // 5 and 85 degrees, yaw between -90 and 90 (tr_board clamps the angles).
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "esp_check.h"
 #include "esp_http_server.h"
+#include "img_converters.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tr_board.h"
@@ -196,6 +200,76 @@ static esp_err_t i2c_get(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+// Side LEDs: 0 to 5 on the left, 6 to 11 on the right (as the BSP numbers them).
+static uint32_t led_color[TR_LED_COUNT];
+
+static esp_err_t leds_get(httpd_req_t *req)
+{
+    char text[96];
+    snprintf(text, sizeof(text), "left: #%06lx\nright: #%06lx\n", (unsigned long)led_color[0],
+             (unsigned long)led_color[TR_LED_COUNT - 1]);
+    return httpd_resp_sendstr(req, text);
+}
+
+// POST /leds?color=ff8800&side=left|right|all (token needed). color=000000 is off.
+static esp_err_t leds_post(httpd_req_t *req)
+{
+    if (!tr_ota_token_ok(req)) {
+        return ESP_FAIL;
+    }
+    if (!servos_found) {
+        return send_error(req, "409 Conflict", "no PY32, so no LEDs\n");
+    }
+    char query[64], value[16] = "", side[8] = "all";
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "color", value, sizeof(value));
+        httpd_query_key_value(query, "side", side, sizeof(side));
+    }
+    char *end;
+    const unsigned long rgb = strtoul(value[0] == '#' ? value + 1 : value, &end, 16);
+    if (end == value || rgb > 0xFFFFFF) {
+        return send_error(req, "400 Bad Request", "color must be RRGGBB, like ff8800\n");
+    }
+    const int from = strcmp(side, "right") == 0 ? TR_LED_COUNT / 2 : 0;
+    const int to = strcmp(side, "left") == 0 ? TR_LED_COUNT / 2 : TR_LED_COUNT;
+    esp_err_t err = ESP_OK;
+    for (int i = from; i < to && err == ESP_OK; i++) {
+        led_color[i] = rgb;
+        err = tr_led_set(i, rgb >> 16, rgb >> 8 & 0xFF, rgb & 0xFF);
+    }
+    if (err == ESP_OK) {
+        err = tr_led_show();
+    }
+    if (err != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "LEDs did not answer\n");
+    }
+    return leds_get(req);
+}
+
+// GET /camera.jpg: one frame from the camera, as JPEG. Starts the camera the first time.
+static esp_err_t camera_get(httpd_req_t *req)
+{
+    if (tr_cam_start() != ESP_OK) {
+        return send_error(req, "503 Service Unavailable", "no camera\n");
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        return send_error(req, "503 Service Unavailable", "no frame\n");
+    }
+    uint8_t *jpg = NULL;
+    size_t len = 0;
+    const bool ok = frame2jpg(fb, 80, &jpg, &len);
+    esp_camera_fb_return(fb);
+    if (!ok) {
+        return send_error(req, "500 Internal Server Error", "JPEG failed\n");
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_err_t err = httpd_resp_send(req, (const char *)jpg, len);
+    free(jpg);
+    return err;
+}
+
 // GET /sensors: all the other sensors, as text.
 static esp_err_t sensors_get(httpd_req_t *req)
 {
@@ -239,6 +313,9 @@ esp_err_t tr_web_start(void)
         {.uri = "/i2c", .method = HTTP_GET, .handler = i2c_get},
         {.uri = "/app", .method = HTTP_GET, .handler = app_get},
         {.uri = "/sensors", .method = HTTP_GET, .handler = sensors_get},
+        {.uri = "/leds", .method = HTTP_GET, .handler = leds_get},
+        {.uri = "/leds", .method = HTTP_POST, .handler = leds_post},
+        {.uri = "/camera.jpg", .method = HTTP_GET, .handler = camera_get},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_RETURN_ON_ERROR(tr_ota_add_uri(&uris[i]), "tr_web", "add %s", uris[i].uri);

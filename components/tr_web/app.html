@@ -18,6 +18,8 @@
   pre { margin: 0; white-space: pre-wrap; font: 13px/1.45 ui-monospace, monospace; }
   label { display: block; margin: 8px 0 2px; }
   input[type=range] { width: 100%; }
+  #cam { width: 100%; border-radius: 6px; background: #000; }
+  input[type=color] { width: 64px; height: 36px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
   input[type=password] { width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   button { padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--card); font-weight: 600; cursor: pointer; }
@@ -55,6 +57,29 @@
       <button id="idleoff" class="plain">Stay still</button>
       <button id="blink" class="plain">Blink</button>
     </div>
+    <div class="row">
+      <button class="plain" data-view="face">Face</button>
+      <button class="plain" data-view="status">Status</button>
+      <button class="plain" data-view="audio">Audio</button>
+      <button class="plain" data-view="camera">Camera</button>
+    </div>
+  </section>
+  <section>
+    <h2>Side LEDs</h2>
+    <label for="color">Color</label>
+    <input id="color" type="color" value="#ff8800">
+    <div class="row">
+      <button data-side="left">Left</button>
+      <button data-side="right">Right</button>
+      <button data-side="all">Both</button>
+      <button id="ledsoff" class="plain">Off</button>
+    </div>
+    <pre id="leds">…</pre>
+  </section>
+  <section>
+    <h2>Camera</h2>
+    <img id="cam" alt="Camera frame" hidden>
+    <div class="row"><button id="snap">Take a picture</button></div>
   </section>
   <section><h2>Head servos</h2><pre id="head">…</pre></section>
   <section><h2>Sensors</h2><pre id="sensors">…</pre></section>
@@ -116,7 +141,27 @@ async function face(path) {
 $("idleon").onclick = () => face("/face?idle=1");
 $("idleoff").onclick = () => face("/face?idle=0");
 $("blink").onclick = () => face("/face?blink=1");
+for (const b of document.querySelectorAll("button[data-view]")) {
+  b.onclick = () => face("/face?view=" + b.dataset.view);
+}
 face("/face");
+async function leds(side, color) {
+  try {
+    $("leds").textContent = await text(`/leds?side=${side}&color=${color}`, { method: "POST", headers: { "X-Token": token.value } });
+  } catch (e) {
+    $("msg").textContent = "Error: " + e.message;
+  }
+}
+for (const b of document.querySelectorAll("button[data-side]")) {
+  b.onclick = () => leds(b.dataset.side, $("color").value.slice(1));
+}
+$("ledsoff").onclick = () => leds("all", "000000");
+$("snap").onclick = () => {
+  $("cam").hidden = false;
+  $("cam").src = "/camera.jpg?t=" + Date.now();
+};
+$("cam").onerror = () => { $("msg").textContent = "No picture: is there a camera?"; };
+text("/leds").then((t) => { $("leds").textContent = t; }).catch(() => {});
 text("/i2c").then((t) => { $("i2c").textContent = t; }).catch(() => {});
 refresh();
 setInterval(refresh, 1000);

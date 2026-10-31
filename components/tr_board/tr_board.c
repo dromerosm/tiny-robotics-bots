@@ -28,7 +28,7 @@ esp_err_t tr_board_i2c(i2c_master_bus_handle_t *out)
 {
     if (!bus) {
         const i2c_master_bus_config_t cfg = {
-            .i2c_port = -1, // any free port
+            .i2c_port = TR_I2C_PORT, // fixed, so the camera driver can share it
             .sda_io_num = I2C_SDA,
             .scl_io_num = I2C_SCL,
             .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -144,4 +144,54 @@ int tr_board_scan(uint8_t *found, int max)
         }
     }
     return n;
+}
+
+// AW9523 IO expander (0x58). It also drives power lines of the CoreS3, so we
+// change only the pins asked for and keep the others as they are. (Espressif's
+// AW9523 driver resets all 16 pins to low outputs, which could cut power.)
+static esp_err_t aw_bits(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t set, uint8_t clear)
+{
+    uint8_t v = 0;
+    esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, &v, 1, I2C_TIMEOUT);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const uint8_t now = (v | set) & ~clear;
+    const uint8_t data[2] = {reg, now};
+    return now == v ? ESP_OK : i2c_master_transmit(dev, data, 2, I2C_TIMEOUT);
+}
+
+esp_err_t tr_board_aw9523_on(uint8_t port0, uint8_t port1)
+{
+    i2c_master_bus_handle_t b;
+    esp_err_t err = tr_board_i2c(&b);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x58,
+        .scl_speed_hz = I2C_HZ,
+    };
+    i2c_master_dev_handle_t aw;
+    err = i2c_master_bus_add_device(b, &cfg, &aw);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = aw_bits(aw, 0x11, 0x10, 0); // port 0 push-pull, as the BSP sets it
+    // Output level first, then direction (0 = output), so the pins never drive low.
+    if (err == ESP_OK) {
+        err = aw_bits(aw, 0x02, port0, 0);
+    }
+    if (err == ESP_OK) {
+        err = aw_bits(aw, 0x03, port1, 0);
+    }
+    if (err == ESP_OK) {
+        err = aw_bits(aw, 0x04, 0, port0);
+    }
+    if (err == ESP_OK) {
+        err = aw_bits(aw, 0x05, 0, port1);
+    }
+    i2c_master_bus_rm_device(aw);
+    return err;
 }

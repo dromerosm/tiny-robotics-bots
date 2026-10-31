@@ -8,16 +8,23 @@
 //   GET  /face                  idle on or off, and where the head looks
 //   POST /face?idle=0|1         stop or start looking around (token needed)
 //   POST /face?blink=1          blink once (token needed)
+//   POST /face?view=face|status|audio|camera   change the screen (token needed)
 //
 // Tap the mouth on the screen: a status screen opens, with the same facts as
 // the page, the sensors and the update token. UP and DOWN scroll, X closes it.
 // The token is shown only here, on the robot itself, never on the network.
 //
+// Tap the left eye: the audio analyzer (audio.c). X closes it.
+// Tap the right eye: what the camera sees. Tap anywhere, or touch the head,
+// to go back; a red X in the corner shows it.
+//
 // The page at http://stackchan.local/app (tr_web) shows a card for this.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "audio.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -38,6 +45,11 @@
 // eyes look the way the head turns; check it on the robot, and flip it if the
 // eyes look the other way.
 #define EYE_X_PER_DEG (-0.5f)
+
+typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_AUDIO, VIEW_CAMERA } view_t;
+static const char *view_names[] = {"face", "status", "audio", "camera"};
+static volatile view_t want_view = VIEW_FACE; // set by POST /face?view=..
+static volatile bool view_request;
 
 static volatile bool idle = true;
 static volatile bool blink_now;
@@ -152,10 +164,40 @@ static void draw_status_screen(int top)
     draw_rows(top);
 }
 
+// The left eye, with some room around it.
+static bool on_left_eye(int x, int y)
+{
+    return x >= 40 && x < 160 && y >= 45 && y < 135;
+}
+
+// The right eye, with some room around it.
+static bool on_right_eye(int x, int y)
+{
+    return x >= 160 && x < 280 && y >= 45 && y < 135;
+}
+
 // The mouth, with some room around it for a finger.
 static bool on_mouth(int x, int y)
 {
     return x >= 90 && x < 230 && y >= 135 && y < 200;
+}
+
+// A red box with an X at the top right of a camera frame, so it is clear how
+// to leave. The frame is RGB565, high byte first.
+static void draw_exit_mark(camera_fb_t *fb)
+{
+    const uint16_t red = TR_LCD_RGB(200, 40, 40), white = TR_LCD_WHITE;
+    for (int y = 0; y < 32 && y < (int)fb->height; y++) {
+        for (int x = fb->width - 40; x < (int)fb->width; x++) {
+            const int dx = x - (fb->width - 40), d1 = dx - y - 4, d2 = dx + y - 36;
+            const bool cross =
+                dx > 8 && dx < 32 && y > 4 && y < 28 && (abs(d1) <= 1 || abs(d2) <= 1);
+            const uint16_t c = cross ? white : red;
+            uint8_t *p = fb->buf + ((size_t)y * fb->width + x) * 2;
+            p[0] = c >> 8;
+            p[1] = c & 0xFF;
+        }
+    }
 }
 
 static void face_task(void *arg)
@@ -168,7 +210,7 @@ static void face_task(void *arg)
     int64_t blink_end = 0, next_glance = esp_timer_get_time() + 3000000, release_at = 0;
     int64_t next_read = 0;
     face_t drawn = {.dx = 1000};
-    bool status_open = false, was_down = false;
+    bool status_open = false, audio_on = false, camera_on = false, was_down = false;
     int top = 0, tap_x = 0, tap_y = 0;
     int64_t next_status = 0;
     TickType_t wake = xTaskGetTickCount();
@@ -185,6 +227,67 @@ static void face_task(void *arg)
         }
         const bool tap = was_down && !down;
         was_down = down;
+        const bool on_x = tap && tap_y < BAR_H && tap_x >= TR_LCD_W - 56;
+        // A view asked for over HTTP: close whatever is open, then open it.
+        if (view_request) {
+            view_request = false;
+            audio_on = camera_on = status_open = false;
+            drawn.dx = 1000;
+            if (want_view == VIEW_CAMERA) {
+                camera_on = tr_cam_start() == ESP_OK;
+            } else if (want_view == VIEW_AUDIO) {
+                audio_on = audio_open() == ESP_OK;
+            } else if (want_view == VIEW_STATUS) {
+                status_open = true;
+                top = 0;
+                build_status();
+                draw_status_screen(top);
+                next_status = now + 1000000;
+            }
+        }
+        if (audio_on) {
+            if (on_x) {
+                audio_on = false;
+                drawn.dx = 1000; // draw the face again
+            } else if (audio_frame() != ESP_OK) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            vTaskDelay(1); // give the other tasks on this core a turn
+            wake = xTaskGetTickCount();
+            continue;
+        }
+        if (camera_on) {
+            camera_fb_t *fb = esp_camera_fb_get();
+            if (fb) {
+                draw_exit_mark(fb);
+                tr_lcd_blit(0, 0, fb->width, fb->height, fb->buf);
+                esp_camera_fb_return(fb);
+            }
+            // Any tap on the screen, or a touch on the head, goes back to the face.
+            if (tap || tr_head_touch()) {
+                ESP_LOGI("face", "camera closed (%s)", tap ? "screen tap" : "head touch");
+                camera_on = false;
+                drawn.dx = 1000;                // draw the face again
+                vTaskDelay(pdMS_TO_TICKS(300)); // let go of the head first
+            }
+            vTaskDelay(1); // give the other tasks on this core a turn
+            wake = xTaskGetTickCount();
+            continue;
+        }
+        if (tap && !status_open && on_right_eye(tap_x, tap_y)) {
+            camera_on = tr_cam_start() == ESP_OK;
+            if (!camera_on) {
+                printf("no camera\n");
+            }
+            continue;
+        }
+        if (tap && !status_open && on_left_eye(tap_x, tap_y)) {
+            audio_on = audio_open() == ESP_OK;
+            if (!audio_on) {
+                printf("no microphone\n");
+            }
+            continue;
+        }
         if (tap && !status_open && on_mouth(tap_x, tap_y)) {
             status_open = true;
             top = 0;
@@ -192,7 +295,7 @@ static void face_task(void *arg)
             draw_status_screen(top);
             next_status = now + 1000000;
         } else if (tap && status_open) {
-            if (tap_y < BAR_H && tap_x >= TR_LCD_W - 56) {
+            if (on_x) {
                 status_open = false;
                 drawn.dx = 1000; // draw the face again
             } else if (tap_y >= TR_LCD_H - BAR_H) {
@@ -250,9 +353,10 @@ static void face_task(void *arg)
 
 static esp_err_t face_get(httpd_req_t *req)
 {
-    char text[128];
-    snprintf(text, sizeof(text), "looking around: %s\nhead: yaw %.1f, pitch %.1f degrees\n",
-             idle ? "on" : "off", head_yaw, head_pitch);
+    char text[160];
+    snprintf(text, sizeof(text),
+             "looking around: %s\nhead: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
+             idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
     return httpd_resp_sendstr(req, text);
 }
 
@@ -268,6 +372,14 @@ static esp_err_t face_post(httpd_req_t *req)
         }
         if (httpd_query_key_value(query, "blink", value, sizeof(value)) == ESP_OK) {
             blink_now = true;
+        }
+        if (httpd_query_key_value(query, "view", value, sizeof(value)) == ESP_OK) {
+            for (int v = 0; v < 4; v++) {
+                if (strcmp(value, view_names[v]) == 0) {
+                    want_view = v;
+                    view_request = true;
+                }
+            }
         }
     }
     return face_get(req);

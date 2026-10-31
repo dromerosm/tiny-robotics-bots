@@ -1,2 +1,7 @@
 dependencies:
   espressif/esp_lcd_ili9341: "^2.1.0"
+  espressif/esp_codec_dev: "~1.5"
+  # Public: tr_board.h includes esp_camera.h, and tr_web uses its JPEG converter.
+  espressif/esp32-camera:
+    version: "^2.1.8"
+    public: true

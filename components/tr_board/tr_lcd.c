@@ -26,15 +26,7 @@ static const char *TAG = "tr_lcd";
 #define LCD_CS   3
 #define LCD_HZ   (40 * 1000 * 1000)
 
-// AW9523 IO expander. It also drives power lines of the CoreS3, so we change
-// only our two pins and keep the others as they are. (Espressif's AW9523 driver
-// resets all 16 pins to low outputs, which could cut power on battery.)
-#define AW9523_ADDR 0x58
-#define AW_OUT_P0   0x02
-#define AW_OUT_P1   0x03
-#define AW_DIR_P0   0x04 // 0 = output
-#define AW_DIR_P1   0x05
-#define AW_CTRL     0x11 // bit 4: port 0 push-pull (else open drain)
+// AW9523 pins we use (see tr_board_aw9523_on()).
 #define AW_P0_TOUCH 0x01 // P0_0, touch chip reset (high = run)
 #define AW_P1_LCD   0x02 // P1_1, screen reset (high = run)
 
@@ -163,38 +155,6 @@ static esp_err_t backlight_on(i2c_master_bus_handle_t bus)
     return err;
 }
 
-static esp_err_t set_bits(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t set, uint8_t clear)
-{
-    uint8_t v = 0;
-    ESP_RETURN_ON_ERROR(read_reg(dev, reg, &v), TAG, "read 0x%02X", reg);
-    const uint8_t now = (v | set) & ~clear;
-    ESP_LOGI(TAG, "AW9523 reg 0x%02X: 0x%02X -> 0x%02X", reg, v, now);
-    return now == v ? ESP_OK : write_reg(dev, reg, now);
-}
-
-// Take the screen and the touch chip out of reset.
-static esp_err_t release_resets(i2c_master_bus_handle_t bus)
-{
-    i2c_master_dev_handle_t aw;
-    ESP_RETURN_ON_ERROR(add_device(bus, AW9523_ADDR, 400000, &aw), TAG, "AW9523");
-    esp_err_t err = set_bits(aw, AW_CTRL, 0x10, 0); // push-pull, as the BSP sets it
-    // Output level first, then direction, so the pins never drive low.
-    if (err == ESP_OK) {
-        err = set_bits(aw, AW_OUT_P0, AW_P0_TOUCH, 0);
-    }
-    if (err == ESP_OK) {
-        err = set_bits(aw, AW_OUT_P1, AW_P1_LCD, 0);
-    }
-    if (err == ESP_OK) {
-        err = set_bits(aw, AW_DIR_P0, 0, AW_P0_TOUCH);
-    }
-    if (err == ESP_OK) {
-        err = set_bits(aw, AW_DIR_P1, 0, AW_P1_LCD);
-    }
-    i2c_master_bus_rm_device(aw);
-    return err;
-}
-
 static bool on_band_sent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *ctx)
 {
     BaseType_t woken = pdFALSE;
@@ -210,7 +170,8 @@ esp_err_t tr_lcd_init(void)
     i2c_master_bus_handle_t bus;
     ESP_RETURN_ON_ERROR(tr_board_i2c(&bus), TAG, "I2C");
 
-    ESP_RETURN_ON_ERROR(release_resets(bus), TAG, "AW9523");
+    // Take the touch chip (P0_0) and the screen (P1_1) out of reset.
+    ESP_RETURN_ON_ERROR(tr_board_aw9523_on(AW_P0_TOUCH, AW_P1_LCD), TAG, "AW9523");
     const bool is_e = screen_is_9342e(bus);
     ESP_RETURN_ON_ERROR(backlight_on(bus), TAG, "backlight");
 
@@ -340,18 +301,41 @@ void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *
     send_band(x, y, w, h);
 }
 
-void tr_lcd_render(tr_lcd_pixel_fn pixel, void *ctx)
+void tr_lcd_blit(int x, int y, int w, int h, const uint8_t *pixels)
+{
+    if (!panel || w <= 0 || w > TR_LCD_W) {
+        return;
+    }
+    // Copy through the DMA band: the frame may be in PSRAM.
+    const int rows_per_band = BAND_H * TR_LCD_W / w;
+    for (int top = 0; top < h; top += rows_per_band) {
+        const int rows = h - top < rows_per_band ? h - top : rows_per_band;
+        take_band();
+        memcpy(band, pixels + (size_t)top * w * 2, (size_t)rows * w * 2);
+        send_band(x, y + top, w, rows);
+    }
+}
+
+void tr_lcd_render_rows(int y0, int y1, tr_lcd_pixel_fn pixel, void *ctx)
 {
     if (!panel) {
         return;
     }
-    for (int y0 = 0; y0 < TR_LCD_H; y0 += BAND_H) {
+    y0 = y0 < 0 ? 0 : y0;
+    y1 = y1 > TR_LCD_H ? TR_LCD_H : y1;
+    for (int top = y0; top < y1; top += BAND_H) {
+        const int rows = y1 - top < BAND_H ? y1 - top : BAND_H;
         take_band();
-        for (int y = 0; y < BAND_H; y++) {
+        for (int y = 0; y < rows; y++) {
             for (int x = 0; x < TR_LCD_W; x++) {
-                band[y * TR_LCD_W + x] = wire(pixel(x, y0 + y, ctx));
+                band[y * TR_LCD_W + x] = wire(pixel(x, top + y, ctx));
             }
         }
-        send_band(0, y0, TR_LCD_W, BAND_H);
+        send_band(0, top, TR_LCD_W, rows);
     }
+}
+
+void tr_lcd_render(tr_lcd_pixel_fn pixel, void *ctx)
+{
+    tr_lcd_render_rows(0, TR_LCD_H, pixel, ctx);
 }

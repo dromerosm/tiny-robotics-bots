@@ -7,6 +7,8 @@ StackChan board parts that several examples share. For now:
 - The CoreS3 screen (320 x 240), with text in a 5x7 font. [06-status](../../examples/stackchan/06-status) uses it.
 - The two head servos (FEETECH SCS0009 on UART1) and their power switch on the PY32. [07-head](../../examples/stackchan/07-head) uses them.
 - The other sensors (`tr_sensors_*`): head touch, screen touch, motion, clock, power chip, light, and the ESP32-S3's own temperature.
+- The microphones (ES7210, `tr_mic_*`), the camera (GC0308, `tr_cam_*`) and the 12 side LEDs (`tr_led_*`).
+- `tr_board_aw9523_on()`: turn on single AW9523 pins without touching the others.
 - `tr_board_scan()`: the chips that answer on the internal I2C bus.
 
 ## Use it
@@ -86,12 +88,24 @@ if (tr_touch_read(&x, &y)) { ... }      // a finger on the screen, in pixels
 | Motion | BMI270, `0x69` | Accel (±8 g) and gyro (±2000°/s) from `0x0C`, temperature from `0x22` | M5Unified |
 | Clock | BM8563, `0x51` | Seconds to year from `0x02`, in BCD. Bit 7 of the seconds means it lost power | M5Unified |
 | Power chip | AXP2101, `0x34` | Status `0x00`/`0x01`, battery % `0xA4`, battery `0x34`, USB `0x38` and system `0x3A` voltages | M5Unified |
-| Light | LTR553, `0x23` | Not read: it did not answer on our robot | |
+| Light | LTR553, `0x23` | Brightness: two channels from `0x88`, shown as their mean (raw counts, not lux). Proximity: 11 bits from `0x8D`. It needs the camera's power, so `tr_sensors_init()` turns that on | M5CoreS3 (LTR5XX) |
 | ESP32-S3 | built in | `temperature_sensor` driver, started on the first read | ESP-IDF |
 
 - The BMI270 needs Bosch's 8 KB setup file at every start (`bmi270_config.h`). `tr_sensors_init()` sends it in 64-byte blocks.
 - It also needs 2 ms after a soft reset. At FreeRTOS' 100 Hz, `vTaskDelay(pdMS_TO_TICKS(2))` waits 0 ticks, so the first setup failed. We use `esp_rom_delay_us()` for waits under 10 ms.
 - The ESP32-S3's temperature sensor stops esp-emu at start, so it is started on the first read, not in `tr_sensors_init()`.
+
+## Microphones, camera and LEDs
+
+| Part | How | Power | Source |
+| --- | --- | --- | --- |
+| Microphones | ES7210 (`0x40`) on I2S0: MCLK G0, BCLK G34, WS G33, data G14. `esp_codec_dev` 1.5, mono, 16 bits, gain 30 dB. `tr_mic_start(rate)`, then `tr_mic_read()` | AW9523 P0_2 | Espressif CoreS3 BSP |
+| Camera | GC0308 (`0x21`) on the DVP port: D0-D7 G39 G40 G41 G42 G15 G16 G48 G47, VSYNC G46, HREF G38, PCLK G45, no XCLK pin. `esp32-camera`, 320 x 240 RGB565, frames in PSRAM. `tr_cam_start()`, then `esp_camera_fb_get()` | AXP2101 ALDO3 (3.3 V), BLDO1, BLDO2, AW9523 P1_0 | Espressif CoreS3 BSP |
+| Side LEDs | 12 WS2812 on PY32 pin 13. LED count in `0x24`, colors from `0x30` (RGB565, low byte first), bit 6 of `0x24` shows them. LEDs 0-5 left, 6-11 right | PY32 | StackChan-BSP |
+
+- The camera driver shares our I2C bus (`sccb_i2c_port`), so the bus is fixed on port 0 (`TR_I2C_PORT`).
+- Examples that use the camera turn on the CoreS3's 8 MB PSRAM (`CONFIG_SPIRAM`, quad mode). On our robot it gives 8.3 MB free.
+- `tr_lcd_blit()` copies camera frames to the screen through the DMA band, since the frame is in PSRAM.
 
 ## INA226
 
