@@ -101,10 +101,12 @@ if (tr_touch_read(&x, &y)) { ... }      // a finger on the screen, in pixels
 | --- | --- | --- | --- |
 | Microphones | ES7210 (`0x40`) on I2S0: MCLK G0, BCLK G34, WS G33, data G14. `esp_codec_dev` 1.5, mono, 16 bits, gain 30 dB. `tr_mic_start(rate)`, then `tr_mic_read()` | AW9523 P0_2 | Espressif CoreS3 BSP |
 | Camera | GC0308 (`0x21`) on the DVP port: D0-D7 G39 G40 G41 G42 G15 G16 G48 G47, VSYNC G46, HREF G38, PCLK G45, no XCLK pin. `esp32-camera`, 320 x 240 RGB565, frames in PSRAM. `tr_cam_start()`, then `esp_camera_fb_get()` | AXP2101 ALDO3 (3.3 V), BLDO1, BLDO2, AW9523 P1_0 | Espressif CoreS3 BSP |
-| Side LEDs | 12 WS2812 on PY32 pin 13. LED count in `0x24`, colors from `0x30` (RGB565, low byte first), bit 6 of `0x24` shows them. LEDs 0-5 left, 6-11 right | PY32 | StackChan-BSP |
+| Side LEDs | 12 WS2812 on PY32 pin 13 (output, pull-up, push-pull). LED count in `0x24`, then 200 ms before the first show. Colors from `0x30` (RGB565, low byte first), all 12 in one I2C write; bit 6 of `0x24` shows them, written every time. LEDs 0-5 left, 6-11 right | The body's 5 V: AW9523 BUS_OUT_EN (P0_1), then BOOST_EN (P1_7), with P1_2 and P1_3 as inputs | StackChan factory firmware |
 
 - The camera driver shares our I2C bus (`sccb_i2c_port`), so the bus is fixed on port 0 (`TR_I2C_PORT`).
 - Examples that use the camera turn on the CoreS3's 8 MB PSRAM (`CONFIG_SPIRAM`, quad mode). On our robot it gives 8.3 MB free.
+- **The LEDs need the body's 5 V.** Without BUS_OUT_EN and BOOST_EN they stay dark, even though the PY32 takes the colors. The boost draws from the battery. On a nearly empty battery (3.39 V at 390 mA) turning it on made the AXP2101 switch the robot off, three times. So `tr_led_show()` turns the 5 V on only while an LED is lit, and only with USB power or a battery at 3.6 V or more. It answers `ESP_ERR_INVALID_STATE` otherwise, and turns the 5 V off when all LEDs are off.
+- `tr_board_reg_read()` and `tr_board_reg_write()` read and write single registers. `tr_web` serves them at `/regs` and `/reg` for debugging.
 - `tr_lcd_blit()` copies camera frames to the screen through the DMA band, since the frame is in PSRAM.
 
 ## INA226

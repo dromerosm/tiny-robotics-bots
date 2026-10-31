@@ -182,6 +182,28 @@ static bool on_mouth(int x, int y)
     return x >= 90 && x < 230 && y >= 135 && y < 200;
 }
 
+// Camera and audio redraw the screen all the time. Between two frames we
+// rest and read the touch a few times, so a tap is not missed and the other
+// tasks on this core get their turn. About 8 frames per second.
+static bool rest_and_watch_touch(int *tap_x, int *tap_y)
+{
+    bool was_down = false;
+    for (int i = 0; i < 4; i++) {
+        vTaskDelay(pdMS_TO_TICKS(30));
+        int x, y;
+        const bool down = tr_touch_read(&x, &y);
+        if (down) {
+            *tap_x = x;
+            *tap_y = y;
+        }
+        if (was_down && !down) {
+            return true;
+        }
+        was_down = down;
+    }
+    return was_down; // still pressed: count it as a tap too
+}
+
 // A red box with an X at the top right of a camera frame, so it is clear how
 // to leave. The frame is RGB565, high byte first.
 static void draw_exit_mark(camera_fb_t *fb)
@@ -227,7 +249,11 @@ static void face_task(void *arg)
         }
         const bool tap = was_down && !down;
         was_down = down;
-        const bool on_x = tap && tap_y < BAR_H && tap_x >= TR_LCD_W - 56;
+        if (tap && (audio_on || camera_on || status_open)) {
+            ESP_LOGI("face", "tap at %d,%d", tap_x, tap_y); // to check the touch in /log
+        }
+        // The whole top bar closes a screen, not only the X: easier to hit.
+        const bool on_x = tap && tap_y < BAR_H + 12;
         // A view asked for over HTTP: close whatever is open, then open it.
         if (view_request) {
             view_request = false;
@@ -246,13 +272,19 @@ static void face_task(void *arg)
             }
         }
         if (audio_on) {
-            if (on_x) {
-                audio_on = false;
-                drawn.dx = 1000; // draw the face again
-            } else if (audio_frame() != ESP_OK) {
+            if (audio_frame() != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
-            vTaskDelay(1); // give the other tasks on this core a turn
+            const bool tapped = rest_and_watch_touch(&tap_x, &tap_y);
+            if (tapped) {
+                ESP_LOGI("face", "tap at %d,%d", tap_x, tap_y);
+            }
+            if ((tapped && tap_y < BAR_H + 12) || tr_head_touch()) {
+                ESP_LOGI("face", "audio closed");
+                audio_on = false;
+                drawn.dx = 1000; // draw the face again
+            }
+            was_down = false;
             wake = xTaskGetTickCount();
             continue;
         }
@@ -264,13 +296,15 @@ static void face_task(void *arg)
                 esp_camera_fb_return(fb);
             }
             // Any tap on the screen, or a touch on the head, goes back to the face.
-            if (tap || tr_head_touch()) {
-                ESP_LOGI("face", "camera closed (%s)", tap ? "screen tap" : "head touch");
+            const bool tapped = rest_and_watch_touch(&tap_x, &tap_y);
+            if (tapped || tr_head_touch()) {
+                ESP_LOGI("face", "camera closed (%s at %d,%d)",
+                         tapped ? "screen tap" : "head touch", tap_x, tap_y);
                 camera_on = false;
                 drawn.dx = 1000;                // draw the face again
-                vTaskDelay(pdMS_TO_TICKS(300)); // let go of the head first
+                vTaskDelay(pdMS_TO_TICKS(300)); // let go first
             }
-            vTaskDelay(1); // give the other tasks on this core a turn
+            was_down = false;
             wake = xTaskGetTickCount();
             continue;
         }
@@ -296,6 +330,7 @@ static void face_task(void *arg)
             next_status = now + 1000000;
         } else if (tap && status_open) {
             if (on_x) {
+                ESP_LOGI("face", "status closed");
                 status_open = false;
                 drawn.dx = 1000; // draw the face again
             } else if (tap_y >= TR_LCD_H - BAR_H) {

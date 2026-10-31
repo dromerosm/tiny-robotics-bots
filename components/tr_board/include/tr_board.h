@@ -24,9 +24,15 @@ esp_err_t tr_board_i2c(i2c_master_bus_handle_t *bus);
 // Find the chips on the internal I2C bus. Returns how many addresses it put in found.
 int tr_board_scan(uint8_t *found, int max);
 
+// Read or write one register of a chip on the internal bus (for debugging).
+esp_err_t tr_board_reg_read(uint8_t addr, uint8_t reg, uint8_t *value);
+esp_err_t tr_board_reg_write(uint8_t addr, uint8_t reg, uint8_t value);
+
 // Set some AW9523 pins as outputs, high: port0 and port1 are bit masks
 // (P0_0 = 0x01 ... P1_7 = 0x80 of port1). The other pins stay as they are.
 esp_err_t tr_board_aw9523_on(uint8_t port0, uint8_t port1);
+// Set some AW9523 outputs low again (the direction stays).
+esp_err_t tr_board_aw9523_off(uint8_t port0, uint8_t port1);
 
 typedef struct {
     int millivolts;
@@ -104,7 +110,11 @@ esp_err_t tr_servo_torque(tr_servo_t id, bool on);
 esp_err_t tr_servo_set_zero(tr_servo_t id, int raw);
 
 // The 12 side LEDs (0 to 5 on the left, 6 to 11 on the right), through the
-// PY32. Needs tr_servo_init(). Set the colors, then show them all at once.
+// PY32. tr_servo_init() sets them up (all off). tr_led_set() only stores a
+// color; tr_led_show() sends all 12 in one I2C transfer. The LEDs run on the
+// body's 5 V (AW9523 BUS_OUT_EN and BOOST_EN): tr_led_show() turns it on while
+// any LED is lit, only with USB power or a battery at 3.6 V or more, and off
+// when all are off. ESP_ERR_INVALID_STATE means the battery is too low.
 #define TR_LED_COUNT 12
 esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b);
 esp_err_t tr_led_show(void);

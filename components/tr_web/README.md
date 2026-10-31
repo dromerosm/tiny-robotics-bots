@@ -22,8 +22,10 @@ ESP_ERROR_CHECK(tr_web_start());   // adds the endpoints, looks for the servos; 
 | `POST /head/zero?yaw=436&pitch=585` | Save new zero positions (raw 0 to 1023). Token needed |
 | `GET /i2c` | The chips that answer on the internal I2C bus |
 | `GET /sensors` | Head touch, screen touch, motion, clock, power chip, light and chip temperature (from `tr_board`). The page shows it every second |
-| `GET /leds`, `POST /leds?color=ff8800&side=left` | The side LEDs: `left`, `right` or `all`, color as RRGGBB, `000000` is off. Token needed to change them |
+| `GET /leds`, `POST /leds?color=ff8800&side=left` | The side LEDs: `left`, `right` or `all`, color as RRGGBB, `000000` is off. Token needed to change them. `409` if the battery is too low for their 5 V: plug in USB |
 | `GET /camera.jpg` | One camera frame as JPEG (320 x 240). Starts the camera the first time |
+| `GET /regs` | AXP2101, AW9523 and PY32 registers, for debugging the power setup |
+| `POST /reg?chip=aw&reg=0x03&val=0x83` | Write one register (`axp`, `aw` or `py32`). Token needed. Logged as a warning in `/log` first, in case it resets the robot |
 
 The page also has cards for the side LEDs and the camera. It shows a **Face** card when the example answers `GET /face` (as 08-face does), with buttons to switch the robot's screen.
 

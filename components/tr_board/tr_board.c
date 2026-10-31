@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #define I2C_SDA     12
 #define I2C_SCL     11
@@ -193,5 +194,65 @@ esp_err_t tr_board_aw9523_on(uint8_t port0, uint8_t port1)
         err = aw_bits(aw, 0x05, 0, port1);
     }
     i2c_master_bus_rm_device(aw);
+    return err;
+}
+
+esp_err_t tr_board_aw9523_off(uint8_t port0, uint8_t port1)
+{
+    uint8_t v;
+    esp_err_t err = tr_board_reg_read(0x58, 0x02, &v);
+    if (err == ESP_OK && (v & port0)) {
+        err = tr_board_reg_write(0x58, 0x02, v & ~port0);
+    }
+    if (err == ESP_OK) {
+        err = tr_board_reg_read(0x58, 0x03, &v);
+    }
+    if (err == ESP_OK && (v & port1)) {
+        err = tr_board_reg_write(0x58, 0x03, v & ~port1);
+    }
+    return err;
+}
+
+static esp_err_t reg_dev(uint8_t addr, uint32_t hz, i2c_master_dev_handle_t *dev)
+{
+    i2c_master_bus_handle_t b;
+    esp_err_t err = tr_board_i2c(&b);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr,
+        .scl_speed_hz = hz,
+    };
+    return i2c_master_bus_add_device(b, &cfg, dev);
+}
+
+// Register access for debugging. Split write and read (the PY32 needs it), 100 kHz.
+esp_err_t tr_board_reg_read(uint8_t addr, uint8_t reg, uint8_t *value)
+{
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = reg_dev(addr, 100000, &dev);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = i2c_master_transmit(dev, &reg, 1, I2C_TIMEOUT);
+    if (err == ESP_OK) {
+        err = i2c_master_receive(dev, value, 1, I2C_TIMEOUT);
+    }
+    i2c_master_bus_rm_device(dev);
+    return err;
+}
+
+esp_err_t tr_board_reg_write(uint8_t addr, uint8_t reg, uint8_t value)
+{
+    i2c_master_dev_handle_t dev;
+    esp_err_t err = reg_dev(addr, 100000, &dev);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const uint8_t data[2] = {reg, value};
+    err = i2c_master_transmit(dev, data, 2, I2C_TIMEOUT);
+    i2c_master_bus_rm_device(dev);
     return err;
 }

@@ -56,6 +56,7 @@ static const struct {
 };
 
 static bool ready;
+static esp_err_t leds_init(void);
 static int zero[3];
 static SemaphoreHandle_t bus_lock;
 static i2c_master_dev_handle_t py32;
@@ -237,6 +238,9 @@ esp_err_t tr_servo_init(void)
         zero[id] = load_zero(id);
         ESP_LOGI(TAG, "servo %d zero %d", id, zero[id]);
     }
+    if (leds_init() != ESP_OK) {
+        ESP_LOGW(TAG, "side LEDs did not answer");
+    }
     ready = true;
     return ESP_OK;
 }
@@ -296,51 +300,109 @@ esp_err_t tr_servo_set_zero(tr_servo_t id, int raw)
     return err;
 }
 
-// Side LEDs: 12 WS2812 driven by the PY32 on its pin 13. Colors go to its LED
-// memory (0x30, RGB565, low byte first); bit 6 of LED_CFG (0x24) shows them.
+// Side LEDs: 12 WS2812 driven by the PY32 on its pin 13, set up as M5Stack's
+// factory firmware does (hal_io_expander.cpp). Colors go to the PY32's LED
+// memory (0x30, RGB565, low byte first); writing bit 6 of LED_CFG (0x24)
+// shows them.
 #define PY32_LED_CFG  0x24
 #define PY32_LED_RAM  0x30
 #define PY32_MODE_H   0x04
 #define PY32_PULLUP_H 0x0A
+#define PY32_PULLDN_H 0x0C
 #define PY32_DRIVE_H  0x14 // 1 = open drain
 #define LED_PIN_H     0x20 // pin 13 is bit 5 of the high registers
+#define LED_SHOW      0x40
 
 static bool leds_ready;
+static uint8_t led_ram[1 + 2 * TR_LED_COUNT] = {PY32_LED_RAM}; // register, then the colors
 
-static esp_err_t py32_write(uint8_t reg, const uint8_t *data, int n)
-{
-    uint8_t buf[8];
-    buf[0] = reg;
-    memcpy(buf + 1, data, n);
-    return i2c_master_transmit(py32, buf, n + 1, 50);
-}
-
+// Called from tr_servo_init(), once: pin 13 as a push-pull output with a
+// pull-up, 12 LEDs, then the 200 ms the PY32 needs before the first show.
 static esp_err_t leds_init(void)
 {
-    if (leds_ready) {
-        return ESP_OK;
-    }
-    ESP_RETURN_ON_FALSE(py32, ESP_ERR_INVALID_STATE, TAG, "call tr_servo_init() first");
     ESP_RETURN_ON_ERROR(py32_bit(PY32_MODE_H, LED_PIN_H, true), TAG, "LED pin");
+    ESP_RETURN_ON_ERROR(py32_bit(PY32_PULLDN_H, LED_PIN_H, false), TAG, "LED pull");
     ESP_RETURN_ON_ERROR(py32_bit(PY32_PULLUP_H, LED_PIN_H, true), TAG, "LED pull");
     ESP_RETURN_ON_ERROR(py32_bit(PY32_DRIVE_H, LED_PIN_H, false), TAG, "LED drive");
-    const uint8_t count = TR_LED_COUNT;
-    ESP_RETURN_ON_ERROR(py32_write(PY32_LED_CFG, &count, 1), TAG, "LED count");
+    const uint8_t cfg[2] = {PY32_LED_CFG, TR_LED_COUNT};
+    ESP_RETURN_ON_ERROR(i2c_master_transmit(py32, cfg, 2, 50), TAG, "LED count");
+    vTaskDelay(pdMS_TO_TICKS(200));
     leds_ready = true;
-    return ESP_OK;
+    return tr_led_show(); // all off, so the LEDs start in a known state
 }
 
+// Only stores the color: no I2C until tr_led_show().
 esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b)
 {
     ESP_RETURN_ON_FALSE(index >= 0 && index < TR_LED_COUNT, ESP_ERR_INVALID_ARG, TAG, "index");
-    ESP_RETURN_ON_ERROR(leds_init(), TAG, "LEDs");
     const uint16_t c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
-    const uint8_t data[2] = {c & 0xFF, c >> 8};
-    return py32_write(PY32_LED_RAM + index * 2, data, 2);
+    led_ram[1 + 2 * index] = c & 0xFF;
+    led_ram[2 + 2 * index] = c >> 8;
+    return ESP_OK;
 }
 
+// The LEDs need the 5 V that the CoreS3 gives the body: BUS_OUT_EN (AW9523
+// P0_1), then BOOST_EN (P1_7), with P1_2 and P1_3 as inputs, as the factory
+// firmware sets them. The boost draws from the battery: on a nearly empty one
+// (3.39 V at 390 mA) it made the AXP2101 switch the robot off. So we turn it on
+// only with USB power or 3.6 V or more, and off again when no LED is lit.
+#define AW_P0_BUS_OUT 0x02
+#define AW_P1_BOOST   0x80
+#define MIN_LED_MV    3600
+
+static bool five_volts;
+
+static esp_err_t leds_power(bool on)
+{
+    if (on && five_volts) {
+        return ESP_OK;
+    }
+    if (!on) { // always: after a software restart the AW9523 keeps its pins
+        five_volts = false;
+        return tr_board_aw9523_off(AW_P0_BUS_OUT, AW_P1_BOOST);
+    }
+    uint8_t status = 0;
+    tr_battery_t b = {0};
+    const bool usb = tr_board_reg_read(0x34, 0x00, &status) == ESP_OK && (status & 0x20);
+    if (!usb && (tr_battery_read(&b) != ESP_OK || b.millivolts < MIN_LED_MV)) {
+        ESP_LOGW(TAG, "no 5 V for the LEDs: battery %d mV, no USB", b.millivolts);
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t cfg1;
+    if (tr_board_reg_read(0x58, 0x05, &cfg1) == ESP_OK && (cfg1 & 0x0C) != 0x0C) {
+        tr_board_reg_write(0x58, 0x05, cfg1 | 0x0C); // P1_2, P1_3 inputs
+    }
+    ESP_RETURN_ON_ERROR(tr_board_aw9523_on(AW_P0_BUS_OUT, 0), TAG, "BUS_OUT_EN");
+    ESP_RETURN_ON_ERROR(tr_board_aw9523_on(0, AW_P1_BOOST), TAG, "BOOST_EN");
+    five_volts = true;
+    return ESP_OK;
+}
+
+// All 12 colors in one I2C transfer, then the show bit. The show bit is always
+// written, even if it still reads as set.
 esp_err_t tr_led_show(void)
 {
-    ESP_RETURN_ON_ERROR(leds_init(), TAG, "LEDs");
-    return py32_bit(PY32_LED_CFG, 0x40, true);
+    ESP_RETURN_ON_FALSE(leds_ready, ESP_ERR_INVALID_STATE, TAG, "no LEDs");
+    bool any = false;
+    for (size_t i = 1; i < sizeof(led_ram); i++) {
+        any |= led_ram[i] != 0;
+    }
+    if (any) {
+        ESP_RETURN_ON_ERROR(leds_power(true), TAG, "5 V");
+    }
+    xSemaphoreTake(bus_lock, portMAX_DELAY);
+    uint8_t reg = PY32_LED_CFG, cfg = TR_LED_COUNT;
+    esp_err_t err = i2c_master_transmit(py32, led_ram, sizeof(led_ram), 50);
+    if (err == ESP_OK) {
+        err = py32_read(py32, reg, &cfg);
+    }
+    if (err == ESP_OK) {
+        const uint8_t show[2] = {PY32_LED_CFG, (uint8_t)(cfg | LED_SHOW)};
+        err = i2c_master_transmit(py32, show, 2, 50);
+    }
+    xSemaphoreGive(bus_lock);
+    if (err == ESP_OK && !any) {
+        err = leds_power(false); // all off: no need for the 5 V
+    }
+    return err;
 }

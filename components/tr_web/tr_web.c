@@ -18,6 +18,7 @@
 #include <string.h>
 #include "esp_check.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
 #include "img_converters.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -240,6 +241,9 @@ static esp_err_t leds_post(httpd_req_t *req)
     if (err == ESP_OK) {
         err = tr_led_show();
     }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", "battery too low for the LEDs: plug in USB\n");
+    }
     if (err != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "LEDs did not answer\n");
     }
@@ -268,6 +272,72 @@ static esp_err_t camera_get(httpd_req_t *req)
     const esp_err_t err = httpd_resp_send(req, (const char *)jpg, len);
     free(jpg);
     return err;
+}
+
+// Power and IO registers, for debugging the board's power setup.
+static const struct {
+    const char *name;
+    uint8_t addr;
+    uint8_t regs[16];
+    int n;
+} reg_chips[] = {
+    {"axp",
+     0x34,
+     {0x00, 0x01, 0x27, 0x30, 0x69, 0x80, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x99},
+     15},
+    {"aw", 0x58, {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x11, 0x12, 0x13}, 9},
+    {"py32",
+     0x6F,
+     {0x02, 0x03, 0x04, 0x05, 0x06, 0x09, 0x0A, 0x0B, 0x0C, 0x13, 0x14, 0x24, 0x30, 0x31},
+     14},
+};
+
+// GET /regs: the registers above, as "chip reg=value".
+static esp_err_t regs_get(httpd_req_t *req)
+{
+    char line[48];
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    for (size_t c = 0; c < sizeof(reg_chips) / sizeof(reg_chips[0]); c++) {
+        for (int i = 0; i < reg_chips[c].n; i++) {
+            uint8_t v = 0;
+            const esp_err_t err = tr_board_reg_read(reg_chips[c].addr, reg_chips[c].regs[i], &v);
+            if (err == ESP_OK) {
+                snprintf(line, sizeof(line), "%s 0x%02X=0x%02X\n", reg_chips[c].name,
+                         reg_chips[c].regs[i], v);
+            } else {
+                snprintf(line, sizeof(line), "%s 0x%02X=%s\n", reg_chips[c].name,
+                         reg_chips[c].regs[i], esp_err_to_name(err));
+            }
+            httpd_resp_sendstr_chunk(req, line);
+        }
+    }
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
+// POST /reg?chip=aw&reg=0x03&val=0x8F: write one register (token needed).
+static esp_err_t reg_post(httpd_req_t *req)
+{
+    if (!tr_ota_token_ok(req)) {
+        return ESP_FAIL;
+    }
+    char query[64], chip[8] = "", reg[8] = "", val[8] = "";
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "chip", chip, sizeof(chip)) != ESP_OK ||
+        httpd_query_key_value(query, "reg", reg, sizeof(reg)) != ESP_OK ||
+        httpd_query_key_value(query, "val", val, sizeof(val)) != ESP_OK) {
+        return send_error(req, "400 Bad Request", "need chip, reg and val\n");
+    }
+    for (size_t c = 0; c < sizeof(reg_chips) / sizeof(reg_chips[0]); c++) {
+        if (strcmp(chip, reg_chips[c].name) == 0) {
+            const uint8_t r = strtoul(reg, NULL, 0), v = strtoul(val, NULL, 0);
+            ESP_LOGW("tr_web", "write %s 0x%02X=0x%02X", chip, r, v); // in /log, in case it resets
+            if (tr_board_reg_write(reg_chips[c].addr, r, v) != ESP_OK) {
+                return send_error(req, "500 Internal Server Error", "write failed\n");
+            }
+            return httpd_resp_sendstr(req, "ok\n");
+        }
+    }
+    return send_error(req, "400 Bad Request", "chip is axp, aw or py32\n");
 }
 
 // GET /sensors: all the other sensors, as text.
@@ -316,6 +386,8 @@ esp_err_t tr_web_start(void)
         {.uri = "/leds", .method = HTTP_GET, .handler = leds_get},
         {.uri = "/leds", .method = HTTP_POST, .handler = leds_post},
         {.uri = "/camera.jpg", .method = HTTP_GET, .handler = camera_get},
+        {.uri = "/regs", .method = HTTP_GET, .handler = regs_get},
+        {.uri = "/reg", .method = HTTP_POST, .handler = reg_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_RETURN_ON_ERROR(tr_ota_add_uri(&uris[i]), "tr_web", "add %s", uris[i].uri);
