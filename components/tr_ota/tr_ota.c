@@ -49,6 +49,11 @@ static esp_netif_t *sta;
 #define MAX_STATUS 4
 static tr_ota_status_fn status_fns[MAX_STATUS];
 
+#define MAX_URIS 8
+static httpd_uri_t extra_uris[MAX_URIS];
+static int extra_count;
+static httpd_handle_t server;
+
 static const char *state_name(esp_ota_img_states_t state)
 {
     switch (state) {
@@ -197,15 +202,23 @@ static esp_err_t start_wifi(void)
     return ESP_OK;
 }
 
+bool tr_ota_token_ok(httpd_req_t *req)
+{
+    char given[sizeof(token)] = "";
+    if (httpd_req_get_hdr_value_str(req, "X-Token", given, sizeof(given)) == ESP_OK &&
+        strcmp(given, token) == 0) {
+        return true;
+    }
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_sendstr(req, "wrong or missing X-Token\n");
+    return false;
+}
+
 // POST /update: write the new app to the other slot, then restart.
 static esp_err_t update_handler(httpd_req_t *req)
 {
     // The server is on the home network, so only someone who saw the USB port may update.
-    char given[sizeof(token)] = "";
-    if (httpd_req_get_hdr_value_str(req, "X-Token", given, sizeof(given)) != ESP_OK ||
-        strcmp(given, token) != 0) {
-        httpd_resp_set_status(req, "403 Forbidden");
-        httpd_resp_sendstr(req, "wrong or missing X-Token\n");
+    if (!tr_ota_token_ok(req)) {
         return ESP_FAIL;
     }
     const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
@@ -332,13 +345,25 @@ static esp_err_t start_http(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.recv_wait_timeout = 10;
-    httpd_handle_t server;
+    cfg.max_uri_handlers = 2 + MAX_URIS;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "http");
     const httpd_uri_t update = {.uri = "/update", .method = HTTP_POST, .handler = update_handler};
     const httpd_uri_t info = {.uri = "/", .method = HTTP_GET, .handler = info_handler};
     httpd_register_uri_handler(server, &update);
     httpd_register_uri_handler(server, &info);
+    for (int i = 0; i < extra_count; i++) {
+        httpd_register_uri_handler(server, &extra_uris[i]);
+    }
     return ESP_OK;
+}
+
+esp_err_t tr_ota_add_uri(const httpd_uri_t *uri)
+{
+    if (extra_count >= MAX_URIS) {
+        return ESP_ERR_NO_MEM;
+    }
+    extra_uris[extra_count++] = *uri;
+    return server ? httpd_register_uri_handler(server, uri) : ESP_OK;
 }
 
 // stackchan.local, so we need not look up the address the router gave.

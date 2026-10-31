@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StackChan</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5b6475; --accent: #1f5fbf; --line: #d9dde5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a3acbd; --accent: #7fb0ff; --line: #2c3340; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  main { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); max-width: 1000px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  pre { margin: 0; white-space: pre-wrap; font: 13px/1.45 ui-monospace, monospace; }
+  label { display: block; margin: 8px 0 2px; }
+  input[type=range] { width: 100%; }
+  input[type=password] { width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button { padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--card); font-weight: 600; cursor: pointer; }
+  button.plain { background: transparent; color: var(--accent); }
+  #msg { color: var(--muted); min-height: 1.4em; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>StackChan</h1>
+<main>
+  <section>
+    <h2>Move the head</h2>
+    <label for="yaw">Yaw <span id="yawv">0</span>° (−90 to 90)</label>
+    <input id="yaw" type="range" min="-90" max="90" step="1" value="0">
+    <label for="pitch">Pitch <span id="pitchv">5</span>° (5 to 85)</label>
+    <input id="pitch" type="range" min="5" max="85" step="1" value="5">
+    <label for="ms">Time <span id="msv">1000</span> ms</label>
+    <input id="ms" type="range" min="300" max="3000" step="100" value="1000">
+    <div class="row">
+      <button id="move">Move</button>
+      <button id="home" class="plain">Home</button>
+      <button id="off" class="plain">Power off</button>
+    </div>
+    <label for="token">Update token (from the USB port, kept in this browser)</label>
+    <input id="token" type="password" autocomplete="off">
+    <div id="msg"></div>
+  </section>
+  <section><h2>Head servos</h2><pre id="head">…</pre></section>
+  <section><h2>Robot</h2><pre id="status">…</pre></section>
+  <section><h2>Chips on the I2C bus</h2><pre id="i2c">…</pre></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const token = $("token");
+try { token.value = localStorage.getItem("token") || ""; } catch (e) {}
+token.addEventListener("change", () => { try { localStorage.setItem("token", token.value); } catch (e) {} });
+for (const id of ["yaw", "pitch", "ms"]) {
+  $(id).addEventListener("input", () => { $(id + "v").textContent = $(id).value; });
+}
+async function text(url, opts) {
+  const r = await fetch(url, opts);
+  const t = await r.text();
+  if (!r.ok) throw new Error(t.trim() || r.status);
+  return t;
+}
+async function post(path) {
+  $("msg").textContent = "Working…";
+  try {
+    $("head").textContent = await text(path, { method: "POST", headers: { "X-Token": token.value } });
+    $("msg").textContent = "Done.";
+  } catch (e) {
+    $("msg").textContent = "Error: " + e.message;
+  }
+}
+$("move").onclick = () => post(`/head?yaw=${$("yaw").value}&pitch=${$("pitch").value}&ms=${$("ms").value}`);
+$("home").onclick = () => { $("yaw").value = 0; $("pitch").value = 5; $("yawv").textContent = 0; $("pitchv").textContent = 5; post("/head?yaw=0&pitch=5&ms=1500"); };
+$("off").onclick = () => post("/head/off");
+let busy = false;
+async function refresh() {
+  if (busy) return;
+  busy = true;
+  try {
+    $("status").textContent = await text("/");
+    $("head").textContent = await text("/head");
+  } catch (e) {
+    $("status").textContent = "No answer: " + e.message;
+  }
+  busy = false;
+}
+text("/i2c").then((t) => { $("i2c").textContent = t; }).catch(() => {});
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

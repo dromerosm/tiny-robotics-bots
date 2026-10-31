@@ -43,6 +43,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 04 | [face](examples/stackchan/04-face) | Draw a face on the screen and move the head servos from the console | ✅ |
 | 05 | [ota](examples/stackchan/05-ota) | Join the home Wi-Fi and update over the air, with rollback | ✅ (Wi-Fi in esp-emu, no updates) |
 | 06 | [status](examples/stackchan/06-status) | Show the robot's status (Wi-Fi, battery, firmware) on the real screen | ✅ (no screen in esp-emu) |
+| 07 | [head](examples/stackchan/07-head) | Read and move the head servos over Wi-Fi, from a page the robot serves | ✅ (no servos in esp-emu) |
 
 ### BALA2 Fire
 
@@ -62,7 +63,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | [tr_pid](components/tr_pid) | Portable PID controller with anti-windup and derivative on measurement. Unit-tested on the host. |
 | [tr_emu](components/tr_emu) | Virtual screen and head servos for StackChan. The browser emulator shows them next to the console. Emulator only for now. |
 | [tr_ota](components/tr_ota) | Home Wi-Fi, updates over Wi-Fi and rollback for StackChan. Every example that runs on the robot calls `tr_ota_start()`. |
-| [tr_board](components/tr_board) | StackChan board parts: the internal I2C bus, the body battery (INA226) and the screen, with text. |
+| [tr_board](components/tr_board) | StackChan board parts: the internal I2C bus, the body battery (INA226), the screen with text, and the head servos. |
 
 ## Quick start
 

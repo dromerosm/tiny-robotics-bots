@@ -16,8 +16,10 @@
 //   goes back to the old app if there is no Wi-Fi within 60 seconds
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include "esp_err.h"
+#include "esp_http_server.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +35,12 @@ esp_err_t tr_ota_start(void);
 // 4 functions; call before or after tr_ota_start().
 typedef void (*tr_ota_status_fn)(char *text, size_t size);
 esp_err_t tr_ota_add_status(tr_ota_status_fn fn);
+
+// Add an endpoint of the example to the web server (up to 8), before or after
+// tr_ota_start(). For anything that changes the robot, check the token first:
+//   if (!tr_ota_token_ok(req)) return ESP_FAIL;   // it has sent the 403 answer
+esp_err_t tr_ota_add_uri(const httpd_uri_t *uri);
+bool tr_ota_token_ok(httpd_req_t *req);
 
 // The running app's state ("valid", "on trial", ...) and why the robot last
 // restarted ("power on", "crash", ...), as GET / shows them.

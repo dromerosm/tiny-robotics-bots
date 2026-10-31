@@ -130,3 +130,18 @@ void tr_board_status(char *text, size_t size)
                                    : "idle");
     }
 }
+
+int tr_board_scan(uint8_t *found, int max)
+{
+    i2c_master_bus_handle_t b;
+    if (tr_board_i2c(&b) != ESP_OK) {
+        return 0;
+    }
+    int n = 0;
+    for (uint8_t addr = 0x08; addr < 0x78 && n < max; addr++) {
+        if (i2c_master_probe(b, addr, 20) == ESP_OK) {
+            found[n++] = addr;
+        }
+    }
+    return n;
+}
