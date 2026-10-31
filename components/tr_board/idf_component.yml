@@ -1,7 +1,16 @@
+# Only for the StackChan (ESP32-S3); other chips skip these downloads.
 dependencies:
-  espressif/esp_lcd_ili9341: "^2.1.0"
-  espressif/esp_codec_dev: "~1.5"
+  espressif/esp_lcd_ili9341:
+    version: "^2.1.0"
+    rules:
+      - if: "target == esp32s3"
+  espressif/esp_codec_dev:
+    version: "~1.5"
+    rules:
+      - if: "target == esp32s3"
   # Public: tr_board.h includes esp_camera.h, and tr_web uses its JPEG converter.
   espressif/esp32-camera:
     version: "^2.1.8"
     public: true
+    rules:
+      - if: "target == esp32s3"
