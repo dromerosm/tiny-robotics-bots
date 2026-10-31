@@ -1,6 +1,6 @@
 # StackChan 07: move the head over Wi-Fi
 
-Read and move StackChan's two head servos from your computer or phone. The robot serves a small page, `http://stackchan.local/app`, with the status, the servos and the I2C chips, and sliders to move the head. The same actions also work with `curl`. Like every example that runs on the robot, it keeps the updates over Wi-Fi from [tr_ota](../../../components/tr_ota).
+Read and move StackChan's two head servos from your computer or phone. The robot serves a small page, `http://stackchan.local/app`, with the status, the servos and the I2C chips, and sliders to move the head. The same actions also work with `curl`. Like every example that runs on the robot, it keeps the updates over Wi-Fi from [tr_ota](../../../components/tr_ota). The endpoints and the page live in [tr_web](../../../components/tr_web), so other examples can use them.
 
 | | |
 | --- | --- |
@@ -14,7 +14,7 @@ Read and move StackChan's two head servos from your computer or phone. The robot
 - The FEETECH SCS protocol: packets, checksums, reading and writing servo registers
 - Turning on servo power through the PY32 IO expander, and why it needs split I2C reads
 - Safe limits for a robot that moves: clamped angles, slow moves, torque off at rest
-- Adding your own endpoints and a web page to `tr_ota`'s server
+- Adding your own endpoints and a web page to `tr_ota`'s server (now in `tr_web`)
 
 ## Build
 

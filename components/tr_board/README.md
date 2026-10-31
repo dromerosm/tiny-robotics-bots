@@ -44,8 +44,11 @@ tr_lcd_fill_rect(0, 0, TR_LCD_W, 30, TR_LCD_RGB(20, 60, 120));
 
 1. AW9523 (`0x58`): sets P0_0 (touch reset) and P1_1 (screen reset) high. It reads each register first and changes only those bits, plus port 0 push-pull (register `0x11`, bit 4), as the BSP sets it. We don't use Espressif's AW9523 driver: it sets all 16 pins to low outputs, and the other pins drive power lines of the CoreS3.
 2. Touch chip (`0x38`): its firmware ID (register `0xA6`) is `0x12` on the ILI9342E screen (units from August 2026 on). Other values mean ILI9342C.
+   Our unit has the ILI9342E (firmware ID `0x12`).
 3. AXP2101 (`0x34`): backlight on DLDO1 at 3.3 V (register `0x99` = 28, then bit 7 of `0x90`).
 4. SPI3 at 40 MHz: SCLK G36, MOSI G37, DC G35, CS G3, no MISO. The `esp_lcd_ili9341` driver, BGR order, colors inverted, and extra setup commands for the ILI9342E.
+
+For pictures that change, like a face, `tr_lcd_render(fn, ctx)` draws the whole screen from a function that gives each pixel's color. It sends 15 bands of 16 rows, about 40 ms, with no flicker. [08-face](../../examples/stackchan/08-face) uses it.
 
 Drawing goes through one DMA buffer of 16 rows (10 KB). Each call first waits until the last band has been sent.
 

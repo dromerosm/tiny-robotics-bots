@@ -47,6 +47,15 @@
     <input id="token" type="password" autocomplete="off">
     <div id="msg"></div>
   </section>
+  <section id="face" hidden>
+    <h2>Face</h2>
+    <pre id="facestate">…</pre>
+    <div class="row">
+      <button id="idleon">Look around</button>
+      <button id="idleoff" class="plain">Stay still</button>
+      <button id="blink" class="plain">Blink</button>
+    </div>
+  </section>
   <section><h2>Head servos</h2><pre id="head">…</pre></section>
   <section><h2>Robot</h2><pre id="status">…</pre></section>
   <section><h2>Chips on the I2C bus</h2><pre id="i2c">…</pre></section>
@@ -93,6 +102,19 @@ async function refresh() {
   }
   busy = false;
 }
+// The face card shows only when the example has a face (GET /face).
+async function face(path) {
+  try {
+    $("facestate").textContent = await text(path, path === "/face" ? {} : { method: "POST", headers: { "X-Token": token.value } });
+    $("face").hidden = false;
+  } catch (e) {
+    if (path !== "/face") $("msg").textContent = "Error: " + e.message;
+  }
+}
+$("idleon").onclick = () => face("/face?idle=1");
+$("idleoff").onclick = () => face("/face?idle=0");
+$("blink").onclick = () => face("/face?blink=1");
+face("/face");
 text("/i2c").then((t) => { $("i2c").textContent = t; }).catch(() => {});
 refresh();
 setInterval(refresh, 2000);

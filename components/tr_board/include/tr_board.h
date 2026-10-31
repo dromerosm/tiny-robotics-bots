@@ -52,6 +52,12 @@ void tr_lcd_fill_rect(int x, int y, int w, int h, uint16_t color);
 // does not fit on the right is cut.
 void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *text);
 
+// Draw the whole screen from a function that gives the color of each pixel.
+// It goes out in bands of 16 rows, so there is no flicker: use it for
+// pictures that change, like a face. About 40 ms per frame.
+typedef uint16_t (*tr_lcd_pixel_fn)(int x, int y, void *ctx);
+void tr_lcd_render(tr_lcd_pixel_fn pixel, void *ctx);
+
 // The head servos: FEETECH SCS0009 on UART1 (TX G6, RX G7, 1 Mbps), power
 // through the PY32 in the body. Angles in degrees from the zero position,
 // which comes from NVS ("servo", "zero_pos_1" and "zero_pos_2", the keys the

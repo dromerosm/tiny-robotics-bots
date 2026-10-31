@@ -339,3 +339,19 @@ void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *
     }
     send_band(x, y, w, h);
 }
+
+void tr_lcd_render(tr_lcd_pixel_fn pixel, void *ctx)
+{
+    if (!panel) {
+        return;
+    }
+    for (int y0 = 0; y0 < TR_LCD_H; y0 += BAND_H) {
+        take_band();
+        for (int y = 0; y < BAND_H; y++) {
+            for (int x = 0; x < TR_LCD_W; x++) {
+                band[y * TR_LCD_W + x] = wire(pixel(x, y0 + y, ctx));
+            }
+        }
+        send_band(0, y0, TR_LCD_W, BAND_H);
+    }
+}
