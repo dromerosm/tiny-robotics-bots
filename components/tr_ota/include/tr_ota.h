@@ -34,6 +34,11 @@ esp_err_t tr_ota_start(void);
 typedef void (*tr_ota_status_fn)(char *text, size_t size);
 esp_err_t tr_ota_add_status(tr_ota_status_fn fn);
 
+// The running app's state ("valid", "on trial", ...) and why the robot last
+// restarted ("power on", "crash", ...), as GET / shows them.
+const char *tr_ota_state(void);
+const char *tr_ota_last_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

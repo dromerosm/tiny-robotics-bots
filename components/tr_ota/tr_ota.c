@@ -307,6 +307,16 @@ static esp_err_t info_handler(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+const char *tr_ota_state(void)
+{
+    return state_name(running_state());
+}
+
+const char *tr_ota_last_restart(void)
+{
+    return reset_name(esp_reset_reason());
+}
+
 esp_err_t tr_ota_add_status(tr_ota_status_fn fn)
 {
     for (int i = 0; i < MAX_STATUS; i++) {
