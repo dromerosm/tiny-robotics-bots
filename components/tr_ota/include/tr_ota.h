@@ -38,11 +38,18 @@ esp_err_t tr_ota_start(void);
 typedef void (*tr_ota_status_fn)(char *text, size_t size);
 esp_err_t tr_ota_add_status(tr_ota_status_fn fn);
 
-// Add an endpoint of the example to the web server (up to 8), before or after
+// Add an endpoint of the example to the web server (up to 16), before or after
 // tr_ota_start(). For anything that changes the robot, check the token first:
 //   if (!tr_ota_token_ok(req)) return ESP_FAIL;   // it has sent the 403 answer
 esp_err_t tr_ota_add_uri(const httpd_uri_t *uri);
 bool tr_ota_token_ok(httpd_req_t *req);
+
+// The status text of GET / (one item per line), for a screen.
+void tr_ota_status_text(char *text, size_t size);
+
+// The update token, for the robot's own screen only. Never log it or send
+// it over the network: whoever has it can flash the robot.
+const char *tr_ota_token(void);
 
 // The running app's state ("valid", "on trial", ...) and why the robot last
 // restarted ("power on", "crash", ...), as GET / shows them.

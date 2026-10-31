@@ -51,7 +51,7 @@ static esp_netif_t *sta;
 #define MAX_STATUS 4
 static tr_ota_status_fn status_fns[MAX_STATUS];
 
-#define MAX_URIS 8
+#define MAX_URIS 16
 static httpd_uri_t extra_uris[MAX_URIS];
 static int extra_count;
 static httpd_handle_t server;
@@ -398,6 +398,48 @@ static bool has_app_page(void)
     return false;
 }
 
+// Add formatted text at the end of text, never past size.
+static void put(char *text, size_t size, size_t *at, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static void put(char *text, size_t size, size_t *at, const char *fmt, ...)
+{
+    if (*at >= size) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    const int n = vsnprintf(text + *at, size - *at, fmt, args);
+    va_end(args);
+    *at = n < 0 ? *at : *at + n < size ? *at + n : size;
+}
+
+void tr_ota_status_text(char *text, size_t size)
+{
+    char line[192];
+    size_t at = 0;
+    text[0] = 0;
+    describe_app(line, sizeof(line));
+    put(text, size, &at, "%s", line);
+    const int64_t s = esp_timer_get_time() / 1000000;
+    put(text, size, &at, "uptime: %lld h %02lld min %02lld s\n", s / 3600, s / 60 % 60, s % 60);
+    put(text, size, &at, "last restart: %s\n", reset_name(esp_reset_reason()));
+    put(text, size, &at, "free memory: %lu KB (lowest since boot %lu KB)\n",
+        (unsigned long)esp_get_free_heap_size() / 1024,
+        (unsigned long)esp_get_minimum_free_heap_size() / 1024);
+    describe_wifi(line, sizeof(line));
+    put(text, size, &at, "%s", line);
+    for (int i = 0; i < MAX_STATUS && status_fns[i]; i++) {
+        line[0] = 0;
+        status_fns[i](line, sizeof(line));
+        put(text, size, &at, "%s", line);
+    }
+}
+
+const char *tr_ota_token(void)
+{
+    return token;
+}
+
 // GET /: the robot's status as plain text, one item per line. A browser goes
 // to /app instead, when the example has that page; curl still gets the text.
 static esp_err_t info_handler(httpd_req_t *req)
@@ -409,30 +451,10 @@ static esp_err_t info_handler(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Location", "/app");
         return httpd_resp_send(req, NULL, 0);
     }
-    char line[192];
-    describe_app(line, sizeof(line));
+    static char text[1024];
+    tr_ota_status_text(text, sizeof(text));
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
-    httpd_resp_sendstr_chunk(req, line);
-
-    const int64_t s = esp_timer_get_time() / 1000000;
-    snprintf(line, sizeof(line), "uptime: %lld h %02lld min %02lld s\n", s / 3600, s / 60 % 60,
-             s % 60);
-    httpd_resp_sendstr_chunk(req, line);
-    snprintf(line, sizeof(line), "last restart: %s\n", reset_name(esp_reset_reason()));
-    httpd_resp_sendstr_chunk(req, line);
-    snprintf(line, sizeof(line), "free memory: %lu KB (lowest since boot %lu KB)\n",
-             (unsigned long)esp_get_free_heap_size() / 1024,
-             (unsigned long)esp_get_minimum_free_heap_size() / 1024);
-    httpd_resp_sendstr_chunk(req, line);
-    describe_wifi(line, sizeof(line));
-    httpd_resp_sendstr_chunk(req, line);
-
-    for (int i = 0; i < MAX_STATUS && status_fns[i]; i++) {
-        line[0] = 0;
-        status_fns[i](line, sizeof(line));
-        httpd_resp_sendstr_chunk(req, line);
-    }
-    return httpd_resp_sendstr_chunk(req, NULL);
+    return httpd_resp_sendstr(req, text);
 }
 
 const char *tr_ota_state(void)

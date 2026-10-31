@@ -5,6 +5,7 @@
 //   POST /head/off                      torque and servo power off (token needed)
 //   POST /head/zero?yaw=436&pitch=585   save new zero positions, raw 0..1023 (token needed)
 //   GET  /i2c                           the chips on the internal I2C bus
+//   GET  /sensors                       touch, motion, clock, power chip, temperature
 //   GET  /app                           a page with all of the above
 //
 // Nothing moves at boot. After a move the torque goes off again, unless hold=1,
@@ -195,6 +196,15 @@ static esp_err_t i2c_get(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+// GET /sensors: all the other sensors, as text.
+static esp_err_t sensors_get(httpd_req_t *req)
+{
+    static char text[1024];
+    tr_sensors_status(text, sizeof(text));
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(req, text);
+}
+
 // GET /app: a small page with the status and buttons to move the head.
 extern const char app_html[] asm("_binary_app_html_start");
 
@@ -202,6 +212,11 @@ static esp_err_t app_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_sendstr(req, app_html);
+}
+
+bool tr_web_head_powered(void)
+{
+    return powered;
 }
 
 bool tr_web_servos(void)
@@ -223,10 +238,12 @@ esp_err_t tr_web_start(void)
         {.uri = "/head/zero", .method = HTTP_POST, .handler = head_zero},
         {.uri = "/i2c", .method = HTTP_GET, .handler = i2c_get},
         {.uri = "/app", .method = HTTP_GET, .handler = app_get},
+        {.uri = "/sensors", .method = HTTP_GET, .handler = sensors_get},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_RETURN_ON_ERROR(tr_ota_add_uri(&uris[i]), "tr_web", "add %s", uris[i].uri);
     }
+    tr_sensors_init();
     servo_err = tr_servo_init();
     servos_found = servo_err == ESP_OK;
     if (servos_found) {

@@ -91,6 +91,16 @@ esp_err_t tr_servo_torque(tr_servo_t id, bool on);
 // Save a new zero position (raw) in NVS.
 esp_err_t tr_servo_set_zero(tr_servo_t id, int raw);
 
+// The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),
+// motion (BMI270), clock (BM8563), power chip (AXP2101), light (LTR553), and
+// the ESP32-S3's own temperature. init sets them up; a chip that does not
+// answer is skipped. status writes one or two lines per sensor.
+esp_err_t tr_sensors_init(void);
+void tr_sensors_status(char *text, size_t size);
+// The first point touching the screen, in screen pixels. False if none.
+// Needs tr_sensors_init().
+bool tr_touch_read(int *x, int *y);
+
 #ifdef __cplusplus
 }
 #endif

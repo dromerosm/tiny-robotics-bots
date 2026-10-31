@@ -43,6 +43,12 @@ Then open `http://stackchan.local/` in a browser. It goes to the page, which has
 
 All of [07-head](../07-head)'s requests work too (`/head`, `/head/off`, `/i2c`, `/log`).
 
+## The status screen
+
+Tap the mouth on the screen. A status screen opens with the same facts as `http://stackchan.local/`, the sensors, and the **update token** on the last line. **UP** and **DOWN** at the bottom scroll, and **X** at the top right closes it. The numbers change every second. The head stays still while it is open.
+
+The token is shown here because only someone who holds the robot can see it. `tr_ota_token()` gives it to the example; never log it or send it over the network.
+
 ## Expected output
 
 On our robot, on 2026-10-31, a few seconds apart:

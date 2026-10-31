@@ -57,6 +57,7 @@
     </div>
   </section>
   <section><h2>Head servos</h2><pre id="head">…</pre></section>
+  <section><h2>Sensors</h2><pre id="sensors">…</pre></section>
   <section><h2>Robot</h2><pre id="status">…</pre></section>
   <section><h2>Chips on the I2C bus</h2><pre id="i2c">…</pre></section>
   <section class="wide"><h2>Log (last 4 KB, kept across restarts)</h2><pre id="log">…</pre></section>
@@ -94,6 +95,7 @@ async function refresh() {
   try {
     $("status").textContent = await text("/");
     $("head").textContent = await text("/head");
+    $("sensors").textContent = await text("/sensors");
     const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
     log.textContent = await text("/log");
     if (atEnd) log.scrollTop = log.scrollHeight;
@@ -117,7 +119,7 @@ $("blink").onclick = () => face("/face?blink=1");
 face("/face");
 text("/i2c").then((t) => { $("i2c").textContent = t; }).catch(() => {});
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 1000);
 </script>
 </body>
 </html>

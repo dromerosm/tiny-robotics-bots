@@ -6,6 +6,7 @@ StackChan board parts that several examples share. For now:
 - The battery monitor in the body: an INA226 at `0x41`, with a 10 mΩ shunt.
 - The CoreS3 screen (320 x 240), with text in a 5x7 font. [06-status](../../examples/stackchan/06-status) uses it.
 - The two head servos (FEETECH SCS0009 on UART1) and their power switch on the PY32. [07-head](../../examples/stackchan/07-head) uses them.
+- The other sensors (`tr_sensors_*`): head touch, screen touch, motion, clock, power chip, light, and the ESP32-S3's own temperature.
 - `tr_board_scan()`: the chips that answer on the internal I2C bus.
 
 ## Use it
@@ -68,6 +69,30 @@ tr_servo_torque(TR_SERVO_PITCH, false);
 - The PY32 NACKs a read after a repeated start. So `tr_board` writes the register and reads it in two transfers, at 100 kHz. With `i2c_master_transmit_receive()` the reads failed and gave wrong values.
 - See [07-head](../../examples/stackchan/07-head) for the protocol and the test on our robot.
 
+## Sensors
+
+```c
+tr_sensors_init();                      // sets up the chips that answer; skips the others
+char text[1024];
+tr_sensors_status(text, sizeof(text));  // one or two lines per sensor
+int x, y;
+if (tr_touch_read(&x, &y)) { ... }      // a finger on the screen, in pixels
+```
+
+| Sensor | Chip, address | What we read | Source |
+| --- | --- | --- | --- |
+| Head touch | Si12T, `0x68` | Register `0x10`: three zones, 2 bits each (0 to 3). Which zone is front or back is not documented | StackChan-BSP |
+| Screen touch | FT6336, `0x38` | Register `0x02`: number of points, then x and y of the first one | M5GFX |
+| Motion | BMI270, `0x69` | Accel (±8 g) and gyro (±2000°/s) from `0x0C`, temperature from `0x22` | M5Unified |
+| Clock | BM8563, `0x51` | Seconds to year from `0x02`, in BCD. Bit 7 of the seconds means it lost power | M5Unified |
+| Power chip | AXP2101, `0x34` | Status `0x00`/`0x01`, battery % `0xA4`, battery `0x34`, USB `0x38` and system `0x3A` voltages | M5Unified |
+| Light | LTR553, `0x23` | Not read: it did not answer on our robot | |
+| ESP32-S3 | built in | `temperature_sensor` driver, started on the first read | ESP-IDF |
+
+- The BMI270 needs Bosch's 8 KB setup file at every start (`bmi270_config.h`). `tr_sensors_init()` sends it in 64-byte blocks.
+- It also needs 2 ms after a soft reset. At FreeRTOS' 100 Hz, `vTaskDelay(pdMS_TO_TICKS(2))` waits 0 ticks, so the first setup failed. We use `esp_rom_delay_us()` for waits under 10 ms.
+- The ESP32-S3's temperature sensor stops esp-emu at start, so it is started on the first read, not in `tr_sensors_init()`.
+
 ## INA226
 
 From TI's datasheet. Registers are 16 bits, high byte first. The default setup (continuous, no averaging) is enough, so we write nothing.
@@ -94,4 +119,5 @@ On battery, the sign and the size of the current look right. Later, on USB, the 
 
 - `tr_lcd.c`: the screen power-up order, pins and ILI9342E setup commands follow Espressif's BSP for the M5Stack CoreS3 ([esp-bsp](https://github.com/espressif/esp-bsp), `bsp/m5stack_core_s3`, Apache-2.0).
 - `font5x7.h`: the classic 5x7 font from [Adafruit-GFX-Library](https://github.com/adafruit/Adafruit-GFX-Library) (BSD license, full text in the file).
+- `tr_sensors.c`: registers and setup from StackChan-BSP (Si12T), M5Unified (AXP2101, BM8563, BMI270) and M5GFX (FT6336), all MIT. `bmi270_config.h` is Bosch Sensortec's BMI270 config file (BSD-3-Clause), taken from M5Unified.
 - `tr_servo.c`: the servo IDs, zero positions, angle scale and PY32 setup follow M5Stack's [StackChan-BSP](https://github.com/m5stack/StackChan-BSP) (MIT).

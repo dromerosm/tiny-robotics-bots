@@ -61,7 +61,7 @@ At boot the robot scans and joins the known network with the strongest signal. W
 | `GET /log` | The last 4 KB of `ESP_LOG` lines, oldest first. Kept in RTC memory, so they survive a restart, a crash or a rollback (not a power cut). Each boot adds a line `--- boot, last restart: ... ---` |
 | `POST /update` | A new app image (`build/<project>.bin`, not the merged image), with the header `X-Token: <token>` |
 
-An example adds its own endpoints with `tr_ota_add_uri()`, up to 8. Endpoints that change the robot call `tr_ota_token_ok(req)` first: it checks `X-Token` and sends the 403 answer. [07-head](../../examples/stackchan/07-head) does this.
+An example adds its own endpoints with `tr_ota_add_uri()`, up to 16. Endpoints that change the robot call `tr_ota_token_ok(req)` first: it checks `X-Token` and sends the 403 answer. [07-head](../../examples/stackchan/07-head) does this.
 
 An example adds its own lines to `GET /` with `tr_ota_add_status(fn)`, up to 4. `fn` writes text that ends in `\n`. It runs in the web server's task each time someone asks. For example, `tr_ota_add_status(tr_board_status)` adds the battery (see [tr_board](../tr_board)).
 

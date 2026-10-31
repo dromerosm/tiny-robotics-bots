@@ -9,9 +9,14 @@
 //   POST /face?idle=0|1         stop or start looking around (token needed)
 //   POST /face?blink=1          blink once (token needed)
 //
+// Tap the mouth on the screen: a status screen opens, with the same facts as
+// the page, the sensors and the update token. UP and DOWN scroll, X closes it.
+// The token is shown only here, on the robot itself, never on the network.
+//
 // The page at http://stackchan.local/app (tr_web) shows a card for this.
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "esp_http_server.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -85,6 +90,74 @@ static void glance(void)
     }
 }
 
+// The status screen.
+#define COLS      26 // characters per row at scale 2
+#define ROWS      8  // text rows between the two bars
+#define BAR_H     28
+#define MAX_LINES 48
+#define TITLE_BG  TR_LCD_RGB(20, 60, 120)
+#define BUTTON_BG TR_LCD_RGB(50, 50, 60)
+#define EXIT_BG   TR_LCD_RGB(170, 40, 40)
+static char lines[MAX_LINES][COLS + 1];
+static int line_count;
+
+// Status text, sensors and token, cut into rows of COLS characters.
+static void build_status(void)
+{
+    static char text[1800];
+    tr_ota_status_text(text, sizeof(text));
+    size_t at = strlen(text);
+    tr_sensors_status(text + at, sizeof(text) - at);
+    at = strlen(text);
+    snprintf(text + at, sizeof(text) - at, "update token: %s\n", tr_ota_token());
+
+    line_count = 0;
+    const char *p = text;
+    while (*p && line_count < MAX_LINES) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        do {
+            const size_t n = len > COLS ? COLS : len;
+            memcpy(lines[line_count], p, n);
+            lines[line_count][n] = 0;
+            line_count++;
+            p += n;
+            len -= n;
+        } while (len > 0 && line_count < MAX_LINES);
+        p = nl ? nl + 1 : p;
+    }
+}
+
+static void draw_rows(int top)
+{
+    char row[COLS + 1];
+    for (int i = 0; i < ROWS; i++) {
+        const char *src = top + i < line_count ? lines[top + i] : "";
+        snprintf(row, sizeof(row), "%-*s", COLS, src);
+        tr_lcd_text(4, BAR_H + 6 + i * 22, 2, FG, BG, row);
+    }
+}
+
+static void draw_status_screen(int top)
+{
+    tr_lcd_fill(BG);
+    tr_lcd_fill_rect(0, 0, TR_LCD_W, BAR_H, TITLE_BG);
+    tr_lcd_text(8, 6, 2, FG, TITLE_BG, "Status");
+    tr_lcd_fill_rect(TR_LCD_W - 56, 0, 56, BAR_H, EXIT_BG);
+    tr_lcd_text(TR_LCD_W - 34, 6, 2, FG, EXIT_BG, "X");
+    tr_lcd_fill_rect(0, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
+    tr_lcd_fill_rect(TR_LCD_W / 2 + 2, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
+    tr_lcd_text(64, TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, "UP");
+    tr_lcd_text(216, TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, "DOWN");
+    draw_rows(top);
+}
+
+// The mouth, with some room around it for a finger.
+static bool on_mouth(int x, int y)
+{
+    return x >= 90 && x < 230 && y >= 135 && y < 200;
+}
+
 static void face_task(void *arg)
 {
     const bool screen = tr_lcd_init() == ESP_OK;
@@ -95,10 +168,50 @@ static void face_task(void *arg)
     int64_t blink_end = 0, next_glance = esp_timer_get_time() + 3000000, release_at = 0;
     int64_t next_read = 0;
     face_t drawn = {.dx = 1000};
+    bool status_open = false, was_down = false;
+    int top = 0, tap_x = 0, tap_y = 0;
+    int64_t next_status = 0;
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
         const int64_t now = esp_timer_get_time();
+
+        // A tap is a touch that ends: act on where the finger was last.
+        int x, y;
+        const bool down = screen && tr_touch_read(&x, &y);
+        if (down) {
+            tap_x = x;
+            tap_y = y;
+        }
+        const bool tap = was_down && !down;
+        was_down = down;
+        if (tap && !status_open && on_mouth(tap_x, tap_y)) {
+            status_open = true;
+            top = 0;
+            build_status();
+            draw_status_screen(top);
+            next_status = now + 1000000;
+        } else if (tap && status_open) {
+            if (tap_y < BAR_H && tap_x >= TR_LCD_W - 56) {
+                status_open = false;
+                drawn.dx = 1000; // draw the face again
+            } else if (tap_y >= TR_LCD_H - BAR_H) {
+                top += tap_x < TR_LCD_W / 2 ? -ROWS / 2 : ROWS / 2;
+                top = top > line_count - ROWS ? line_count - ROWS : top;
+                top = top < 0 ? 0 : top;
+                draw_rows(top);
+            }
+        }
+        if (status_open) {
+            if (now >= next_status) { // new numbers every second
+                build_status();
+                draw_rows(top);
+                next_status = now + 1000000;
+            }
+            vTaskDelayUntil(&wake, pdMS_TO_TICKS(FRAME_MS));
+            continue; // the head stays still while the status is open
+        }
+
         if (blink_now || now >= next_blink) {
             blink_now = false;
             blink_end = now + 150000;
@@ -117,7 +230,7 @@ static void face_task(void *arg)
             tr_servo_torque(TR_SERVO_PITCH, false);
             release_at = 0;
         }
-        if (tr_web_servos() && now >= next_read) {
+        if (tr_web_head_powered() && now >= next_read) {
             read_head();
             next_read = now + 200000;
         }
@@ -169,5 +282,5 @@ void app_main(void)
     const httpd_uri_t post = {.uri = "/face", .method = HTTP_POST, .handler = face_post};
     ESP_ERROR_CHECK(tr_ota_add_uri(&get));
     ESP_ERROR_CHECK(tr_ota_add_uri(&post));
-    xTaskCreate(face_task, "face", 4096, NULL, 5, NULL);
+    xTaskCreate(face_task, "face", 6144, NULL, 5, NULL);
 }

@@ -21,6 +21,7 @@ ESP_ERROR_CHECK(tr_web_start());   // adds the endpoints, looks for the servos; 
 | `POST /head/off` | Torque and servo power off. Token needed |
 | `POST /head/zero?yaw=436&pitch=585` | Save new zero positions (raw 0 to 1023). Token needed |
 | `GET /i2c` | The chips that answer on the internal I2C bus |
+| `GET /sensors` | Head touch, screen touch, motion, clock, power chip, light and chip temperature (from `tr_board`). The page shows it every second |
 
 The page shows a **Face** card when the example answers `GET /face` (as 08-face does).
 

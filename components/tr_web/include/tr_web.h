@@ -17,6 +17,9 @@ esp_err_t tr_web_start(void);
 // True if tr_web_start() found the servos (not in the emulator).
 bool tr_web_servos(void);
 
+// True once servo power is on (the servos only answer then).
+bool tr_web_head_powered(void);
+
 // Turn on servo power, once. The page and the example share this state.
 esp_err_t tr_web_head_power(void);
 
