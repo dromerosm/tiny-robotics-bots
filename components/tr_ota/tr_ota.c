@@ -1,6 +1,7 @@
 // tr_ota: home Wi-Fi, updates over Wi-Fi and rollback. See include/tr_ota.h.
 #include "tr_ota.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_app_desc.h"
@@ -13,6 +14,7 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_attr.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -53,6 +55,99 @@ static tr_ota_status_fn status_fns[MAX_STATUS];
 static httpd_uri_t extra_uris[MAX_URIS];
 static int extra_count;
 static httpd_handle_t server;
+
+// Recent log lines, for GET /log. In RTC memory, so they survive a restart
+// (not a power cut): after a crash or a rollback, the log shows what happened.
+#define LOG_SIZE  4096
+#define LOG_MAGIC 0x544C4F47u // "TLOG"
+typedef struct {
+    uint32_t magic;
+    uint32_t head; // next write position
+    uint32_t used;
+    char text[LOG_SIZE];
+} log_ring_t;
+static RTC_NOINIT_ATTR log_ring_t ring;
+static vprintf_like_t console_vprintf;
+static portMUX_TYPE ring_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void ring_add(const char *text, int n)
+{
+    portENTER_CRITICAL(&ring_lock);
+    for (int i = 0; i < n; i++) {
+        ring.text[ring.head] = text[i];
+        ring.head = (ring.head + 1) % LOG_SIZE;
+    }
+    ring.used = ring.used + n > LOG_SIZE ? LOG_SIZE : ring.used + n;
+    portEXIT_CRITICAL(&ring_lock);
+}
+
+// Every ESP_LOG line goes to the console as before, and a copy without the
+// color codes goes to the ring.
+static int log_vprintf(const char *fmt, va_list args)
+{
+    char line[200];
+    va_list copy;
+    va_copy(copy, args);
+    int n = vsnprintf(line, sizeof(line), fmt, copy);
+    va_end(copy);
+    n = n < 0 ? 0 : n >= (int)sizeof(line) ? (int)sizeof(line) - 1 : n;
+    char clean[200];
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (line[i] == 0x1B) { // skip "ESC [ ... m"
+            while (i < n && line[i] != 'm') {
+                i++;
+            }
+            continue;
+        }
+        clean[k++] = line[i];
+    }
+    ring_add(clean, k);
+    return console_vprintf(fmt, args);
+}
+
+static const char *reset_name(esp_reset_reason_t reason);
+
+static void start_log(void)
+{
+    if (ring.magic != LOG_MAGIC || ring.head >= LOG_SIZE || ring.used > LOG_SIZE) {
+        ring.magic = LOG_MAGIC;
+        ring.head = 0;
+        ring.used = 0;
+    }
+    char mark[80];
+    const int n = snprintf(mark, sizeof(mark), "\n--- boot, last restart: %s ---\n",
+                           reset_name(esp_reset_reason()));
+    ring_add(mark, n);
+    console_vprintf = esp_log_set_vprintf(log_vprintf);
+    // The Wi-Fi driver logs about 40 lines at start; keep its warnings only, so
+    // the 4 KB hold more of what matters.
+    static const char *noisy[] = {"wifi", "wifi_init", "phy_init", "pp", "net80211"};
+    for (size_t i = 0; i < sizeof(noisy) / sizeof(noisy[0]); i++) {
+        esp_log_level_set(noisy[i], ESP_LOG_WARN);
+    }
+}
+
+// GET /favicon.ico: nothing, so browsers do not fill the log with 404 warnings.
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    return httpd_resp_send(req, NULL, 0);
+}
+
+// GET /log: the ring, oldest first.
+static esp_err_t log_handler(httpd_req_t *req)
+{
+    static char copy[LOG_SIZE];
+    portENTER_CRITICAL(&ring_lock);
+    const uint32_t used = ring.used, start = (ring.head + LOG_SIZE - used) % LOG_SIZE;
+    for (uint32_t i = 0; i < used; i++) {
+        copy[i] = ring.text[(start + i) % LOG_SIZE];
+    }
+    portEXIT_CRITICAL(&ring_lock);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_send(req, copy, used);
+}
 
 static const char *state_name(esp_ota_img_states_t state)
 {
@@ -120,7 +215,8 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         xEventGroupSetBits(wifi_events, LOST);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *got = data;
-        printf("Wi-Fi: robot at " IPSTR ", http://" HOSTNAME ".local/\n", IP2STR(&got->ip_info.ip));
+        ESP_LOGI(TAG, "Wi-Fi: robot at " IPSTR ", http://" HOSTNAME ".local/",
+                 IP2STR(&got->ip_info.ip));
         xEventGroupSetBits(wifi_events, GOT_IP);
     }
 }
@@ -162,11 +258,11 @@ static void wifi_task(void *arg)
         int rssi = 0;
         const network_t *net = strongest_network(&rssi);
         if (!net) {
-            printf("Wi-Fi: no known network in range, scanning again\n");
+            ESP_LOGI(TAG, "Wi-Fi: no known network in range, scanning again");
             vTaskDelay(pdMS_TO_TICKS(RETRY_MS));
             continue;
         }
-        printf("Wi-Fi: joining %s (%d dBm)\n", net->ssid, rssi);
+        ESP_LOGI(TAG, "Wi-Fi: joining %s (%d dBm)", net->ssid, rssi);
         wifi_config_t cfg = {0};
         strlcpy((char *)cfg.sta.ssid, net->ssid, sizeof(cfg.sta.ssid));
         strlcpy((char *)cfg.sta.password, net->password, sizeof(cfg.sta.password));
@@ -174,7 +270,7 @@ static void wifi_task(void *arg)
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
         esp_wifi_connect();
         xEventGroupWaitBits(wifi_events, LOST, pdFALSE, pdFALSE, portMAX_DELAY);
-        printf("Wi-Fi: link lost\n");
+        ESP_LOGI(TAG, "Wi-Fi: link lost");
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -227,7 +323,7 @@ static esp_err_t update_handler(httpd_req_t *req)
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    printf("update: receiving %d bytes into %s\n", req->content_len, slot->label);
+    ESP_LOGI(TAG, "update: receiving %d bytes into %s", req->content_len, slot->label);
     static char buf[4096];
     int left = req->content_len;
     while (left > 0) {
@@ -248,7 +344,7 @@ static esp_err_t update_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     httpd_resp_sendstr(req, "ok, restarting\n");
-    printf("update: done, restarting\n");
+    ESP_LOGI(TAG, "update: done, restarting");
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
     return ESP_OK;
@@ -291,9 +387,28 @@ static void describe_wifi(char *text, size_t size)
              ap.rssi, ap.primary, IP2STR(&ip.ip));
 }
 
-// GET /: the robot's status as plain text, one item per line.
+// True if the example added a page at /app.
+static bool has_app_page(void)
+{
+    for (int i = 0; i < extra_count; i++) {
+        if (strcmp(extra_uris[i].uri, "/app") == 0 && extra_uris[i].method == HTTP_GET) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// GET /: the robot's status as plain text, one item per line. A browser goes
+// to /app instead, when the example has that page; curl still gets the text.
 static esp_err_t info_handler(httpd_req_t *req)
 {
+    char accept[128] = "";
+    httpd_req_get_hdr_value_str(req, "Accept", accept, sizeof(accept));
+    if (strstr(accept, "text/html") && has_app_page()) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/app");
+        return httpd_resp_send(req, NULL, 0);
+    }
     char line[192];
     describe_app(line, sizeof(line));
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
@@ -345,12 +460,17 @@ static esp_err_t start_http(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.recv_wait_timeout = 10;
-    cfg.max_uri_handlers = 2 + MAX_URIS;
+    cfg.max_uri_handlers = 4 + MAX_URIS;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "http");
     const httpd_uri_t update = {.uri = "/update", .method = HTTP_POST, .handler = update_handler};
     const httpd_uri_t info = {.uri = "/", .method = HTTP_GET, .handler = info_handler};
+    const httpd_uri_t log = {.uri = "/log", .method = HTTP_GET, .handler = log_handler};
     httpd_register_uri_handler(server, &update);
     httpd_register_uri_handler(server, &info);
+    httpd_register_uri_handler(server, &log);
+    const httpd_uri_t icon = {
+        .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
+    httpd_register_uri_handler(server, &icon);
     for (int i = 0; i < extra_count; i++) {
         httpd_register_uri_handler(server, &extra_uris[i]);
     }
@@ -383,9 +503,9 @@ static void trial_task(void *arg)
                             pdMS_TO_TICKS(TRIAL_WIFI_S * 1000)) &
         GOT_IP) {
         ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
-        printf("new app marked valid\n");
+        ESP_LOGI(TAG, "new app marked valid");
     } else {
-        printf("no Wi-Fi within %d s, going back to the old app\n", TRIAL_WIFI_S);
+        ESP_LOGI(TAG, "no Wi-Fi within %d s, going back to the old app", TRIAL_WIFI_S);
         esp_ota_mark_app_invalid_rollback_and_reboot();
     }
     vTaskDelete(NULL);
@@ -393,9 +513,10 @@ static void trial_task(void *arg)
 
 esp_err_t tr_ota_start(void)
 {
+    start_log();
     char text[160];
     describe_app(text, sizeof(text));
-    printf("\n%s", text);
+    ESP_LOGI(TAG, "%.*s", (int)strcspn(text, "\n"), text);
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -404,13 +525,14 @@ esp_err_t tr_ota_start(void)
     }
     ESP_RETURN_ON_ERROR(err, TAG, "nvs");
     ESP_RETURN_ON_ERROR(load_token(), TAG, "token");
+    // printf, not ESP_LOG: the token must not reach GET /log, which anyone on the network can read.
     printf("update token: %s\n", token);
 
     err = start_wifi();
     if (err != ESP_OK) {
         // An app on trial is not marked valid here, so the next restart goes
         // back to the old app.
-        printf("no Wi-Fi (%s), so no updates\n", esp_err_to_name(err));
+        ESP_LOGI(TAG, "no Wi-Fi (%s), so no updates", esp_err_to_name(err));
         return err;
     }
     ESP_RETURN_ON_ERROR(start_http(), TAG, "http");

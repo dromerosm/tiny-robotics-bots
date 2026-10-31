@@ -12,6 +12,8 @@
 // - serves GET / (status: firmware, uptime, memory, Wi-Fi, and lines the
 //   example adds with tr_ota_add_status()) and POST /update (a new app image, with
 //   the header "X-Token: <token>"; the token is shown only on the USB port)
+// - serves GET /log: the last 4 KB of ESP_LOG lines, kept across restarts
+//   (not power cuts). printf output is not in it, and neither is the token.
 // - marks an app on trial valid once it has Wi-Fi and the web server runs, or
 //   goes back to the old app if there is no Wi-Fi within 60 seconds
 #pragma once

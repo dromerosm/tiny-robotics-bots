@@ -41,7 +41,8 @@ Then open `http://stackchan.local/app`, type the update token once (the page kee
 | `POST /head/off` | Torque and servo power off. Token needed |
 | `POST /head/zero?yaw=436&pitch=585` | Save new zero positions (raw 0 to 1023) in NVS. Token needed |
 | `GET /i2c` | The chips that answer on the internal I2C bus |
-| `GET /app` | The page |
+| `GET /app` | The page. A browser that opens `/` lands here |
+| `GET /log` | The recent log, kept across restarts (from `tr_ota`). The page shows it too |
 
 ```bash
 curl -X POST -H "X-Token: <token>" "http://stackchan.local/head?yaw=30&pitch=45&ms=1000"

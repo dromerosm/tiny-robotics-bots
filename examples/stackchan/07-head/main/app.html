@@ -23,6 +23,8 @@
   button { padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--card); font-weight: 600; cursor: pointer; }
   button.plain { background: transparent; color: var(--accent); }
   #msg { color: var(--muted); min-height: 1.4em; margin-top: 8px; }
+  .wide { grid-column: 1 / -1; }
+  #log { max-height: 320px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -48,6 +50,7 @@
   <section><h2>Head servos</h2><pre id="head">…</pre></section>
   <section><h2>Robot</h2><pre id="status">…</pre></section>
   <section><h2>Chips on the I2C bus</h2><pre id="i2c">…</pre></section>
+  <section class="wide"><h2>Log (last 4 KB, kept across restarts)</h2><pre id="log">…</pre></section>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -82,6 +85,9 @@ async function refresh() {
   try {
     $("status").textContent = await text("/");
     $("head").textContent = await text("/head");
+    const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    log.textContent = await text("/log");
+    if (atEnd) log.scrollTop = log.scrollHeight;
   } catch (e) {
     $("status").textContent = "No answer: " + e.message;
   }
