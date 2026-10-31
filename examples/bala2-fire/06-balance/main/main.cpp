@@ -908,8 +908,9 @@ extern "C" void app_main(void)
         // No Wi-Fi in the emulator.
         const link_callbacks_t cb = {handle_command, stop_for_update};
         link_start(&cb);
-        printf("Wi-Fi network %s, password %s, robot at %s, UDP port %d\n", link_ssid(),
-               link_password(), LINK_IP, LINK_UDP_PORT);
+        printf("Wi-Fi %s %s, key %s, robot at %s (%s), UDP port %d\n",
+               link_on_home() ? "home network" : "own network", link_ssid(), link_password(),
+               link_ip(), LINK_HOST, LINK_UDP_PORT);
     }
 
     gpio_config_t cfg = {};
@@ -963,8 +964,8 @@ extern "C" void app_main(void)
                         "battery %d%%%s", st.battery, st.charging ? ", charging" : "");
             screen_line(170, TFT_DARKGREY, "B: stop");
             if (!sim) {
-                screen_line(196, TFT_CYAN, "Wi-Fi %s  pass %s", link_ssid(), link_password());
-                screen_line(214, TFT_CYAN, "%s  UDP %d  %s", LINK_IP, LINK_UDP_PORT,
+                screen_line(196, TFT_CYAN, "Wi-Fi %s  key %s", link_ssid(), link_password());
+                screen_line(214, TFT_CYAN, "%s  %s  %s", link_ip(), LINK_HOST,
                             link_alive() ? "" : "LINK LOST");
             }
         }

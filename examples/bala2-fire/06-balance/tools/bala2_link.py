@@ -1,35 +1,54 @@
 #!/usr/bin/env python3
 """Talk to 06-balance over Wi-Fi. Python 3 standard library only.
 
-First join the robot's Wi-Fi network (BALA2-xxxx, password on its screen).
+The robot joins your home Wi-Fi if it was built with WIFI_ENV and the
+network is in range; then it is bala2.local. If not, join the robot's own
+network (BALA2-xxxx, the key on its screen); it is then at 192.168.4.1. This
+tool tries bala2.local first, then 192.168.4.1.
 
     python3 bala2_link.py                    show telemetry, type commands
     python3 bala2_link.py --log run.csv      also save every line to a file
-    python3 bala2_link.py --ota build/balance.bin
+    BALA2_TOKEN=<key> python3 bala2_link.py --ota build/balance.bin
                                              send new firmware (app image)
+
+The update token is the key on the robot's screen. Put it in the
+environment variable BALA2_TOKEN, not on the command line.
 
 While it runs, it sends a heartbeat ("hb") 5 times a second. If the robot
 balances and hears nothing for 1 second, it stops. So stopping this tool
 (Ctrl+C) also stops the robot.
 
-Commands: kp, ki, kd, kv, kx, kpos, kvel, kt, off, ramp, vmax, max (each with a value), ?, stop
+Commands: kp, ki, kd, rf, kv, kx, kpos, kvel, kt, off, ramp, kh, khr, ys, nf, nq, law, vmax, max
+(each with a value), rec N, fall, ?, stop
 """
 import argparse
+import os
 import socket
 import sys
 import threading
 import time
 import urllib.request
 
-ROBOT = "192.168.4.1"
+HOSTS = ("bala2.local", "192.168.4.1")
 PORT = 4210
 
 
-def ota(path):
+def find_robot(host):
+    """The robot's IP address: the given host, or bala2.local, or 192.168.4.1."""
+    for name in (host,) if host else HOSTS:
+        try:
+            return socket.gethostbyname(name)
+        except OSError:
+            pass
+    return HOSTS[-1]
+
+
+def ota(path, robot):
     data = open(path, "rb").read()
-    print(f"sending {len(data)} bytes to http://{ROBOT}/update ...")
-    req = urllib.request.Request(f"http://{ROBOT}/update", data=data, method="POST")
+    print(f"sending {len(data)} bytes to http://{robot}/update ...")
+    req = urllib.request.Request(f"http://{robot}/update", data=data, method="POST")
     req.add_header("Content-Type", "application/octet-stream")
+    req.add_header("X-Token", os.environ.get("BALA2_TOKEN", ""))
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             print(resp.read().decode().strip())
@@ -41,16 +60,19 @@ def ota(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--log", help="save every line from the robot to this file")
-    ap.add_argument("--ota", help="send this app image and exit")
+    ap.add_argument("--ota", help="send this app image and exit (token in BALA2_TOKEN)")
+    ap.add_argument("--host", help="robot name or address (default: bala2.local, then 192.168.4.1)")
     args = ap.parse_args()
+    ip = find_robot(args.host)
+    print(f"robot at {ip}")
 
     if args.ota:
-        ota(args.ota)
+        ota(args.ota, ip)
         return
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.5)
-    robot = (ROBOT, PORT)
+    robot = (ip, PORT)
     log = open(args.log, "a", buffering=1) if args.log else None
     running = True
 
@@ -74,7 +96,7 @@ def main():
                 data, _ = sock.recvfrom(256)
             except OSError:  # timeout, or the robot is restarting
                 if time.time() - quiet_since > 2:
-                    print("(no data from the robot: is this Mac on its Wi-Fi?)")
+                    print("(no data from the robot: is this Mac on the same Wi-Fi?)")
                     quiet_since = time.time()
                 time.sleep(0.05)
                 continue

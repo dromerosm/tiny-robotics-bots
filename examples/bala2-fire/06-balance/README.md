@@ -17,13 +17,24 @@ Keep BALA2 upright and move as little as possible. It starts from M5Stack's bala
 - A PID on the tilt, plus an outer position loop
 - How to make a motor dead band smooth, so the robot does not shake around zero
 - Safety for a robot that moves: limits, a start check, stop rules, a watchdog, and a link check
-- A Wi-Fi access point, a UDP link and over-the-air updates (OTA) with ESP-IDF
+- Wi-Fi with ESP-IDF: join the strongest home network or make its own, mDNS (`bala2.local`), a UDP link and over-the-air updates (OTA) with a token
 
 ## Build
 
 ```bash
-scripts/build.sh examples/bala2-fire/06-balance
+WIFI_ENV=../../../m5stack/wifi.env scripts/build.sh examples/bala2-fire/06-balance
 ```
+
+`WIFI_ENV` is optional. It points to a file outside the repo with up to two home networks:
+
+```
+SSID_01=first-network
+PWD_SSID_01=its-password
+SSID_02=second-network
+PWD_SSID_02=its-password
+```
+
+`scripts/build.sh` passes these lines to the build, and `main/Kconfig.projbuild` reads them. The passwords end up in `sdkconfig`, `build/` and `out/`, which git ignores. ESP-IDF reads them only when `sdkconfig` is made, so delete `sdkconfig` after you change the file. Without `WIFI_ENV` (as in CI), the robot always makes its own network.
 
 Output: `out/bala2-fire-06-balance-esp32.bin` (merged image for the first flash and the emulator) and `examples/bala2-fire/06-balance/build/balance.bin` (app image for updates over Wi-Fi).
 
@@ -37,21 +48,26 @@ esptool --chip esp32 write-flash 0x0 out/bala2-fire-06-balance-esp32.bin
 
 Keep the robot lying still while it starts: it measures the gyro offset.
 
-**Wi-Fi.** The robot makes its own network, `BALA2-xxxx`. The password is made at random on the first boot and saved in the robot. It is shown on the screen and the serial port, and it is not in the code. Join that network from your computer, then:
+**Wi-Fi.** At boot the robot scans for the networks from `WIFI_ENV` and joins the one with the strongest signal. If none is in range, or it can't join in 10 s, it makes its own network, `BALA2-xxxx`, at 192.168.4.1. Either way it is `bala2.local` (mDNS), and the screen shows the network and its address.
+
+The robot also has a **key**: 12 random characters, made on the first boot and saved in the robot. It is shown on the screen and the serial port, and it is not in the code. It is the password of the robot's own network and the token for updates.
+
+Be on the same network as the robot, then:
 
 ```bash
 python3 examples/bala2-fire/06-balance/tools/bala2_link.py --log run.csv
 ```
 
-It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot balances and hears nothing for 1 second, it stops. So closing the tool stops the robot.
+The tool finds the robot as `bala2.local`, or at 192.168.4.1 (`--host` picks another address). It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, about 40 to 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot balances and hears nothing for 1 second, it stops. So closing the tool stops the robot.
 
-**Updates over Wi-Fi.** With the robot lying down (it refuses while it balances):
+**Updates over Wi-Fi.** With the robot lying down (it refuses while it balances), put the key from its screen in `BALA2_TOKEN`, not on the command line:
 
 ```bash
+read -s BALA2_TOKEN && export BALA2_TOKEN
 python3 examples/bala2-fire/06-balance/tools/bala2_link.py --ota examples/bala2-fire/06-balance/build/balance.bin
 ```
 
-The robot restarts and its network goes away for a few seconds. Your computer may join another known network meanwhile; turn off auto-join for that network while you test.
+Without the right token the robot answers 401, and it does not stop the motors. After the update it restarts. On its own network, the network goes away for a few seconds, and your computer may join another known network meanwhile.
 
 **Balance.**
 
@@ -121,8 +137,10 @@ The robot should rather fall over than drive away.
 - It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if an I2C read fails, if the loop runs late, if the Wi-Fi link goes quiet for 1 second, or on button B.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
+- If the home Wi-Fi drops while it balances, the heartbeat stops and so does the robot. It then joins the network again.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
-- Updates are refused while it balances, and the flash is erased one sector at a time, so the control loop is never stalled for long. The update loop also pauses for 1 tick after each 4 KB block. Without it, on fast Wi-Fi, core 0's idle task never ran and the watchdog reset the robot in the middle of the update.
+- Updates need the token and are refused while it balances. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched.
+- On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
 
 ### Two cores
 
