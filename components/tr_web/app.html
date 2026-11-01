@@ -102,6 +102,7 @@
       <button class="plain" data-view="audio">Audio</button>
       <button class="plain" data-view="camera">Camera</button>
       <button class="plain" data-view="wifi">Wi-Fi</button>
+      <button class="plain" data-view="track">Faces</button>
     </div>
     <div class="row"><button class="plain" id="calib">Calibrate sound (5 claps in front)</button></div>
   </section>
@@ -369,7 +370,7 @@ function showFace(t) {
   last.face = t;
   const f = lines(t);
   const rows = [];
-  for (const [k, label] of [["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"]]) {
+  for (const [k, label] of [["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"], ["track", "Faces"]]) {
     if (f.has(k)) rows.push([label, f.get(k)]);
   }
   kv($("facestate"), rows);
