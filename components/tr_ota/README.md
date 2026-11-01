@@ -81,3 +81,9 @@ curl -H "X-Token: <token>" --data-binary @examples/stackchan/<example>/build/<pr
 An app on trial is marked valid once it has Wi-Fi, because the web server already runs. With no Wi-Fi within 60 seconds, it goes back to the old app. If it crashes before that, the bootloader goes back on the next boot. An app flashed over USB is not on trial.
 
 Tested on the robot on 2026-10-31, with this component inside `05-ota`: an update was back in 6 s and marked valid. A build for a network that does not exist was back on the old app after 67 s.
+
+## stackchan.local and IPv6
+
+The robot has an IPv6 link-local address (`fe80::...`) next to its IPv4 address. Without it, mDNS answered the IPv6 question (AAAA) with no IPv6 address and without saying there is none. macOS (curl, ssh) then waited 5 s on every lookup of `stackchan.local`. Safari did not wait, because it uses the IPv4 address as soon as it has it. Now the lookup takes about 7 ms, also while the robot sleeps, and the requests go over IPv6.
+
+The examples set `CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0`. With the duplicate address check, the address never became valid on our network. **[inference]** The router may send the robot's own check back to it. The address comes from the robot's MAC address, so a duplicate is very unlikely.
