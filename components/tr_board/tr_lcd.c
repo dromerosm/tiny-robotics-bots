@@ -45,8 +45,11 @@ static const char *TAG = "tr_lcd";
 static esp_lcd_panel_handle_t panel;
 static esp_lcd_panel_io_handle_t io;
 static volatile bool off; // tr_lcd_power(false): no drawing
-static uint16_t *band;    // one band of pixels, in DMA memory
-static SemaphoreHandle_t band_free;
+// Two bands of pixels in DMA memory: while one goes out on SPI, the next one
+// is filled. band is the one being filled.
+static uint16_t *bands[2], *band;
+static int next_band;
+static SemaphoreHandle_t band_free; // counts the bands that are not being sent
 
 // ILI9342E setup, copied from the BSP (ili9342e_init_cmds.h, Apache-2.0),
 // without its 0x3A (0x55) and 0x36 (0x08): the driver sends the same values
@@ -198,7 +201,9 @@ esp_err_t tr_lcd_power(bool on)
     }
     if (!on) {
         off = true;
-        xSemaphoreTake(band_free, portMAX_DELAY); // the last band has gone out
+        xSemaphoreTake(band_free, portMAX_DELAY); // both bands have gone out
+        xSemaphoreTake(band_free, portMAX_DELAY);
+        xSemaphoreGive(band_free);
         xSemaphoreGive(band_free);
         esp_lcd_panel_io_tx_param(io, 0x28, NULL, 0); // display off
         esp_lcd_panel_io_tx_param(io, 0x10, NULL, 0); // sleep in
@@ -241,8 +246,7 @@ esp_err_t tr_lcd_init(void)
     };
     ESP_RETURN_ON_ERROR(spi_bus_initialize(LCD_HOST, &spi, SPI_DMA_CH_AUTO), TAG, "SPI");
 
-    band_free = xSemaphoreCreateBinary();
-    xSemaphoreGive(band_free);
+    band_free = xSemaphoreCreateCounting(2, 2);
     const esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num = LCD_DC,
         .cs_gpio_num = LCD_CS,
@@ -271,8 +275,9 @@ esp_err_t tr_lcd_init(void)
     esp_lcd_panel_init(panel);
     esp_lcd_panel_invert_color(panel, true);
 
-    band = heap_caps_malloc(TR_LCD_W * BAND_H * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!band) {
+    bands[0] = heap_caps_malloc(TR_LCD_W * BAND_H * sizeof(uint16_t), MALLOC_CAP_DMA);
+    bands[1] = heap_caps_malloc(TR_LCD_W * BAND_H * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!bands[0] || !bands[1]) {
         return ESP_ERR_NO_MEM;
     }
     tr_lcd_fill(TR_LCD_BLACK);
@@ -285,15 +290,20 @@ static inline uint16_t wire(uint16_t color)
     return (uint16_t)(color << 8 | color >> 8);
 }
 
-// Send w x h pixels from the band to (x, y). Waits until the last band is sent first.
+// Send w x h pixels from the band to (x, y). It returns at once: the band goes
+// out by DMA while the caller fills the other one.
 static void send_band(int x, int y, int w, int h)
 {
     esp_lcd_panel_draw_bitmap(panel, x, y, x + w, y + h, band);
 }
 
+// Wait for a free band and make it the one to fill. The bands are sent in
+// order, so the free one is always the older of the two.
 static void take_band(void)
 {
     xSemaphoreTake(band_free, portMAX_DELAY);
+    band = bands[next_band];
+    next_band ^= 1;
 }
 
 void tr_lcd_fill_rect(int x, int y, int w, int h, uint16_t color)

@@ -56,7 +56,7 @@ tr_lcd_fill_rect(0, 0, TR_LCD_W, 30, TR_LCD_RGB(20, 60, 120));
 
 For pictures that change, like a face, `tr_lcd_render(fn, ctx)` draws the whole screen from a function that gives each pixel's color. It sends 15 bands of 16 rows, about 40 ms, with no flicker. [08-face](../../examples/stackchan/08-face) uses it.
 
-Drawing goes through one DMA buffer of 16 rows (10 KB). Each call first waits until the last band has been sent.
+Drawing goes through two DMA buffers of 16 rows (10 KB each): one band goes out on SPI while the next one is filled. Each call waits only when both are still being sent. With one buffer, copying a camera frame to the screen took 106 ms; with two it takes 32 ms, close to the 31 ms that SPI at 40 MHz needs for 320 x 240 pixels (see [10-track](../../examples/stackchan/10-track)).
 
 ## Servos
 

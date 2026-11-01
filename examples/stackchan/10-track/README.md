@@ -1,6 +1,6 @@
 # StackChan 10: find faces (step one of face tracking)
 
-[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
+[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face, about 8 frames per second. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
 
 Everything else stays as in 09: the face, the Wi-Fi list on the right eye, the status screen on the mouth, sleep after a minute with no touch on battery ([tr_board](../../../components/tr_board#sleep)), updates over Wi-Fi ([tr_ota](../../../components/tr_ota)) and the page at `http://stackchan.local/app` ([tr_web](../../../components/tr_web)).
 
@@ -39,14 +39,14 @@ curl -H "X-Token: <token>" --data-binary @examples/stackchan/10-track/build/trac
 | The right eye | **Wi-Fi** (as in 09) | A tap on the top bar |
 | The mouth | **Status** (as in 09) | A tap on the top bar |
 
-`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. While it is open, `GET /face` has a `track:` line, and `/log` gets a line every 2 s with the faces, the time to find them and the frames per second. The open view keeps the robot awake.
+`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. While it is open, `GET /face` has a `track:` line, and `/log` gets two lines every 2 s: the faces, the time to find them and the frames per second, then the time per frame for the camera and the screen. The open view keeps the robot awake.
 
 ## Expected output
 
 On our robot, on 2026-11-01, with a face about 50 cm in front:
 
 ```
-I (846665) track: 1 face(s), find 88 ms, 3.6 frames/s
+I (846665) track: 1 face(s), find 88 ms, 3.6 frames/s   (before the faster screen)
 I (846665) track: best: 102,65 to 199,204, score 0.89
 I (855315) track: 1 face(s), find 90 ms, 3.6 frames/s
 I (855315) track: best: 118,54 to 224,193, score 0.98
@@ -62,10 +62,10 @@ Measured on our robot on 2026-11-01:
 | --- | --- |
 | App size | 2.26 MB (09-wifi: 1.01 MB). esp-dl, the camera driver and the model add about 1.25 MB. 2.68 MB of the 4.94 MB app slot stay free |
 | Model | MSR + MNP, int8, 190 KB in flash. It loads in 0.6 s, the first time the view opens |
-| Internal RAM free | 113 KB after the model loaded (lowest 64 KB, while it loaded) |
+| Internal RAM free | 103 KB after the model loaded (lowest 54 KB, while it loaded). The second screen band (10 KB) is part of this |
 | PSRAM free | 7.5 MB of 8 MB. The model and the camera frames use about 0.8 MB |
 | Time to find faces | 73 ms with no face, 80 to 90 ms with one |
-| Frames per second | 3.6 to 4.2 |
+| Frames per second | 8.0 to 8.3 (no face) |
 | Battery current with the view open | about 138 mA (average) |
 
 What made it faster:
@@ -78,7 +78,18 @@ What made it faster:
 
 The model reads its weights and data from PSRAM, so the PSRAM speed was the real limit. Espressif gives 39 ms for this model, on an ESP32-S3 at 240 MHz with octal PSRAM. The CoreS3 has quad PSRAM.
 
-The rest of each frame (about 170 ms) goes to the camera, to copying the frame to the screen through PSRAM, and to two 30 ms pauses to read the touch.
+Then the rest of each frame. We timed each part on the robot:
+
+| Part of a frame | Before | After |
+| --- | --- | --- |
+| Wait for the camera | 0 ms | 0 ms |
+| Find faces | 75 ms | 80 ms |
+| Copy the frame to the screen | 106 ms | 32 ms |
+| Pauses to read the touch | 59 ms | one 10 ms tick |
+| **Frames per second** | **4.1** | **8.2** |
+
+- **The screen.** `tr_lcd` sends the screen in bands of 16 rows through a DMA buffer. With one buffer, it filled a band, sent it and waited, one band at a time. Now it has two: one goes out on SPI while the next one is filled. 32 ms is close to the limit of SPI at 40 MHz for 320 x 240 pixels (31 ms). This also helps the camera in [08-face](../08-face). It costs 10 KB more of internal DMA memory.
+- **The touch.** The view read the touch 2 times with 30 ms pauses after each frame. Now it reads it once per frame at the top of the loop, as the face does. A tap still closes the view.
 
 When it loads the model, esp-dl writes two warnings to `/log`: `dl::Model: minimize() will delete unused inference variables`. They come from the library and mean nothing for us: we only run the model, we don't test it.
 
@@ -92,4 +103,4 @@ When it loads the model, esp-dl writes two warnings to `/log`: `dl::Model: minim
 
 - Turn the head toward the face: a small step of yaw and pitch toward the center of the box, with a dead zone so it does not shake.
 - Make the eyes on the face look at the person when the view is closed.
-- Find out where the 170 ms outside the model go, and cut the biggest part.
+- Find faces on the second core while the first one shows the frame, so the two overlap.
