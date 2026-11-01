@@ -101,7 +101,7 @@ esp_err_t tr_cam_start(void)
         .xclk_freq_hz = 20000000,
         .pixel_format = PIXFORMAT_RGB565,
         .frame_size = FRAMESIZE_QVGA, // 320 x 240, the size of the screen
-        .fb_count = psram ? 2 : 1,
+        .fb_count = psram ? 3 : 1,    // 3: a new frame is ready when a slow reader (10-track) asks
         .fb_location = psram ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM,
         .grab_mode = CAMERA_GRAB_LATEST,
     };

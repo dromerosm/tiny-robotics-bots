@@ -1,6 +1,6 @@
 # StackChan 10: find faces (step one of face tracking)
 
-[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face. The screen shows about 13 frames per second, and the robot looks for faces about 6.6 times per second, on the second core. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
+[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face. The robot looks for faces about 10 times per second, on the second core, and the screen shows each frame it looked at. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
 
 Everything else stays as in 09: the face, the Wi-Fi list on the right eye, the status screen on the mouth, sleep after a minute with no touch on battery ([tr_board](../../../components/tr_board#sleep)), updates over Wi-Fi ([tr_ota](../../../components/tr_ota)) and the page at `http://stackchan.local/app` ([tr_web](../../../components/tr_web)).
 
@@ -62,11 +62,11 @@ Measured on our robot on 2026-11-01:
 | --- | --- |
 | App size | 2.26 MB (09-wifi: 1.01 MB). esp-dl, the camera driver and the model add about 1.25 MB. 2.68 MB of the 4.94 MB app slot stay free |
 | Model | MSR + MNP, int8, 190 KB in flash. It loads in 0.6 s, the first time the view opens |
-| Internal RAM free | 97 KB after the model loaded (lowest 54 KB, while it loaded). The second screen band (10 KB) and the finder task's stack (6 KB) are part of this |
-| PSRAM free | 7.3 MB of 8 MB. The model, the camera frames and the finder's copy of a frame (150 KB) use about 1 MB |
-| Time to find faces | 92 ms with no face, 113 ms with one (on core 1, while core 0 shows frames) |
-| Screen | 13.3 frames per second |
-| Finds | 6.6 per second |
+| Internal RAM free | 96 KB after the model loaded (lowest 53 KB, while it loaded). The second screen band (10 KB) and the finder task's stack (6 KB) are part of this |
+| PSRAM free | 7.3 MB of 8 MB. The model and the 3 camera frames (150 KB each) use about 1 MB |
+| Time to find faces | 87 ms with no face, 95 to 107 ms with one (on core 1, while core 0 shows frames) |
+| Finds | 11.1 per second with no face, 9.2 to 10.3 with one |
+| Screen | the same frames, about 10 per second |
 | Battery current with the view open | about 138 mA (average) |
 
 What made it faster:
@@ -92,26 +92,24 @@ Then the rest of each frame. We timed each part on the robot:
 - **The screen.** `tr_lcd` sends the screen in bands of 16 rows through a DMA buffer. With one buffer, it filled a band, sent it and waited, one band at a time. Now it has two: one goes out on SPI while the next one is filled. 32 ms is close to the limit of SPI at 40 MHz for 320 x 240 pixels (31 ms). This also helps the camera in [08-face](../08-face). It costs 10 KB more of internal DMA memory.
 - **The touch.** The view read the touch 2 times with 30 ms pauses after each frame. Now it reads it once per frame at the top of the loop, as the face does. A tap still closes the view.
 
-Then we split the work over the two cores:
+Then we split the work over the two cores. What matters is how often the robot finds the face, because the head will follow it. The screen is only there to check.
 
-| | One core | Two cores |
-| --- | --- | --- |
-| Screen | 8.2 frames/s | **13.3 frames/s** |
-| Finds | 8.2 per second | 6.6 per second |
-| Time to find faces (no face) | 80 ms | 92 ms |
+| | One core | Two cores, screen first | Two cores, finder first |
+| --- | --- | --- | --- |
+| Finds per second (no face) | 8.2 | 6.6 | **11.1** |
+| Screen, frames per second | 8.2 | 13.3 | 11.1 |
+| Time to find faces (no face) | 80 ms | 92 ms | 87 ms |
 
-- **The finder** is a task on core 1. The face task, on core 0, takes each camera frame and shows it. When the finder is free, the face task first copies the frame for it (150 KB in PSRAM) and wakes it.
-- **Only the face task takes frames from the camera.** In our first try both tasks took frames: the face task got nearly all of them, the finder found faces only 0.4 times per second, and the camera timed out (`cam_hal: Failed to get frame: timeout`).
-- **Finding is slower on two cores** (80 to 92 ms): both cores, the camera and the screen use the PSRAM at the same time.
-- **The finder gets every second frame.** It needs 92 ms, a bit more than one screen frame (75 ms), so it is still busy when the next frame comes. 13.3 / 2 = 6.6.
-- The screen is smoother and the box still follows the face (checked on the robot). For the head, 6.6 finds per second is enough: a servo move takes at least 100 ms.
-
-When it loads the model, esp-dl writes two warnings to `/log`: `dl::Model: minimize() will delete unused inference variables`. They come from the library and mean nothing for us: we only run the model, we don't test it.
+- **Screen first** (our first try): the face task took each camera frame and showed it, and copied one for the finder when it was free. The screen was smooth, but the finder needs a bit more than one screen frame, so it got only every second frame (13.3 / 2 = 6.6). Before that, both tasks took frames from the camera: the face task got nearly all of them, the finder found faces 0.4 times per second, and the camera timed out (`cam_hal: Failed to get frame: timeout`).
+- **Finder first** (now): the finder, on core 1, is the only task that takes frames from the camera, one after the other. When the face task is free, the finder hands it the frame with its boxes through a queue of one. The face task draws the boxes, shows the frame and gives it back to the camera. When the face task is busy, the finder gives the frame back itself. So the screen never slows the finder, and the boxes on the screen are exactly the ones found in that frame, with no copy.
+- **3 camera frames.** With 2, the finder often waited about 18 ms for a new frame (9.9 finds per second). With 3 (`tr_cam`, 150 KB more PSRAM) a new frame is ready when it asks: 11.1.
+- **Finding is a bit slower on two cores** (80 to 87 ms): both cores, the camera and the screen use the PSRAM at the same time.
+- The box follows the face and a tap closes the view (checked on the robot). For the head, about 10 finds per second is enough: a servo move takes at least 100 ms.
 
 ## How it works
 
 - **The model.** `face.cpp` makes one `HumanFaceDetect` (the MSR + MNP model) the first time the view opens. MSR finds candidate boxes in a smaller copy of the frame, and MNP checks each one at 48 x 48. esp-dl makes the smaller copy itself.
-- **The frame.** The camera gives RGB565 with the high byte first, which is `DL_IMAGE_PIX_TYPE_RGB565BE` in esp-dl, so the copy goes to the model as it is. The face task draws the last boxes into the frame, and the frame goes to the screen with `tr_lcd_blit()`.
+- **The frame.** The camera gives RGB565 with the high byte first, which is `DL_IMAGE_PIX_TYPE_RGB565BE` in esp-dl, so the frame goes to the model as it is. The face task draws the boxes into the same frame, and the frame goes to the screen with `tr_lcd_blit()`.
 - **The two tasks.** See above. The finder runs only while the view is open, and stops when it closes, when the robot sleeps, or when another view opens over HTTP.
 - **The rest.** As in [09-wifi](../09-wifi).
 
@@ -119,4 +117,4 @@ When it loads the model, esp-dl writes two warnings to `/log`: `dl::Model: minim
 
 - Turn the head toward the face: a small step of yaw and pitch toward the center of the box, with a dead zone so it does not shake.
 - Make the eyes on the face look at the person when the view is closed.
-- When the head follows the face, don't show the camera: the eyes look at the person instead, and the finder gets every frame.
+- When the head follows the face, don't show the camera: the eyes look at the person instead, and the PSRAM is free for the finder.
