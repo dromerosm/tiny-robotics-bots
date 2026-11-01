@@ -1,6 +1,6 @@
 # StackChan 09: face and Wi-Fi networks
 
-[08-face](../08-face) without the microphones and the camera, and with the screen at 20 % to save power. Tap the right eye and the robot lists the Wi-Fi networks it can see, with the signal and the security of each one. Tap the mouth for the status, one section per page, with a guess of how long the battery will last.
+[08-face](../08-face) without the microphones and the camera. Like 08, the screen runs at 20 % and the robot sleeps after a minute with no touch, on battery (see [tr_board](../../../components/tr_board#sleep)). Tap the right eye and the robot lists the Wi-Fi networks it can see, with the signal and the security of each one. Tap the mouth for the status, one section per page, with a guess of how long the battery will last.
 
 Everything else stays as in 08: updates over Wi-Fi ([tr_ota](../../../components/tr_ota)), `stackchan.local`, the page at `http://stackchan.local/app` ([tr_web](../../../components/tr_web)), the head that goes home at boot, and the status screen on the mouth.
 
@@ -43,7 +43,7 @@ The colors show the security: red for open networks (and WEP, which is nearly op
 
 | Request | What it does |
 | --- | --- |
-| `GET /face` | The views, looking around on or off, where the head points, the battery (charge, average current, time left), and the last scan: name, signal, channel and security of each network |
+| `GET /face` | The views, looking around on or off, where the head points, and the last scan: name, signal, channel and security of each network. The battery's average and the time left are on `GET /` now, for every example |
 | `POST /face?view=face\|status\|wifi` | Change the screen. Token needed |
 | `POST /face?idle=0` or `idle=1`, `POST /face?blink=1` | As in 08. Token needed |
 
@@ -80,21 +80,22 @@ What we measured on the battery (INA226), with the face still, the head at rest 
 
 So the screen at 20 % saves about 110 mA, a bit more than a third of what the robot uses at rest.
 
+With the sleep from [tr_board](../../../components/tr_board#sleep) the robot uses about 30 mA after a minute with no touch, against 96 mA awake (measured on 2026-11-01 with this example; the table is in tr_board).
+
 Without the camera the example also has no PSRAM, and the app is 1.02 MB instead of 1.12 MB. The light sensor still turns on the camera's power, because it shares that cable (see [tr_board](../../../components/tr_board)).
 
 ## Battery time left
 
-StackChan's battery is 550 mAh (M5Stack's docs). The example reads the current from the INA226 every second and keeps an average over about 20 s. The time left is 550 mAh times the charge from the power chip (`0xA4`), divided by that average. It starts again when you unplug USB.
+This moved to [tr_board](../../../components/tr_board), so every example has it on `GET /`, the page and the status screen. StackChan's battery is 550 mAh (M5Stack's docs). The sleep task reads the current from the INA226 every second and keeps an average over about 20 s. The time left is 550 mAh times the charge from the power chip (`0xA4`), divided by that average. It starts again when you unplug USB.
 
 It is a guess: it assumes the robot keeps using what it uses now, and that the power chip's % is right. A move of the head or the Wi-Fi list uses more. The status shows it in green above 1 h, yellow above 20 min, and red below. On our robot, at 86 % and 159 mA, it said 2 h 58 min.
 
 ## How it works
 
 - **The scan.** `esp_wifi_scan_start(NULL, false)` does not block: the robot stays on its network and the face task goes on reading the touch. The scan takes about 2 s for all channels. `WIFI_EVENT_SCAN_DONE` sets a flag, and the face task takes up to 32 results and sorts them by signal. tr_ota's own scans (when it joins a network) are left alone.
-- **The lists.** Status and Wi-Fi use the same screen code: a title bar with X, a line under it, 8 rows, and two buttons at the bottom. Each row has its own color. Each status section fits in 8 rows, so PREV and NEXT change the whole page.
+- **The lists.** Status and Wi-Fi use the same screen code, `tr_screen.h` in [tr_web](../../../components/tr_web#status-screen): a title bar with X, a line under it, 8 rows, and two buttons at the bottom. Each row has its own color. Each status section fits in 8 rows, so PREV and NEXT change the whole page.
 - **The rest.** As in [08-face](../08-face): the head goes home at boot, the eyes follow the servos, and nothing is drawn unless the face changes.
 
 ## Try next
 
 - Show the signal of the network the robot is on in the status screen, and how it changes when you move it around the house.
-- Turn the backlight off after a minute with no touch, and on again with a tap.

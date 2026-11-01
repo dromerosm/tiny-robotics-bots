@@ -4,13 +4,18 @@
 // http://stackchan.local/, POST /update with a token, and rollback. Every
 // example that runs on the robot calls tr_ota_start() the same way, so it can
 // always take the next update.
+//
+// tr_web adds the page at http://stackchan.local/app and lets the robot sleep
+// when nobody uses it, as in the other examples.
 #include "esp_err.h"
 #include "tr_board.h"
 #include "tr_ota.h"
+#include "tr_web.h"
 
 void app_main(void)
 {
-    // GET / also shows the body battery.
+    // GET / also shows the body battery and the sleep state.
     ESP_ERROR_CHECK(tr_ota_add_status(tr_board_status));
     ESP_ERROR_CHECK(tr_ota_start());
+    ESP_ERROR_CHECK(tr_web_start());
 }

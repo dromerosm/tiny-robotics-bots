@@ -7,16 +7,20 @@
 // seconds, slowly and in a small range. A move from the page or curl pauses
 // that for IDLE_PAUSE_US.
 //
-//   GET  /face                  idle on or off, where the head looks, battery, last scan
+//   GET  /face                  idle on or off, where the head looks, last scan
 //   POST /face?idle=0|1         stop or start looking around (token needed)
 //   POST /face?blink=1          blink once (token needed)
 //   POST /face?view=face|status|wifi   change the screen (token needed)
 //
-// Tap the mouth on the screen: a status screen opens, one section per page:
-// battery (with a guess of the time left), robot, network (with the update
-// token), touch and motion, and the room. PREV and NEXT change the section,
-// X closes it. The token is shown only here, on the robot itself, never on
-// the network.
+// Tap the mouth on the screen: the status screen (tr_screen), one section per
+// page: battery (with a guess of the time left and the sleep state), robot,
+// network (with the update token), touch and motion, and the room. PREV and
+// NEXT change the section, X closes it. The token is shown only here, on the
+// robot itself, never on the network.
+//
+// After a minute with no touch, on battery, the robot sleeps (tr_board): the
+// screen and the servos go off and this task waits. A touch on the screen or
+// the head wakes it. An open list keeps it awake.
 //
 // Tap the right eye: the Wi-Fi networks the robot sees, strongest first, with
 // their signal and security. Red is open (or WEP), yellow old WPA, green WPA3.
@@ -24,16 +28,11 @@
 // GET /face lists the last scan too.
 //
 // The page at http://stackchan.local/app (tr_web) shows a card for this.
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
-#include "esp_netif.h"
-#include "esp_ota_ops.h"
-#include "esp_system.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -41,6 +40,7 @@
 #include "freertos/task.h"
 #include "tr_board.h"
 #include "tr_ota.h"
+#include "tr_screen.h"
 #include "tr_web.h"
 
 #define FRAME_MS      66                 // about 15 frames per second
@@ -130,238 +130,10 @@ static void glance(void)
     }
 }
 
-// The status screen.
-#define COLS      26 // characters per row at scale 2
-#define ROWS      8  // text rows between the two bars
-#define BAR_H     28
-#define MAX_LINES 48
-#define TITLE_BG  TR_LCD_RGB(20, 60, 120)
-#define BUTTON_BG TR_LCD_RGB(50, 50, 60)
-#define EXIT_BG   TR_LCD_RGB(170, 40, 40)
-#define GREEN     TR_LCD_RGB(80, 220, 100)
-#define YELLOW    TR_LCD_RGB(240, 200, 60)
-#define RED       TR_LCD_RGB(240, 80, 80)
-#define LINE_FG   TR_LCD_RGB(110, 110, 130)
-static char lines[MAX_LINES][COLS + 1]; // the status or the Wi-Fi list
-static uint16_t line_color[MAX_LINES];
-static int line_count;
-
-// The battery: StackChan's is 550 mAh (M5Stack's docs). The time left is
-// that capacity times the power chip's charge in %, over the current the
-// INA226 measures, averaged over about 20 s. A guess: it assumes the robot
-// keeps using what it uses now.
-#define BATTERY_MAH 550
-static float avg_ma; // above 0 while the battery discharges
-
-// Every second, from the face task.
-static void battery_tick(void)
-{
-    tr_battery_t b;
-    if (tr_battery_read(&b) != ESP_OK) {
-        return;
-    }
-    if (b.milliamps <= 0 || avg_ma <= 0) {
-        avg_ma = b.milliamps; // charging, on USB, or a new start
-    } else {
-        avg_ma += (b.milliamps - avg_ma) * 0.05f;
-    }
-}
-
-// Minutes left at the current use, or -1 if it is not discharging.
-static int minutes_left(int percent)
-{
-    return avg_ma >= 5 ? (int)(BATTERY_MAH * percent / 100.0f / avg_ma * 60) : -1;
-}
-
-// The status, one section per page. PREV and NEXT change the section.
-enum { SEC_BATTERY, SEC_ROBOT, SEC_NETWORK, SEC_TOUCH, SEC_ROOM, SEC_COUNT };
-static const char *section_names[] = {"Battery", "Robot", "Network", "Touch, motion", "Room"};
-static int section;
-
-static void row(uint16_t color, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-static void row(uint16_t color, const char *fmt, ...)
-{
-    if (line_count >= MAX_LINES) {
-        return;
-    }
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(lines[line_count], sizeof(lines[0]), fmt, args); // cut at COLS
-    va_end(args);
-    line_color[line_count++] = color;
-}
-
-// One line of text in rows of COLS, cut at spaces when it can. The next rows
-// start with two spaces.
-static void wrapped(const char *p, size_t len)
-{
-    int indent = 0;
-    while (len > 0 && line_count < MAX_LINES) {
-        size_t n = len;
-        if (indent + n > COLS) {
-            n = COLS - indent;
-            for (size_t k = n; k > COLS / 2; k--) {
-                if (p[k] == ' ') {
-                    n = k;
-                    break;
-                }
-            }
-        }
-        row(FG, "%*s%.*s", indent, "", (int)n, p);
-        p += n;
-        len -= n;
-        while (len > 0 && *p == ' ') {
-            p++;
-            len--;
-        }
-        indent = 2;
-    }
-}
-
-static void build_battery(void)
-{
-    tr_battery_t b;
-    if (tr_battery_read(&b) == ESP_OK) {
-        row(FG, "voltage    %d.%02d V", b.millivolts / 1000, b.millivolts % 1000 / 10);
-        row(FG, "current    %d mA %s", abs(b.milliamps), b.milliamps < 0 ? "in" : "out");
-        row(FG, "average    %.0f mA", avg_ma > 0 ? avg_ma : 0);
-    } else {
-        row(FG, "INA226: no answer");
-    }
-    tr_power_t p;
-    if (tr_power_read(&p) != ESP_OK) {
-        row(FG, "power chip: no answer");
-        return;
-    }
-    row(FG, "charge     %d %%", p.percent);
-    row(FG, "state      %s", p.state);
-    const int m = minutes_left(p.percent);
-    if (m >= 0) {
-        row(m >= 60 ? GREEN : m >= 20 ? YELLOW : RED, "time left  %d h %02d min", m / 60, m % 60);
-    } else {
-        row(FG, "time left  -");
-    }
-    if (p.usb_mv) {
-        row(FG, "USB        in, %d.%02d V", p.usb_mv / 1000, p.usb_mv % 1000 / 10);
-    } else {
-        row(FG, "USB        %s", p.usb ? "in" : "out");
-    }
-    row(FG, "system     %d.%02d V", p.system_mv / 1000, p.system_mv % 1000 / 10);
-}
-
-static void build_robot(void)
-{
-    const esp_app_desc_t *app = esp_app_get_description();
-    const esp_partition_t *run = esp_ota_get_running_partition();
-    row(FG, "%s on %s, %s", app->project_name, run ? run->label : "?", tr_ota_state());
-    row(FG, "%s", app->version);
-    row(FG, "built %s %.5s", app->date, app->time);
-    const int64_t s = esp_timer_get_time() / 1000000;
-    row(FG, "up %lld h %02lld min %02lld s", s / 3600, s / 60 % 60, s % 60);
-    char text[64];
-    const int n = snprintf(text, sizeof(text), "last restart: %s", tr_ota_last_restart());
-    wrapped(text, n < (int)sizeof(text) ? n : sizeof(text) - 1);
-    row(FG, "memory %lu KB free", (unsigned long)esp_get_free_heap_size() / 1024);
-    row(FG, "lowest since boot %lu KB", (unsigned long)esp_get_minimum_free_heap_size() / 1024);
-}
-
-static void build_network(void)
-{
-    wifi_ap_record_t ap;
-    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        row(FG, "%s", (const char *)ap.ssid);
-        row(FG, "signal %d dBm, channel %d", ap.rssi, ap.primary);
-    } else {
-        row(FG, "Wi-Fi: not connected");
-    }
-    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_netif_ip_info_t ip;
-    if (sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr) {
-        row(FG, "IP " IPSTR, IP2STR(&ip.ip));
-    }
-    const char *host = NULL;
-    if (sta && esp_netif_get_hostname(sta, &host) == ESP_OK && host) {
-        row(FG, "%s.local", host);
-    }
-    row(FG, "%s", "");
-    row(FG, "update token:");
-    const char *t = tr_ota_token();
-    wrapped(t, strlen(t));
-}
-
-// The sensors' own lines, for the touch and room sections. The power chip's
-// lines are in the battery section.
-static void build_sensors(bool touch)
-{
-    static const char *touch_lines[] = {"head touch", "screen touch", "accel", "gyro"};
-    static char text[700];
-    tr_sensors_status(text, sizeof(text));
-    for (const char *p = text; *p;) {
-        const char *nl = strchr(p, '\n');
-        const size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        bool is_touch = false;
-        for (int i = 0; i < 4; i++) {
-            is_touch |= strncmp(p, touch_lines[i], strlen(touch_lines[i])) == 0;
-        }
-        if (is_touch == touch && strncmp(p, "power chip", 10) != 0) {
-            wrapped(p, len);
-        }
-        p = nl ? nl + 1 : p + len;
-    }
-}
-
-static void build_status(void)
-{
-    line_count = 0;
-    switch (section) {
-        case SEC_BATTERY:
-            build_battery();
-            break;
-        case SEC_ROBOT:
-            build_robot();
-            break;
-        case SEC_NETWORK:
-            build_network();
-            break;
-        default:
-            build_sensors(section == SEC_TOUCH);
-            break;
-    }
-}
-
-static void draw_rows(int top)
-{
-    char padded[COLS + 1];
-    for (int i = 0; i < ROWS; i++) {
-        const char *src = top + i < line_count ? lines[top + i] : "";
-        snprintf(padded, sizeof(padded), "%-*s", COLS, src);
-        const uint16_t c = top + i < line_count ? line_color[top + i] : FG;
-        tr_lcd_text(4, BAR_H + 6 + i * 22, 2, c, BG, padded);
-    }
-}
-
-// A title bar with X, a line under it, the rows, and two buttons at the bottom.
-static void draw_screen(const char *title, const char *left, const char *right, int top)
-{
-    tr_lcd_fill(BG);
-    tr_lcd_fill_rect(0, 0, TR_LCD_W, BAR_H, TITLE_BG);
-    tr_lcd_text(8, 6, 2, FG, TITLE_BG, title);
-    tr_lcd_fill_rect(TR_LCD_W - 56, 0, 56, BAR_H, EXIT_BG);
-    tr_lcd_text(TR_LCD_W - 34, 6, 2, FG, EXIT_BG, "X");
-    tr_lcd_fill_rect(0, BAR_H + 2, TR_LCD_W, 1, LINE_FG);
-    tr_lcd_fill_rect(0, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
-    tr_lcd_fill_rect(TR_LCD_W / 2 + 2, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
-    tr_lcd_text(80 - 6 * (int)strlen(left), TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, left);
-    tr_lcd_text(240 - 6 * (int)strlen(right), TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, right);
-    draw_rows(top);
-}
-
-static void draw_status(void)
-{
-    char title[24];
-    snprintf(title, sizeof(title), "%s %d/%d", section_names[section], section + 1, SEC_COUNT);
-    draw_screen(title, "PREV", "NEXT", 0);
-}
+#define ROWS   TR_SCREEN_ROWS
+#define GREEN  TR_SCREEN_GREEN
+#define YELLOW TR_SCREEN_YELLOW
+#define RED    TR_SCREEN_RED
 
 // Wi-Fi scan. It runs in the background (about 2 s, all channels) while the
 // robot stays on its network; the driver tells us when it is done.
@@ -449,22 +221,16 @@ static void take_scan(void)
 // One row per network: name (13 characters), signal in dBm, security.
 static void build_wifi(void)
 {
-    line_count = 0;
+    tr_screen_clear();
     if (scanned_at < 0) {
-        strcpy(lines[0], "scanning...");
-        line_color[0] = FG;
-        line_count = 1;
+        tr_screen_row(FG, "scanning...");
         return;
     }
-    snprintf(lines[0], sizeof(lines[0]), "%u networks, dBm", ap_count);
-    line_color[0] = FG;
-    line_count = 1;
-    for (int i = 0; i < ap_count && line_count < MAX_LINES; i++) {
+    tr_screen_row(FG, "%u networks, dBm", ap_count);
+    for (int i = 0; i < ap_count; i++) {
         const char *name = aps[i].ssid[0] ? (const char *)aps[i].ssid : "(hidden)";
-        snprintf(lines[line_count], sizeof(lines[0]), "%-13.13s %4d %s", name, aps[i].rssi,
-                 security(aps[i].authmode));
-        line_color[line_count] = security_color(aps[i].authmode);
-        line_count++;
+        tr_screen_row(security_color(aps[i].authmode), "%-13.13s %4d %s", name, aps[i].rssi,
+                      security(aps[i].authmode));
     }
 }
 
@@ -488,12 +254,10 @@ static void open_list(view_t v, int64_t now, int64_t *next_update)
             start_scan();
         }
         build_wifi();
-        draw_screen("Wi-Fi", "UP", "DOWN", 0);
+        tr_screen_draw("Wi-Fi", "UP", "DOWN", 0);
         *next_update = now + SCAN_EVERY_US;
     } else {
-        section = SEC_BATTERY;
-        build_status();
-        draw_status();
+        tr_status_open();
         *next_update = now + 1000000;
     }
 }
@@ -517,15 +281,21 @@ static void face_task(void *arg)
     view_t open = VIEW_FACE; // VIEW_STATUS or VIEW_WIFI: a list is on the screen
     bool was_down = false;
     int top = 0, tap_x = 0, tap_y = 0;
-    int64_t next_update = 0, next_battery = 0;
+    int64_t next_update = 0;
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
-        const int64_t now = esp_timer_get_time();
-        if (now >= next_battery) {
-            battery_tick();
-            next_battery = now + 1000000;
+        // Asleep: nothing to draw. Wait, then draw the face again.
+        if (tr_sleep_asleep()) {
+            tr_sleep_wait_awake();
+            open = VIEW_FACE;
+            was_down = false;
+            drawn.dx = 1000;
+            next_read = 0;
+            wake = xTaskGetTickCount();
+            continue;
         }
+        const int64_t now = esp_timer_get_time();
 
         // A tap is a touch that ends: act on where the finger was last.
         int x, y;
@@ -539,8 +309,7 @@ static void face_task(void *arg)
         if (tap && open != VIEW_FACE) {
             ESP_LOGI("face", "tap at %d,%d", tap_x, tap_y); // to check the touch in /log
         }
-        // The whole top bar closes a screen, not only the X: easier to hit.
-        const bool on_x = tap && tap_y < BAR_H + 12;
+        const bool on_x = tap && tr_screen_on_bar(tap_y);
         // A view asked for over HTTP: close whatever is open, then open it.
         if (view_request) {
             view_request = false;
@@ -556,9 +325,8 @@ static void face_task(void *arg)
             take_scan();
             if (open == VIEW_WIFI) {
                 build_wifi();
-                top = top > line_count - ROWS ? line_count - ROWS : top;
-                top = top < 0 ? 0 : top;
-                draw_rows(top);
+                top = tr_screen_scroll(top, 0);
+                tr_screen_rows(top);
             }
         }
         if (tap && open == VIEW_FACE && (on_mouth(tap_x, tap_y) || on_right_eye(tap_x, tap_y))) {
@@ -570,23 +338,19 @@ static void face_task(void *arg)
                 ESP_LOGI("face", "%s closed", view_names[open]);
                 open = VIEW_FACE;
                 drawn.dx = 1000; // draw the face again
-            } else if (tap_y >= TR_LCD_H - BAR_H && open == VIEW_STATUS) {
-                section = (section + (tap_x < TR_LCD_W / 2 ? SEC_COUNT - 1 : 1)) % SEC_COUNT;
-                build_status();
-                draw_status();
+            } else if (open == VIEW_STATUS) {
+                tr_status_tap(tap_x, tap_y); // PREV or NEXT
                 next_update = now + 1000000;
-            } else if (tap_y >= TR_LCD_H - BAR_H) {
-                top += tap_x < TR_LCD_W / 2 ? -ROWS / 2 : ROWS / 2;
-                top = top > line_count - ROWS ? line_count - ROWS : top;
-                top = top < 0 ? 0 : top;
-                draw_rows(top);
+            } else if (tr_screen_button(tap_x, tap_y)) {
+                top = tr_screen_scroll(top, tr_screen_button(tap_x, tap_y) * ROWS / 2);
+                tr_screen_rows(top);
             }
         }
         if (open != VIEW_FACE) {
+            tr_sleep_activity(); // an open list keeps the robot awake
             if (now >= next_update) {
                 if (open == VIEW_STATUS) { // new numbers every second
-                    build_status();
-                    draw_rows(top);
+                    tr_status_update();
                     next_update = now + 1000000;
                 } else { // a new scan; the list changes when it is done
                     if (!scanning) {
@@ -642,15 +406,6 @@ static esp_err_t face_get(httpd_req_t *req)
                      "views: face status wifi\nlooking around: %s\n"
                      "head: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
                      idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
-    tr_power_t p;
-    if (tr_power_read(&p) == ESP_OK) {
-        const int m = minutes_left(p.percent);
-        n += snprintf(text + n, sizeof(text) - n, "battery: %d %%, %s, average %.0f mA", p.percent,
-                      p.state, avg_ma > 0 ? avg_ma : 0);
-        n += m >= 0 ? snprintf(text + n, sizeof(text) - n, ", about %d h %02d min left\n", m / 60,
-                               m % 60)
-                    : snprintf(text + n, sizeof(text) - n, "\n");
-    }
     if (scanned_at < 0) {
         snprintf(text + n, sizeof(text) - n, "Wi-Fi: no scan yet, open the Wi-Fi view\n");
         return httpd_resp_sendstr(req, text);
@@ -671,6 +426,7 @@ static esp_err_t face_post(httpd_req_t *req)
     if (!tr_ota_token_ok(req)) {
         return ESP_FAIL;
     }
+    tr_sleep_wake(); // a change on the screen or the head: wake first
     char query[64], value[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         if (httpd_query_key_value(query, "idle", value, sizeof(value)) == ESP_OK) {

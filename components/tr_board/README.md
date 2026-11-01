@@ -10,6 +10,8 @@ StackChan board parts that several examples share. For now:
 - The microphones (ES7210, `tr_mic_*`), the camera (GC0308, `tr_cam_*`) and the 12 side LEDs (`tr_led_*`).
 - `tr_board_aw9523_on()`: turn on single AW9523 pins without touching the others.
 - `tr_board_scan()`: the chips that answer on the internal I2C bus.
+- Sleep (`tr_sleep_*`): after a minute with no touch, on battery, it turns off what nobody uses, and a touch wakes the robot. See [Sleep](#sleep).
+- The battery's average use and the time left (`tr_battery_average_ma()`, `tr_battery_minutes_left()`).
 
 ## Use it
 
@@ -49,7 +51,7 @@ tr_lcd_fill_rect(0, 0, TR_LCD_W, 30, TR_LCD_RGB(20, 60, 120));
 2. Touch chip (`0x38`): its firmware ID (register `0xA6`) is `0x12` on the ILI9342E screen (units from August 2026 on). Other values mean ILI9342C.
    Our unit has the ILI9342E (firmware ID `0x12`).
    On a cold start this is the first time the touch chip runs. `tr_sensors_init()` may run before it and get no answer at `0x38`. It adds the touch anyway, so the touch works once `tr_lcd_init()` has taken it out of reset.
-3. AXP2101 (`0x34`): backlight on DLDO1 at 3.3 V (register `0x99` = 28, then bit 7 of `0x90`). `tr_lcd_brightness(percent)` dims it later as M5GFX does: 20 % is 2.6 V and saves about 110 mA (see [09-wifi](../../examples/stackchan/09-wifi)).
+3. AXP2101 (`0x34`): backlight on DLDO1 at 3.3 V (register `0x99` = 28, then bit 7 of `0x90`). `tr_lcd_brightness(percent)` dims it later as M5GFX does: 20 % is 2.6 V and saves about 110 mA (see [09-wifi](../../examples/stackchan/09-wifi)). Every value from 1 % to 5 % gives 2.5 V, the lowest step. `tr_lcd_power(false)` puts the panel to sleep and turns DLDO1 off (see [Sleep](#sleep)).
 4. SPI3 at 40 MHz: SCLK G36, MOSI G37, DC G35, CS G3, no MISO. The `esp_lcd_ili9341` driver, BGR order, colors inverted, and extra setup commands for the ILI9342E.
 
 For pictures that change, like a face, `tr_lcd_render(fn, ctx)` draws the whole screen from a function that gives each pixel's color. It sends 15 bands of 16 rows, about 40 ms, with no flicker. [08-face](../../examples/stackchan/08-face) uses it.
@@ -114,12 +116,71 @@ if (tr_power_read(&p) == ESP_OK) { ... } // the power chip as numbers: %, USB, v
 - Failed servo reads are not logged: callers poll the servos, and with the analyzer or camera running some reads miss their 10 ms reply time.
 - `tr_lcd_blit()` copies camera frames to the screen through the DMA band, since the frame is in PSRAM.
 
+## Sleep
+
+`tr_sleep_start()` starts one small task (3 KB of stack). [tr_web](../tr_web) calls it, so every example that runs on the robot sleeps. Every 100 ms the task checks the touch (when no example did), once a second it reads the battery and the USB power, and it puts the robot to sleep or wakes it.
+
+- **When:** after `CONFIG_TR_SLEEP_AFTER_S` seconds (60) with no activity, and only on battery. With USB power it never sleeps, and plugging USB in wakes it. `POST /sleep?after=N` changes the time until the next restart, and `0` turns sleep off.
+- **Activity:** a touch on the screen or the head, a request that changes something (`POST /head`, `/leds`, `/face`), and a screen the example keeps open (`tr_sleep_activity()`). Reading the page (`GET`) is not activity, so an open page does not keep the robot awake.
+- **Wake:** a touch on the screen or the head, `POST /sleep?wake=1`, a request that needs the screen or the head, or USB power. The touch that wakes the robot is not passed to the example (`tr_touch_read()` hides it until the finger lets go), so it does not open a screen by mistake.
+- **Head touch:** only a zone that gets stronger counts. A hand that stays on the head (or a zone that stays high) does not keep the robot awake.
+
+What goes off, in this order (wake does the opposite):
+
+| Step | Bit | What |
+| --- | --- | --- |
+| Hooks | `0x02` | `tr_web`: torque and servo power off (PY32 VM_EN), side LEDs off, and so the body's 5 V boost too. They come back as they were. An example can add its own hook (`tr_sleep_add_hook()`) |
+| Screen | `0x01` | Display Off (`0x28`) and Sleep In (`0x10`) to the panel, then the backlight off (DLDO1). Drawing does nothing while it is off. On wake: Sleep Out (`0x11`), 120 ms, Display On (`0x29`), then the backlight |
+| Camera | `0x04` | The camera's power off: AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0. Not while the camera runs. The light sensor shares it, so wake sets the light sensor up again |
+| Motion | `0x08` | The BMI270 suspended (PWR_CTRL `0x7D` = 0, then PWR_CONF `0x7C` = 1) |
+| CPU | `0x10` | The task gives back two power locks, so the CPU drops to 80 MHz and sleeps between ticks (automatic light sleep, `CONFIG_PM_ENABLE` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE`). Wi-Fi stays connected in modem sleep. Only on the robot: without the power chip (as in the emulator) there is no light sleep |
+
+An example with a loop checks `tr_sleep_asleep()`, waits in `tr_sleep_wait_awake()` instead of drawing, and draws again after. `POST /sleep?now=1&steps=0x01` sleeps with only some steps, to measure each one.
+
+### What we can't turn off
+
+| Part | Why not |
+| --- | --- |
+| AXP2101 ALDO1 (1.8 V) and ALDO2 (3.3 V) | They feed the speaker amp (AW88298, `0x36`) and the microphones (ES7210, `0x40`). With ALDO2 off, the whole internal I2C bus stopped: every address answered the scan, and no chip could be read. It came back when we turned it on again. So they stay on |
+| ALDO4 (3.3 V, the SD card) | Turning it off saved nothing we could measure (176 to 177 mA). We leave it as it is |
+| AW9523 P0_2 (microphone and speaker enable) | Off made no difference we could measure |
+| Screen touch (FT6336), head touch (Si12T), INA226 | They are needed to wake the robot and to measure it |
+| Wi-Fi | The page and the updates must keep working |
+
+### What each step saves
+
+On our robot, on 2026-11-01, running [09-wifi](../../examples/stackchan/09-wifi) on battery (3.95 V, 82 %), with the face still. Each row adds one step to the row above (`POST /sleep?now=1&steps=...`). We waited 100 s after each change, then read the robot's own 20 s average once, so our requests barely count. The INA226 averages 64 samples per reading.
+
+| State | Battery current | Saves |
+| --- | --- | --- |
+| Awake: screen at 20 %, servos powered (as after the boot move) | 96 mA | |
+| + servos and LEDs off (`0x02`) | 65 mA | 31 mA |
+| + screen off (`0x01`) | 56 mA | 9 mA |
+| + camera power off (`0x04`) | 42 mA | 14 mA |
+| + motion sensor suspended (`0x08`) | 43 to 47 mA (4 reads) | nothing we can measure |
+| + light sleep and 80 MHz (`0x10`), all steps | 28 to 31 mA (4 reads) | about 15 mA |
+
+So asleep the robot uses about 30 mA instead of 96 mA, 70 % less. With the 550 mAh battery that is about 18 hours instead of under 6. The robot's own guess said 4 h 50 min left awake and 12 to 16 h asleep. It only counts the charge that is left (82 %).
+
+- With light sleep the current jumps: single reads go from 3 mA (asleep) to over 100 mA (Wi-Fi wakes up for the router's beacon). Only the average is useful.
+- Servo power is the largest part. The servos draw about 30 mA even with the torque off, while VM_EN is on.
+- The screen at 20 % costs only about 9 mA. The big saving was going from 100 % to 20 % (see [09-wifi](../../examples/stackchan/09-wifi)).
+- The camera's power was on all the time, only for the light sensor. That is 14 mA.
+- Waking takes about 0.72 s: 0.5 s for servo power and 0.12 s for the panel. Going to sleep takes 6 to 142 ms.
+- The page still works while the robot sleeps. `GET /sleep` answered in 0.1 to 0.5 s (once 1.6 s).
+- The sleep task had 1484 bytes of its 3 KB stack left after a sleep and a wake.
+
+Before this, we measured 181 mA for 09-wifi at 20 %, with the old firmware. We don't know why it was so much higher. Maybe the Wi-Fi list was open, because it scans every 10 s.
+
 ## INA226
 
-From TI's datasheet. Registers are 16 bits, high byte first. The default setup (continuous, no averaging) is enough, so we write nothing.
+From TI's datasheet. Registers are 16 bits, high byte first. At the first read, `tr_board` writes its setup to the config register (`0x00` = `0x4727`): shunt and bus continuous, 1.1 ms each, average of 64, so a new value every 141 ms. The average smooths the Wi-Fi bursts, so a single read means more.
+
+We write it every time the firmware starts, because the chip keeps its setup while the battery lasts. Once, after the I2C bus hung (see [Sleep](#what-we-cant-turn-off)), the INA226 gave the same reading (4.11 V, 77 mA) for minutes. Writing the setup again fixed it.
 
 | Register | What | Scale |
 | --- | --- | --- |
+| `0x00` | Config: averaging, conversion times, mode | We write `0x4727` |
 | `0x01` | Shunt voltage, signed | 2.5 µV per bit. Over 10 mΩ, that is 0.25 mA per bit |
 | `0x02` | Bus voltage | 1.25 mV per bit |
 | `0xFE` | Maker ID | `0x5449` ("TI") |

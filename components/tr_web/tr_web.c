@@ -8,11 +8,17 @@
 //   GET  /sensors                       touch, motion, clock, power chip, temperature
 //   GET  /leds, POST /leds?color=ff8800&side=left|right|all   side LEDs (token needed)
 //   GET  /camera.jpg                    one camera frame, JPEG (CONFIG_TR_WEB_CAMERA)
-//   GET  /app                           a page with all of the above
+//   GET  /sleep                         awake or asleep, and the battery use
+//   POST /sleep?now=1|wake=1|after=60   sleep now, wake now, or the seconds before sleep (token
+//   needed) GET  /app                           a page with all of the above
 //
 // Nothing moves at boot. After a move the torque goes off again, unless hold=1,
 // so the servos do not fight a hand that turns the head. Pitch stays between
 // 5 and 85 degrees, yaw between -90 and 90 (tr_board clamps the angles).
+//
+// It also starts tr_board's sleep: when the robot sleeps, the servos and the
+// side LEDs go off, and they come back when it wakes. A request that moves the
+// head or lights the LEDs wakes the robot first.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +36,7 @@
 
 static bool servos_found;
 static esp_err_t servo_err = ESP_ERR_INVALID_STATE;
-static bool powered;
+static bool powered, powered_before_sleep;
 static volatile int64_t last_move_us = -1;
 
 static bool query_float(httpd_req_t *req, const char *key, float *value)
@@ -89,6 +95,9 @@ static esp_err_t head_get(httpd_req_t *req)
 
 esp_err_t tr_web_head_power(void)
 {
+    if (tr_sleep_asleep()) {
+        return ESP_ERR_INVALID_STATE; // the servos stay off while the robot sleeps
+    }
     if (!powered) {
         esp_err_t err = tr_servo_power(true);
         if (err != ESP_OK) {
@@ -114,6 +123,7 @@ static esp_err_t head_post(httpd_req_t *req)
     query_float(req, "ms", &ms);
     query_float(req, "hold", &hold);
     last_move_us = esp_timer_get_time();
+    tr_sleep_wake();
     if (tr_web_head_power() != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "servo power failed\n");
     }
@@ -232,6 +242,7 @@ static esp_err_t leds_post(httpd_req_t *req)
     if (end == value || rgb > 0xFFFFFF) {
         return send_error(req, "400 Bad Request", "color must be RRGGBB, like ff8800\n");
     }
+    tr_sleep_wake();
     const int from = strcmp(side, "right") == 0 ? TR_LED_COUNT / 2 : 0;
     const int to = strcmp(side, "left") == 0 ? TR_LED_COUNT / 2 : TR_LED_COUNT;
     esp_err_t err = ESP_OK;
@@ -352,6 +363,81 @@ static esp_err_t sensors_get(httpd_req_t *req)
     return httpd_resp_sendstr(req, text);
 }
 
+// GET /sleep: the sleep state and the battery use, as on GET /.
+static esp_err_t sleep_get(httpd_req_t *req)
+{
+    char text[192];
+    tr_board_status(text, sizeof(text));
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(req, text);
+}
+
+// POST /sleep?now=1 (&steps=0x1F to measure single steps), wake=1, after=60.
+static esp_err_t sleep_post(httpd_req_t *req)
+{
+    if (!tr_ota_token_ok(req)) {
+        return ESP_FAIL;
+    }
+    char query[64], value[12];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        return send_error(req, "400 Bad Request", "use now=1, wake=1 or after=<seconds>\n");
+    }
+    if (httpd_query_key_value(query, "after", value, sizeof(value)) == ESP_OK) {
+        tr_sleep_set_after(atoi(value));
+    }
+    if (httpd_query_key_value(query, "wake", value, sizeof(value)) == ESP_OK &&
+        tr_sleep_wake() != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", "did not wake\n");
+    }
+    if (httpd_query_key_value(query, "now", value, sizeof(value)) == ESP_OK) {
+        uint32_t steps = TR_SLEEP_ALL;
+        if (httpd_query_key_value(query, "steps", value, sizeof(value)) == ESP_OK) {
+            steps = strtoul(value, NULL, 0);
+        }
+        tr_sleep_now(steps);
+        vTaskDelay(pdMS_TO_TICKS(300)); // let it go to sleep, so the answer shows it
+    }
+    return sleep_get(req);
+}
+
+// Before the robot sleeps: torque and servo power off, LEDs off (the colors
+// stay in led_color). After it wakes: both back as they were.
+
+static void show_leds(bool on)
+{
+    bool any = false;
+    for (int i = 0; i < TR_LED_COUNT; i++) {
+        any |= led_color[i] != 0;
+        const uint32_t c = on ? led_color[i] : 0;
+        tr_led_set(i, c >> 16, c >> 8 & 0xFF, c & 0xFF);
+    }
+    if (any) {
+        tr_led_show();
+    }
+}
+
+static void on_sleep(bool going_to_sleep)
+{
+    if (!servos_found) {
+        return;
+    }
+    if (going_to_sleep) {
+        powered_before_sleep = powered;
+        if (powered) {
+            tr_servo_torque(TR_SERVO_YAW, false);
+            tr_servo_torque(TR_SERVO_PITCH, false);
+            tr_servo_power(false);
+            powered = false;
+        }
+        show_leds(false);
+    } else {
+        if (powered_before_sleep) {
+            tr_web_head_power(); // so the example can read where the head is
+        }
+        show_leds(true);
+    }
+}
+
 // GET /app: a small page with the status and buttons to move the head.
 extern const char app_html[] asm("_binary_app_html_start");
 
@@ -391,6 +477,8 @@ esp_err_t tr_web_start(void)
 #if CONFIG_TR_WEB_CAMERA
         {.uri = "/camera.jpg", .method = HTTP_GET, .handler = camera_get},
 #endif
+        {.uri = "/sleep", .method = HTTP_GET, .handler = sleep_get},
+        {.uri = "/sleep", .method = HTTP_POST, .handler = sleep_post},
         {.uri = "/regs", .method = HTTP_GET, .handler = regs_get},
         {.uri = "/reg", .method = HTTP_POST, .handler = reg_post},
     };
@@ -405,5 +493,6 @@ esp_err_t tr_web_start(void)
     } else {
         printf("no servos (%s)\n", esp_err_to_name(servo_err));
     }
-    return ESP_OK;
+    tr_sleep_add_hook(on_sleep);
+    return tr_sleep_start();
 }

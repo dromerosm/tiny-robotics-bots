@@ -1,99 +1,72 @@
-// 06-status: the robot's status on its own screen, new every second.
+// 06-status: the robot's status on its own screen, one section per page.
 //
-// The same facts as http://stackchan.local/ (tr_ota): firmware, slot, uptime,
-// last restart, Wi-Fi, battery and free memory. tr_ota also keeps the robot
-// open for the next update over Wi-Fi.
-#include <stdarg.h>
+// The status screen is tr_screen's (components/tr_web), the same one that
+// 08-face and 09-wifi open on the mouth: battery, robot, network (with the
+// update token), touch and motion, and the room. PREV and NEXT change the
+// section, and the numbers change every second. A tap on the top bar goes
+// back to the first section. tr_web also serves the page at
+// http://stackchan.local/app, and tr_ota keeps the robot open for updates.
+//
+// After a minute with no touch, on battery, the robot sleeps (tr_board): the
+// screen goes off and this loop waits. A touch on the screen or the head
+// wakes it.
 #include <stdio.h>
-#include "esp_app_desc.h"
-#include "esp_netif.h"
-#include "esp_ota_ops.h"
-#include "esp_system.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tr_board.h"
 #include "tr_ota.h"
+#include "tr_screen.h"
+#include "tr_web.h"
 
-#define COLS     26 // characters per line at scale 2 (320 / 12)
-#define TOP      40 // first status line, below the title
-#define LINE_H   20 // 16 pixels of text and 4 of space
-#define GREY     TR_LCD_RGB(150, 150, 150)
-#define GREEN    TR_LCD_RGB(80, 220, 120)
-#define YELLOW   TR_LCD_RGB(255, 210, 60)
-#define RED      TR_LCD_RGB(255, 80, 80)
-#define TITLE_BG TR_LCD_RGB(20, 60, 120)
-
-// Print one line, padded with spaces so it covers the old text.
-static void line(int row, uint16_t color, const char *fmt, ...)
-{
-    char text[COLS + 1];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(text, sizeof(text), fmt, args);
-    va_end(args);
-    for (n = n < 0 ? 0 : n > COLS ? COLS : n; n < COLS; n++) {
-        text[n] = ' ';
-    }
-    text[COLS] = 0;
-    tr_lcd_text(4, TOP + row * LINE_H, 2, color, TR_LCD_BLACK, text);
-}
-
-static void draw_status(void)
-{
-    const esp_app_desc_t *app = esp_app_get_description();
-    const char *state = tr_ota_state();
-    line(0, GREY, "fw   %s", app->version);
-    line(1, state[0] == 'v' ? GREEN : YELLOW, "slot %s %s", esp_ota_get_running_partition()->label,
-         state);
-
-    const int64_t s = esp_timer_get_time() / 1000000;
-    line(2, TR_LCD_WHITE, "up   %lld:%02lld:%02lld", s / 3600, s / 60 % 60, s % 60);
-    line(3, GREY, "boot %s", tr_ota_last_restart());
-
-    wifi_ap_record_t ap;
-    esp_netif_ip_info_t ip = {0};
-    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &ip);
-        line(4, GREEN, "wifi %s", (const char *)ap.ssid);
-        line(5, ap.rssi > -70 ? GREEN : YELLOW, "     %d dBm, channel %d", ap.rssi, ap.primary);
-        line(6, TR_LCD_WHITE, "ip   " IPSTR, IP2STR(&ip.ip));
-    } else {
-        line(4, YELLOW, "wifi not connected");
-        line(5, GREY, "");
-        line(6, GREY, "");
-    }
-
-    tr_battery_t b;
-    if (tr_battery_read(&b) == ESP_OK) {
-        line(7, b.millivolts < 3400 ? RED : TR_LCD_WHITE, "bat  %d.%02d V %d mA %s",
-             b.millivolts / 1000, b.millivolts % 1000 / 10,
-             b.milliamps < 0 ? -b.milliamps : b.milliamps,
-             b.milliamps > 0   ? "out"
-             : b.milliamps < 0 ? "in"
-                               : "");
-    } else {
-        line(7, GREY, "bat  no reading");
-    }
-    line(8, GREY, "mem  %lu KB free", (unsigned long)esp_get_free_heap_size() / 1024);
-}
+#define BRIGHTNESS 20 // screen backlight, in %: less light, less power
+#define LOOP_MS    66 // read the touch about 15 times a second
 
 void app_main(void)
 {
     ESP_ERROR_CHECK(tr_ota_add_status(tr_board_status));
     ESP_ERROR_CHECK(tr_ota_start());
+    ESP_ERROR_CHECK(tr_web_start());
 
     esp_err_t err = tr_lcd_init();
     if (err != ESP_OK) {
         printf("no screen (%s), status only on http://stackchan.local/\n", esp_err_to_name(err));
         return;
     }
-    tr_lcd_fill_rect(0, 0, TR_LCD_W, 30, TITLE_BG);
-    tr_lcd_text(8, 7, 2, TR_LCD_WHITE, TITLE_BG, "StackChan status");
+    tr_lcd_brightness(BRIGHTNESS);
+    tr_status_open();
     printf("screen ready\n");
+
+    bool was_down = false;
+    int tap_x = 0, tap_y = 0;
+    int64_t next_update = esp_timer_get_time() + 1000000;
     for (;;) {
-        draw_status();
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (tr_sleep_asleep()) { // nothing to draw: wait, then start again
+            tr_sleep_wait_awake();
+            tr_status_open();
+            was_down = false;
+            continue;
+        }
+        // A tap is a touch that ends: act on where the finger was last.
+        int x, y;
+        const bool down = tr_touch_read(&x, &y);
+        if (down) {
+            tap_x = x;
+            tap_y = y;
+        }
+        if (was_down && !down) {
+            if (tr_screen_on_bar(tap_y)) {
+                tr_status_open();
+            } else {
+                tr_status_tap(tap_x, tap_y);
+            }
+        }
+        was_down = down;
+        const int64_t now = esp_timer_get_time();
+        if (now >= next_update) {
+            tr_status_update();
+            next_update = now + 1000000;
+        }
+        vTaskDelay(pdMS_TO_TICKS(LOOP_MS));
     }
 }

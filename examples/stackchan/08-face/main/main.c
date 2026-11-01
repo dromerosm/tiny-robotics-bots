@@ -12,9 +12,14 @@
 //   POST /face?view=face|status|audio|camera   change the screen (token needed)
 //   POST /face?calibrate=1      measure the microphones' offset from 5 sounds in front
 //
-// Tap the mouth on the screen: a status screen opens, with the same facts as
-// the page, the sensors and the update token. UP and DOWN scroll, X closes it.
-// The token is shown only here, on the robot itself, never on the network.
+// Tap the mouth on the screen: the status screen (tr_screen), one section per
+// page, with the same facts as the page and the update token. PREV and NEXT
+// change the section, X closes it. The token is shown only here, on the robot
+// itself, never on the network.
+//
+// After a minute with no touch, on battery, the robot sleeps (tr_board): the
+// screen and the servos go off and this task waits. A touch on the screen or
+// the head wakes it. An open view keeps it awake.
 //
 // Tap the left eye: the audio analyzer (audio.c). X closes it.
 // Tap the right eye: what the camera sees. Tap anywhere, or touch the head,
@@ -33,6 +38,7 @@
 #include "freertos/task.h"
 #include "tr_board.h"
 #include "tr_ota.h"
+#include "tr_screen.h"
 #include "tr_web.h"
 
 #define FRAME_MS      66                 // about 15 frames per second
@@ -47,6 +53,7 @@
 // eyes look the way the head turns; check it on the robot, and flip it if the
 // eyes look the other way.
 #define EYE_X_PER_DEG (-0.5f)
+#define BRIGHTNESS    20 // screen backlight, in %: less light, less power
 
 typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_AUDIO, VIEW_CAMERA } view_t;
 static const char *view_names[] = {"face", "status", "audio", "camera"};
@@ -119,68 +126,6 @@ static void glance(void)
     }
 }
 
-// The status screen.
-#define COLS      26 // characters per row at scale 2
-#define ROWS      8  // text rows between the two bars
-#define BAR_H     28
-#define MAX_LINES 48
-#define TITLE_BG  TR_LCD_RGB(20, 60, 120)
-#define BUTTON_BG TR_LCD_RGB(50, 50, 60)
-#define EXIT_BG   TR_LCD_RGB(170, 40, 40)
-static char lines[MAX_LINES][COLS + 1];
-static int line_count;
-
-// Status text, sensors and token, cut into rows of COLS characters.
-static void build_status(void)
-{
-    static char text[1800];
-    tr_ota_status_text(text, sizeof(text));
-    size_t at = strlen(text);
-    tr_sensors_status(text + at, sizeof(text) - at);
-    at = strlen(text);
-    snprintf(text + at, sizeof(text) - at, "update token: %s\n", tr_ota_token());
-
-    line_count = 0;
-    const char *p = text;
-    while (*p && line_count < MAX_LINES) {
-        const char *nl = strchr(p, '\n');
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        do {
-            const size_t n = len > COLS ? COLS : len;
-            memcpy(lines[line_count], p, n);
-            lines[line_count][n] = 0;
-            line_count++;
-            p += n;
-            len -= n;
-        } while (len > 0 && line_count < MAX_LINES);
-        p = nl ? nl + 1 : p;
-    }
-}
-
-static void draw_rows(int top)
-{
-    char row[COLS + 1];
-    for (int i = 0; i < ROWS; i++) {
-        const char *src = top + i < line_count ? lines[top + i] : "";
-        snprintf(row, sizeof(row), "%-*s", COLS, src);
-        tr_lcd_text(4, BAR_H + 6 + i * 22, 2, FG, BG, row);
-    }
-}
-
-static void draw_status_screen(int top)
-{
-    tr_lcd_fill(BG);
-    tr_lcd_fill_rect(0, 0, TR_LCD_W, BAR_H, TITLE_BG);
-    tr_lcd_text(8, 6, 2, FG, TITLE_BG, "Status");
-    tr_lcd_fill_rect(TR_LCD_W - 56, 0, 56, BAR_H, EXIT_BG);
-    tr_lcd_text(TR_LCD_W - 34, 6, 2, FG, EXIT_BG, "X");
-    tr_lcd_fill_rect(0, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
-    tr_lcd_fill_rect(TR_LCD_W / 2 + 2, TR_LCD_H - BAR_H, TR_LCD_W / 2 - 2, BAR_H, BUTTON_BG);
-    tr_lcd_text(64, TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, "UP");
-    tr_lcd_text(216, TR_LCD_H - BAR_H + 6, 2, FG, BUTTON_BG, "DOWN");
-    draw_rows(top);
-}
-
 // The left eye, with some room around it.
 static bool on_left_eye(int x, int y)
 {
@@ -242,7 +187,9 @@ static void draw_exit_mark(camera_fb_t *fb)
 static void face_task(void *arg)
 {
     const bool screen = tr_lcd_init() == ESP_OK;
-    if (!screen) {
+    if (screen) {
+        tr_lcd_brightness(BRIGHTNESS);
+    } else {
         printf("no screen, the face only moves the head\n");
     }
     int64_t next_blink = esp_timer_get_time() + 2000000;
@@ -254,11 +201,20 @@ static void face_task(void *arg)
     int64_t next_read = 0;
     face_t drawn = {.dx = 1000};
     bool status_open = false, audio_on = false, camera_on = false, was_down = false;
-    int top = 0, tap_x = 0, tap_y = 0;
+    int tap_x = 0, tap_y = 0;
     int64_t next_status = 0;
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
+        // Asleep: nothing to draw. Wait, then draw the face again.
+        if (tr_sleep_asleep()) {
+            tr_sleep_wait_awake();
+            status_open = was_down = false;
+            drawn.dx = 1000;
+            next_read = 0;
+            wake = xTaskGetTickCount();
+            continue;
+        }
         const int64_t now = esp_timer_get_time();
 
         // A tap is a touch that ends: act on where the finger was last.
@@ -273,8 +229,7 @@ static void face_task(void *arg)
         if (tap && (audio_on || camera_on || status_open)) {
             ESP_LOGI("face", "tap at %d,%d", tap_x, tap_y); // to check the touch in /log
         }
-        // The whole top bar closes a screen, not only the X: easier to hit.
-        const bool on_x = tap && tap_y < BAR_H + 12;
+        const bool on_x = tap && tr_screen_on_bar(tap_y);
         // A view asked for over HTTP: close whatever is open, then open it.
         if (view_request) {
             view_request = false;
@@ -286,13 +241,12 @@ static void face_task(void *arg)
                 audio_on = audio_open() == ESP_OK;
             } else if (want_view == VIEW_STATUS) {
                 status_open = true;
-                top = 0;
-                build_status();
-                draw_status_screen(top);
+                tr_status_open();
                 next_status = now + 1000000;
             }
         }
         if (audio_on) {
+            tr_sleep_activity(); // an open view keeps the robot awake
             if (audio_frame() != ESP_OK) {
                 vTaskDelay(pdMS_TO_TICKS(100));
             }
@@ -300,7 +254,7 @@ static void face_task(void *arg)
             if (tapped) {
                 ESP_LOGI("face", "tap at %d,%d", tap_x, tap_y);
             }
-            if ((tapped && tap_y < BAR_H + 12) || tr_head_touch()) {
+            if ((tapped && tr_screen_on_bar(tap_y)) || tr_head_touch()) {
                 ESP_LOGI("face", "audio closed");
                 audio_on = false;
                 drawn.dx = 1000; // draw the face again
@@ -310,6 +264,7 @@ static void face_task(void *arg)
             continue;
         }
         if (camera_on) {
+            tr_sleep_activity();
             camera_fb_t *fb = esp_camera_fb_get();
             if (fb) {
                 draw_exit_mark(fb);
@@ -345,26 +300,22 @@ static void face_task(void *arg)
         }
         if (tap && !status_open && on_mouth(tap_x, tap_y)) {
             status_open = true;
-            top = 0;
-            build_status();
-            draw_status_screen(top);
+            tr_status_open();
             next_status = now + 1000000;
         } else if (tap && status_open) {
             if (on_x) {
                 ESP_LOGI("face", "status closed");
                 status_open = false;
                 drawn.dx = 1000; // draw the face again
-            } else if (tap_y >= TR_LCD_H - BAR_H) {
-                top += tap_x < TR_LCD_W / 2 ? -ROWS / 2 : ROWS / 2;
-                top = top > line_count - ROWS ? line_count - ROWS : top;
-                top = top < 0 ? 0 : top;
-                draw_rows(top);
+            } else {
+                tr_status_tap(tap_x, tap_y); // PREV or NEXT
+                next_status = now + 1000000;
             }
         }
         if (status_open) {
+            tr_sleep_activity();
             if (now >= next_status) { // new numbers every second
-                build_status();
-                draw_rows(top);
+                tr_status_update();
                 next_status = now + 1000000;
             }
             vTaskDelayUntil(&wake, pdMS_TO_TICKS(FRAME_MS));
@@ -441,6 +392,7 @@ static esp_err_t face_post(httpd_req_t *req)
     if (!tr_ota_token_ok(req)) {
         return ESP_FAIL;
     }
+    tr_sleep_wake(); // a change on the screen or the head: wake first
     char query[64], value[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         if (httpd_query_key_value(query, "idle", value, sizeof(value)) == ESP_OK) {

@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tr_board.h"
+#include "tr_board_priv.h"
 
 static const char *TAG = "tr_cam";
 
@@ -19,7 +20,7 @@ static const char *TAG = "tr_cam";
 #define AXP_CAM_ON   0x34 // bit 2 ALDO3, bit 4 BLDO1, bit 5 BLDO2 (as the BSP sets them)
 #define AW_P1_CAM    0x01 // AW9523 P1_0: camera enable
 
-static bool started;
+static bool started, powered;
 
 esp_err_t tr_cam_power(void)
 {
@@ -44,7 +45,31 @@ esp_err_t tr_cam_power(void)
     }
     i2c_master_bus_rm_device(axp);
     ESP_RETURN_ON_ERROR(err, TAG, "camera power");
-    return tr_board_aw9523_on(0, AW_P1_CAM);
+    err = tr_board_aw9523_on(0, AW_P1_CAM);
+    powered = err == ESP_OK;
+    return err;
+}
+
+bool tr_cam_started(void)
+{
+    return started;
+}
+
+// The camera's power off again, for sleep: not while the camera runs.
+esp_err_t tr_cam_power_off(void)
+{
+    ESP_RETURN_ON_FALSE(!started, ESP_ERR_INVALID_STATE, TAG, "camera running");
+    if (!powered) {
+        return ESP_OK; // never on, as in the emulator
+    }
+    powered = false;
+    uint8_t en;
+    ESP_RETURN_ON_ERROR(tr_board_reg_read(AXP2101_ADDR, AXP_LDO_EN, &en), TAG, "AXP2101");
+    if (en & AXP_CAM_ON) {
+        ESP_RETURN_ON_ERROR(tr_board_reg_write(AXP2101_ADDR, AXP_LDO_EN, en & ~AXP_CAM_ON), TAG,
+                            "camera power");
+    }
+    return tr_board_aw9523_off(0, AW_P1_CAM);
 }
 
 esp_err_t tr_cam_start(void)

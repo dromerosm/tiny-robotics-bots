@@ -9,6 +9,8 @@ StackChan joins your home Wi-Fi and takes new firmware over the network, so you 
 | **Emulator** | ✅ Native `esp-emu`: it joins the emulator's own Wi-Fi network and starts the web server. You can't send an update to it from your computer |
 | **Hardware used** | Wi-Fi, and the battery monitor in the body (INA226) |
 
+It also starts [tr_web](../../../components/tr_web), so the robot has the page at `http://stackchan.local/app` and sleeps when nobody uses it, as in the other examples (see [tr_board](../../../components/tr_board#sleep)).
+
 ## What you learn
 
 - Joining a Wi-Fi network as a station, and picking the strongest of several networks from a scan
@@ -127,4 +129,4 @@ Anyone on your network can read `GET /`. Only someone with the token can update.
 ## Try next
 
 - Send the logs over Wi-Fi as well. Then you need the cable only to recover the robot.
-- Add a `restart` endpoint, and a page that shows the free heap and the signal strength.
+- Add a `restart` endpoint.

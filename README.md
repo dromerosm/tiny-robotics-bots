@@ -42,7 +42,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 03 | [tasks](examples/stackchan/03-tasks) | FreeRTOS tasks, queues and event groups: read, filter, react | ✅ |
 | 04 | [face](examples/stackchan/04-face) | Draw a face on the screen and move the head servos from the console | ✅ |
 | 05 | [ota](examples/stackchan/05-ota) | Join the home Wi-Fi and update over the air, with rollback | ✅ (Wi-Fi in esp-emu, no updates) |
-| 06 | [status](examples/stackchan/06-status) | Show the robot's status (Wi-Fi, battery, firmware) on the real screen | ✅ (no screen in esp-emu) |
+| 06 | [status](examples/stackchan/06-status) | Show the robot's status on the real screen, one section per page, and sleep when nobody uses it | ✅ (no screen in esp-emu) |
 | 07 | [head](examples/stackchan/07-head) | Read and move the head servos over Wi-Fi, from a page the robot serves | ✅ (no servos in esp-emu) |
 | 08 | [face](examples/stackchan/08-face) | The face on the real screen, a head that looks around, an audio analyzer and the camera, all from the page too | ✅ (no screen or servos in esp-emu) |
 | 09 | [wifi](examples/stackchan/09-wifi) | 08 without microphones and camera, the screen at 20 %, and the Wi-Fi networks around in the right eye | ✅ (no screen or servos in esp-emu) |
@@ -65,8 +65,8 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | [tr_pid](components/tr_pid) | Portable PID controller with anti-windup and derivative on measurement. Unit-tested on the host. |
 | [tr_emu](components/tr_emu) | Virtual screen and head servos for StackChan. The browser emulator shows them next to the console. Emulator only for now. |
 | [tr_ota](components/tr_ota) | Home Wi-Fi, updates over Wi-Fi and rollback for StackChan. Every example that runs on the robot calls `tr_ota_start()`. |
-| [tr_board](components/tr_board) | StackChan board parts: screen, touch, head servos, side LEDs, microphones, camera, battery and the other sensors. |
-| [tr_web](components/tr_web) | The robot's web page (`http://stackchan.local/app`) and the head endpoints, on tr_ota's server. |
+| [tr_board](components/tr_board) | StackChan board parts: screen, touch, head servos, side LEDs, microphones, camera, battery and the other sensors. Also sleep: after a minute with no touch, on battery, it turns off what nobody uses, and a touch wakes it. |
+| [tr_web](components/tr_web) | The robot's web page (`http://stackchan.local/app`), the head and sleep endpoints, and the status screen on the robot. Every example that runs on the robot uses it. |
 
 ## Quick start
 

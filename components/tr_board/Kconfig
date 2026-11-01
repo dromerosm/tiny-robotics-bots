@@ -1,0 +1,9 @@
+menu "tr_board"
+    config TR_SLEEP_AFTER_S
+        int "Seconds with no touch before the robot sleeps (0: never)"
+        default 60
+        range 0 3600
+        help
+            Only on battery: with USB power the robot never sleeps.
+            POST /sleep?after=N (tr_web) changes it until the next restart.
+endmenu
