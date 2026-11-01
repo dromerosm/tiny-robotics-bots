@@ -46,6 +46,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "face.h"
 #include "tr_board.h"
@@ -281,23 +282,24 @@ static void draw_exit_mark(camera_fb_t *fb)
 }
 
 // Faces. Two tasks run at the same time:
-// - the face task takes each camera frame, draws the last boxes on it and
-//   shows it. When the finder is free, it first copies the frame for it;
-// - the finder, on the second core (core 1), finds the faces in that copy
-//   and keeps their boxes.
-// Only the face task takes frames from the camera. When both took them, the
-// face task got nearly all of them (0.4 finds per second) and the camera
-// timed out. The boxes come from a frame about 0.1 s older than the one on
-// the screen.
+// - the finder, on the second core (core 1), takes each camera frame, finds
+//   the faces and keeps their boxes. Finding is the point (the head will
+//   follow the face), so it takes the frames one after the other;
+// - when the face task is free, the finder hands it the frame and its boxes,
+//   and the face task shows them (for checking) and gives the frame back to
+//   the camera. When it is busy, the finder gives the frame back itself.
+// So the screen shows exactly what was found, and never slows the finder.
 static bool track_ready;
 static volatile bool track_on; // the view is open: the finder works
 static TaskHandle_t finder;
-static portMUX_TYPE box_lock = portMUX_INITIALIZER_UNLOCKED;
-static face_box_t found[FACE_MAX]; // the last boxes, under box_lock
-static int found_n;
-static uint8_t *copy; // the frame for the finder, in PSRAM
-static int copy_w, copy_h;
-static volatile bool finder_busy;
+static QueueHandle_t to_show; // one frame for the screen, with its boxes
+
+typedef struct {
+    camera_fb_t *fb;
+    int n;
+    face_box_t boxes[FACE_MAX];
+} found_frame_t;
+
 // For GET /face and /log, over windows of 2 s. fps values are x 10.
 static volatile int track_faces, track_ms, track_fps10, show_fps10, show_ms;
 static volatile face_box_t track_best;
@@ -324,24 +326,27 @@ static void finder_task(void *arg)
     int finds = 0, ms_sum = 0;
     int64_t window = esp_timer_get_time();
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // wait for a frame
         if (!track_on) {
-            finder_busy = false;
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // wait for the view
             finds = ms_sum = 0;
             window = esp_timer_get_time();
             continue;
         }
-        face_box_t boxes[FACE_MAX];
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            continue; // the camera timed out; try again
+        }
+        found_frame_t f = {.fb = fb};
         const int64_t t0 = esp_timer_get_time();
-        const int n = face_find(copy, copy_w, copy_h, boxes, FACE_MAX);
+        f.n = face_find(fb->buf, fb->width, fb->height, f.boxes, FACE_MAX);
         const int ms = (esp_timer_get_time() - t0) / 1000;
-        taskENTER_CRITICAL(&box_lock);
-        memcpy(found, boxes, sizeof(boxes[0]) * n);
-        found_n = n;
-        taskEXIT_CRITICAL(&box_lock);
-        track_faces = n;
-        if (n > 0) {
-            track_best = boxes[0];
+        track_faces = f.n;
+        if (f.n > 0) {
+            track_best = f.boxes[0];
+        }
+        // To the screen if it is free; if not, straight back to the camera.
+        if (!track_on || xQueueSend(to_show, &f, 0) != pdTRUE) {
+            esp_camera_fb_return(fb);
         }
         finds++;
         ms_sum += ms;
@@ -350,16 +355,15 @@ static void finder_task(void *arg)
             track_ms = ms_sum / finds;
             track_fps10 = (int)(finds * 10000000LL / (now - window));
             ESP_LOGI("track", "%d face(s), find %d ms, %d.%d finds/s, show %d.%d frames/s (%d ms)",
-                     n, track_ms, track_fps10 / 10, track_fps10 % 10, show_fps10 / 10,
+                     f.n, track_ms, track_fps10 / 10, track_fps10 % 10, show_fps10 / 10,
                      show_fps10 % 10, show_ms);
-            if (n > 0) {
-                ESP_LOGI("track", "best: %d,%d to %d,%d, score %.2f", boxes[0].x0, boxes[0].y0,
-                         boxes[0].x1, boxes[0].y1, boxes[0].score);
+            if (f.n > 0) {
+                ESP_LOGI("track", "best: %d,%d to %d,%d, score %.2f", f.boxes[0].x0, f.boxes[0].y0,
+                         f.boxes[0].x1, f.boxes[0].y1, f.boxes[0].score);
             }
             finds = ms_sum = 0;
             window = now;
         }
-        finder_busy = false; // core 1 rests while it waits for the next frame
     }
 }
 
@@ -379,12 +383,9 @@ static esp_err_t track_start(void)
         ESP_LOGW("track", "no memory for the face model");
         return ESP_ERR_NO_MEM;
     }
-    copy = heap_caps_malloc(TR_LCD_W * TR_LCD_H * 2, MALLOC_CAP_SPIRAM);
-    if (!copy) {
-        ESP_LOGW("track", "no memory for the finder's frame");
-        return ESP_ERR_NO_MEM;
-    }
-    if (xTaskCreatePinnedToCore(finder_task, "finder", 6144, NULL, 4, &finder, 1) != pdPASS) {
+    to_show = xQueueCreate(1, sizeof(found_frame_t));
+    if (!to_show ||
+        xTaskCreatePinnedToCore(finder_task, "finder", 6144, NULL, 4, &finder, 1) != pdPASS) {
         ESP_LOGW("track", "no memory for the finder task");
         return ESP_ERR_NO_MEM;
     }
@@ -397,47 +398,39 @@ static esp_err_t track_start(void)
     return ESP_OK;
 }
 
-// Open or close the view: the finder works only while it is open.
+// Open or close the view: the finder works only while it is open. On close,
+// a frame still waiting for the screen goes back to the camera.
 static void track_view(bool open)
 {
     track_on = open;
-    if (!open) {
-        track_faces = 0;
-        taskENTER_CRITICAL(&box_lock);
-        found_n = 0; // no old boxes the next time
-        taskEXIT_CRITICAL(&box_lock);
+    if (open) {
+        xTaskNotifyGive(finder);
+        return;
+    }
+    track_faces = 0;
+    found_frame_t f;
+    if (to_show && xQueueReceive(to_show, &f, 0) == pdTRUE) {
+        esp_camera_fb_return(f.fb);
     }
 }
 
-// One frame on the screen: the newest frame, with the last boxes the finder found.
+// Show the next frame the finder handed over, with its boxes. Waits up to
+// one tick for it, so the touch is still read often.
 static void track_frame(void)
 {
     static int shows, us_sum;
     static int64_t window;
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
+    found_frame_t f;
+    if (xQueueReceive(to_show, &f, 1) != pdTRUE) {
         return;
     }
     const int64_t t0 = esp_timer_get_time();
-    // The finder is free: give it this frame, before we draw on it.
-    if (!finder_busy && fb->len <= (size_t)TR_LCD_W * TR_LCD_H * 2) {
-        memcpy(copy, fb->buf, fb->len);
-        copy_w = fb->width;
-        copy_h = fb->height;
-        finder_busy = true;
-        xTaskNotifyGive(finder);
+    for (int i = 0; i < f.n; i++) {
+        draw_box(f.fb, &f.boxes[i], i == 0 ? GREEN : YELLOW);
     }
-    face_box_t boxes[FACE_MAX];
-    taskENTER_CRITICAL(&box_lock);
-    const int n = found_n;
-    memcpy(boxes, found, sizeof(boxes[0]) * n);
-    taskEXIT_CRITICAL(&box_lock);
-    for (int i = 0; i < n; i++) {
-        draw_box(fb, &boxes[i], i == 0 ? GREEN : YELLOW);
-    }
-    draw_exit_mark(fb);
-    tr_lcd_blit(0, 0, fb->width, fb->height, fb->buf);
-    esp_camera_fb_return(fb);
+    draw_exit_mark(f.fb);
+    tr_lcd_blit(0, 0, f.fb->width, f.fb->height, f.fb->buf);
+    esp_camera_fb_return(f.fb);
     shows++;
     us_sum += esp_timer_get_time() - t0;
     const int64_t now = esp_timer_get_time();
