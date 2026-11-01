@@ -48,7 +48,9 @@ static volatile bool off; // tr_lcd_power(false): no drawing
 static uint16_t *band;    // one band of pixels, in DMA memory
 static SemaphoreHandle_t band_free;
 
-// ILI9342E setup, copied from the BSP (ili9342e_init_cmds.h, Apache-2.0).
+// ILI9342E setup, copied from the BSP (ili9342e_init_cmds.h, Apache-2.0),
+// without its 0x3A (0x55) and 0x36 (0x08): the driver sends the same values
+// itself (16 bits, BGR) and warned that ours overwrote them.
 static const ili9341_lcd_init_cmd_t ili9342e_init[] = {
     {0xCF, (uint8_t[]){0x00, 0xAA, 0xE0}, 3, 0},
     {0xED, (uint8_t[]){0x67, 0x03, 0x12, 0x81}, 4, 0},
@@ -75,9 +77,7 @@ static const ili9341_lcd_init_cmd_t ili9342e_init[] = {
     {0xB7, (uint8_t[]){0x07}, 1, 0},
     {0xB6, (uint8_t[]){0x08, 0x82, 0x27}, 3, 0},
     {0xDD, (uint8_t[]){0x01}, 1, 0},
-    {0x3A, (uint8_t[]){0x55}, 1, 0},
     {0x21, NULL, 0, 0},
-    {0x36, (uint8_t[]){0x08}, 1, 0},
     {0xD5, (uint8_t[]){0x00}, 1, 0},
     {0xB1, (uint8_t[]){0x22}, 1, 0},
     {0xC8, (uint8_t[]){0x38}, 1, 0},

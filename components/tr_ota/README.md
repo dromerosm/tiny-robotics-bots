@@ -59,9 +59,10 @@ At boot the robot scans and joins the known network with the strongest signal. W
 | Name | `stackchan.local` (mDNS) |
 | `GET /` | Status as plain text: firmware, slot and its state, uptime, why it last restarted, free memory, Wi-Fi (network, signal, channel, IP), plus lines the example adds |
 | `GET /log` | The last 4 KB of `ESP_LOG` lines, oldest first. Kept in RTC memory, so they survive a restart, a crash or a rollback (not a power cut). Each boot adds a line `--- boot, last restart: ... ---` |
+| `GET /favicon.ico`, `GET /apple-touch-icon.png` | The robot icon: an SVG for the browser tab, and a 180 x 180 PNG for Safari, which asks for it (also as `apple-touch-icon-precomposed.png`) when you save the page to the home screen. `touch-icon.py` draws the PNG from the same shapes as `favicon.svg` |
 | `POST /update` | A new app image (`build/<project>.bin`, not the merged image), with the header `X-Token: <token>` |
 
-An example adds its own endpoints with `tr_ota_add_uri()`, up to 16. Endpoints that change the robot call `tr_ota_token_ok(req)` first: it checks `X-Token` and sends the 403 answer. [07-head](../../examples/stackchan/07-head) does this.
+An example adds its own endpoints with `tr_ota_add_uri()`, up to 16. Endpoints that change the robot call `tr_ota_token_ok(req)` first: it checks `X-Token`, sends the 403 answer and writes a line to `/log`. The handler then returns `ESP_OK`, because the answer is sent. With `ESP_FAIL` the server closes the connection and logs only `uri handler execution failed`, with no reason. `tr_ota_send_error()` sends other errors the same way. [07-head](../../examples/stackchan/07-head) does this.
 
 An example adds its own lines to `GET /` with `tr_ota_add_status(fn)`, up to 4. `fn` writes text that ends in `\n`. It runs in the web server's task each time someone asks. For example, `tr_ota_add_status(tr_board_status)` adds the battery (see [tr_board](../tr_board)).
 

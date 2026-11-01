@@ -33,6 +33,7 @@ static const struct {
 };
 static i2c_master_dev_handle_t dev[COUNT];
 static bool motion_ready;
+static bool motion_off, light_off; // asleep: suspended, or no power
 static temperature_sensor_handle_t chip_temp;
 static SemaphoreHandle_t lock;
 
@@ -242,7 +243,11 @@ void tr_sensors_status(char *text, size_t size)
     }
 
     // Motion: accel +-8 g and gyro +-2000 deg/s (the chip's defaults), little-endian.
-    if (motion_ready && rd(MOTION, 0x0C, b, 12) == ESP_OK) {
+    if (motion_off) {
+        at = add(text, size, at, "accel: off while the robot sleeps\n");
+        at = add(text, size, at, "gyro: off while the robot sleeps\n");
+        at = add(text, size, at, "motion chip: off while the robot sleeps\n");
+    } else if (motion_ready && rd(MOTION, 0x0C, b, 12) == ESP_OK) {
         int16_t v[6];
         for (int i = 0; i < 6; i++) {
             v[i] = (int16_t)(b[2 * i] | b[2 * i + 1] << 8);
@@ -284,7 +289,10 @@ void tr_sensors_status(char *text, size_t size)
     }
 
     // Light: two channels (visible + IR, IR) from 0x88, proximity (11 bits) from 0x8D.
-    if (dev[LIGHT] && rd(LIGHT, 0x88, b, 4) == ESP_OK && rd(LIGHT, 0x8D, b + 4, 2) == ESP_OK) {
+    if (light_off) {
+        at = add(text, size, at, "light: off while the robot sleeps\n");
+    } else if (dev[LIGHT] && rd(LIGHT, 0x88, b, 4) == ESP_OK &&
+               rd(LIGHT, 0x8D, b + 4, 2) == ESP_OK) {
         const int ch1 = b[0] | b[1] << 8, ch0 = b[2] | b[3] << 8;
         at = add(text, size, at, "light: %d (raw), proximity %d (0..2047)\n", (ch0 + ch1) / 2,
                  b[4] | (b[5] & 0x07) << 8);
@@ -369,6 +377,7 @@ void tr_sensors_sleep(bool asleep, bool camera, bool motion)
     }
     xSemaphoreTake(lock, portMAX_DELAY);
     if (motion && motion_ready) {
+        motion_off = asleep;
         if (asleep) {
             wr(MOTION, 0x7D, 0x00);
             wr(MOTION, 0x7C, 0x01);
@@ -380,6 +389,7 @@ void tr_sensors_sleep(bool asleep, bool camera, bool motion)
     }
     xSemaphoreGive(lock);
     if (camera && !tr_cam_started()) {
+        light_off = asleep;
         if (asleep) {
             tr_cam_power_off();
         } else if (tr_cam_power() == ESP_OK) {

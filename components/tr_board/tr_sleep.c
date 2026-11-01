@@ -5,6 +5,7 @@
 // example did), once a second it reads the battery and the USB power, and it
 // puts the robot to sleep or wakes it. Wi-Fi stays on the whole time.
 #include <stdio.h>
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_pm.h"
@@ -276,6 +277,14 @@ esp_err_t tr_sleep_start(void)
             .min_freq_mhz = 80,
             .light_sleep_enable = true,
         };
+        // In light sleep the ESP32-S3 turns its pins off (a workaround for a
+        // reset on wake, ESP_SLEEP_GPIO_RESET_WORKAROUND). Keep the ones we use
+        // as they are: internal I2C, screen, servo UART. Without this the green
+        // LED at the bottom blinked with every tick.
+        static const gpio_num_t keep[] = {0, 11, 12, 3, 35, 36, 37, 6, 7};
+        for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); i++) {
+            gpio_sleep_sel_dis(keep[i]);
+        }
         const esp_err_t err = esp_pm_configure(&pm);
         pm_on = err == ESP_OK;
         if (!pm_on) {

@@ -10,4 +10,4 @@ idf_component_register(SRCS "tr_board.c" "tr_lcd.c" "tr_servo.c" "tr_sensors.c" 
                        INCLUDE_DIRS "include"
                        REQUIRES esp_driver_i2c
                        PRIV_REQUIRES esp_driver_spi esp_driver_uart esp_driver_tsens esp_driver_i2s
-                                     esp_lcd esp_timer esp_pm nvs_flash)
+                                     esp_lcd esp_timer esp_pm esp_driver_gpio nvs_flash)

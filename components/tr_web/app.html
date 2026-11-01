@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StackChan</title>
 <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5b6475; --accent: #1f5fbf; --line: #d9dde5; --good: #1d7a3a; --warn: #9a6a00; --bad: #b3261e; }
   @media (prefers-color-scheme: dark) {
@@ -138,11 +139,20 @@ token.addEventListener("change", () => { try { localStorage.setItem("token", tok
 for (const id of ["yaw", "pitch", "ms"]) {
   $(id).addEventListener("input", () => { $(id + "v").textContent = $(id).value; });
 }
-async function text(url, opts) {
-  const r = await fetch(url, opts);
-  const t = await r.text();
-  if (!r.ok) throw new Error(t.trim() || r.status);
-  return t;
+// Every request gives up after 8 s. Without this, one request that never got
+// an answer (Safari, robot asleep) stopped the page's updates for good.
+async function text(url, opts = {}) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctl.signal });
+    const t = await r.text();
+    if (!r.ok) throw new Error(t.trim() || r.status);
+    return t;
+  } catch (e) {
+    throw e.name === "AbortError" ? new Error("no answer in 8 s") : e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 const auth = () => ({ method: "POST", headers: { "X-Token": token.value } });
 
@@ -201,6 +211,7 @@ const deg = (s) => s.replace(/ C$/, " °C");
 const last = { status: "", sensors: "", face: "" };
 
 function showStatus() {
+  if (!last.status) return; // nothing yet: keep the cards as they are
   const s = lines(last.status), n = lines(last.sensors);
   const first = last.status.split("\n")[0] || "";
   const app = first.match(/^(\S+) (\S+), built (.+), running from (\S+) \((.+)\)$/);
@@ -417,7 +428,7 @@ $("snap").onclick = () => {
   $("cam").src = "/camera.jpg?t=" + Date.now();
 };
 $("cam").onerror = () => { $("msg").textContent = "No picture: is there a camera?"; };
-// An example without the camera has no /camera.jpg: 404, not 405 for HEAD.
+// HEAD /camera.jpg answers 200 with the camera, 404 without it.
 fetch("/camera.jpg", { method: "HEAD" }).then((r) => { $("camcard").hidden = r.status === 404; }).catch(() => {});
 text("/leds").then(showLeds).catch(() => {});
 text("/i2c").then((t) => {
