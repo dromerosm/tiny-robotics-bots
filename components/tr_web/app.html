@@ -95,6 +95,8 @@
       <button id="idleon">Look around</button>
       <button id="idleoff" class="plain">Stay still</button>
       <button id="blink" class="plain">Blink</button>
+      <button id="followon" class="plain" hidden>Follow faces</button>
+      <button id="followoff" class="plain" hidden>Don't follow</button>
     </div>
     <div class="row">
       <button class="plain" data-view="face">Face</button>
@@ -370,11 +372,12 @@ function showFace(t) {
   last.face = t;
   const f = lines(t);
   const rows = [];
-  for (const [k, label] of [["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"], ["track", "Faces"]]) {
+  for (const [k, label] of [["following", "Following"], ["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"], ["track", "Faces"]]) {
     if (f.has(k)) rows.push([label, f.get(k)]);
   }
   kv($("facestate"), rows);
   const views = (f.get("views") || "").split(" ");
+  $("followon").hidden = $("followoff").hidden = !f.has("following");
   for (const b of document.querySelectorAll("button[data-view]")) b.hidden = !views.includes(b.dataset.view);
   $("calib").hidden = !views.includes("audio");
   $("face").hidden = false;
@@ -403,6 +406,8 @@ async function face(path) {
 $("idleon").onclick = () => face("/face?idle=1");
 $("idleoff").onclick = () => face("/face?idle=0");
 $("blink").onclick = () => face("/face?blink=1");
+$("followon").onclick = () => face("/face?follow=1");
+$("followoff").onclick = () => face("/face?follow=0");
 $("calib").onclick = () => face("/face?calibrate=1");
 setInterval(() => { if (!$("face").hidden) face("/face"); }, 2000);
 for (const b of document.querySelectorAll("button[data-view]")) {

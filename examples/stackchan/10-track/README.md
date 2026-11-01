@@ -1,6 +1,8 @@
-# StackChan 10: find faces (step one of face tracking)
+# StackChan 10: follow a face
 
-[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face. The robot looks for faces about 10 times per second, on the second core, and the screen shows each frame it looked at. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
+[09-wifi](../09-wifi) plus a camera that finds faces, and a head that follows them. The robot looks for faces about 12 times per second on the second core. When it sees one, the head turns toward it, and the eyes and mouth move toward the person first and come back to the center as the head catches up. Following is on at boot.
+
+Tap the left eye to check it: the screen shows what the camera sees, with a green box on the face, a blue cross at the center and the blue dead zone around it. The head keeps following while this view is open.
 
 Everything else stays as in 09: the face, the Wi-Fi list on the right eye, the status screen on the mouth, sleep after a minute with no touch on battery ([tr_board](../../../components/tr_board#sleep)), updates over Wi-Fi ([tr_ota](../../../components/tr_ota)) and the page at `http://stackchan.local/app` ([tr_web](../../../components/tr_web)).
 
@@ -39,7 +41,34 @@ curl -H "X-Token: <token>" --data-binary @examples/stackchan/10-track/build/trac
 | The right eye | **Wi-Fi** (as in 09) | A tap on the top bar |
 | The mouth | **Status** (as in 09) | A tap on the top bar |
 
-`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. While it is open, `GET /face` has a `track:` line, and `/log` gets a line every 2 s: the faces, the time to find them, finds per second, and frames per second on the screen. The open view keeps the robot awake.
+`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. The open view keeps the robot awake.
+
+| Request | What it does |
+| --- | --- |
+| `GET /face` | As in 09, plus `following:` (off, on with no face, or on with a face) and `track:` (faces, time to find them, finds and frames per second) |
+| `POST /face?follow=0` or `follow=1` | Stop or start following. Token needed. The page has **Follow faces** and **Don't follow** buttons |
+| `GET /track.csv` | The record of what following did (see below) |
+
+`/log` gets a line every 10 s with the faces and the speed, `head: home (boot)` when the head goes home at boot, and a line for each head move from the page or `curl`.
+
+## The record (GET /track.csv)
+
+To check following later, the robot keeps the last 16384 events in PSRAM (about 20 minutes): every find with a face, the first find after the face is gone, `seen` and `lost` when following starts and stops, each head move (axis, where the servo was, the goal, the move time), and `home` at boot. A restart clears it.
+
+The first lines of our test:
+
+```
+ms,event,faces,cx,cy,box_w,score,err_x,err_y,axis,from_deg,goal_deg,move_ms
+1452,home,,,,,,,,,,,
+34009,find,1,96,108,121,0.99,-0.40,-0.10,,,,
+34049,seen,,,,,,,,,,,
+34051,move,,,,,,,,yaw,0.6,-6.6,180
+34101,find,1,117,123,111,0.61,-0.27,0.03,,,,
+34114,move,,,,,,,,yaw,0.9,-3.9,150
+34207,find,1,119,125,103,0.94,-0.26,0.04,,,,
+```
+
+In our test on 2026-11-01 (34 s, moving left and right, then still), it had 286 finds with a face (8.4 per second, with the camera view open) and 137 moves. The face stayed close to the center: the error was 0.09 or less half of the time (the dead zone is 0.15), and 0.28 or less 90 % of the time.
 
 ## Expected output
 
@@ -106,15 +135,33 @@ Then we split the work over the two cores. What matters is how often the robot f
 - **Finding is a bit slower on two cores** (80 to 87 ms): both cores, the camera and the screen use the PSRAM at the same time.
 - The box follows the face and a tap closes the view (checked on the robot). For the head, about 10 finds per second is enough: a servo move takes at least 100 ms.
 
+## Following
+
+For each find, the error is how far the face is from the center of the frame, from -1 to 1. Inside the dead zone (0.15) nothing moves. Outside it, the head gets a new goal: where it is now, read from the servo, plus 18 degrees of yaw (12 of pitch) times the error. The move time is 25 ms per degree, between 150 and 600 ms. The servos take a new goal while they still move, so the head turns smoothly. The torque goes off 2 s after the last move.
+
+We tried three ways on the robot:
+
+| Way | What we saw |
+| --- | --- |
+| A step on top of the last goal, with every find | It found the face, but swung around it. Each find still saw the head where it was 0.1 to 0.3 s before, so the steps added up |
+| One step, then a pause until the head stops (250 + 150 ms) | It centered the face, but in jumps |
+| **A goal from where the head really is, with every find** | Smooth, and it centers the face. Finds made while the head turns give about the same goal, so the goals don't add up |
+
+- **Eyes and mouth.** They move by the same error (40 pixels sideways, 25 up and down at an error of 1), halfway each frame. So they look at the person before the head arrives, and come back to the center as the error goes down. With no face for 1 s, they go back to the center.
+- **Directions.** The signs (`YAW_SIGN`, `PITCH_SIGN`, `EYE_SIGN_X`) were checked on the robot: the head turns toward you, the eyes look at you. The camera image is not a mirror.
+- **18 and 12 degrees** are guesses of half the camera's view, not measured. They worked on our robot.
+- **Sleep.** A face in view counts as activity. With no one there for a minute, on battery, the robot sleeps as usual, and the finder stops.
+- **Page moves win.** After a move from the page or `curl`, following waits 20 s, as looking around does.
+
 ## How it works
 
 - **The model.** `face.cpp` makes one `HumanFaceDetect` (the MSR + MNP model) the first time the view opens. MSR finds candidate boxes in a smaller copy of the frame, and MNP checks each one at 48 x 48. esp-dl makes the smaller copy itself.
 - **The frame.** The camera gives RGB565 with the high byte first, which is `DL_IMAGE_PIX_TYPE_RGB565BE` in esp-dl, so the frame goes to the model as it is. The face task draws the boxes into the same frame, and the frame goes to the screen with `tr_lcd_blit()`.
-- **The two tasks.** See above. The finder runs only while the view is open, and stops when it closes, when the robot sleeps, or when another view opens over HTTP.
+- **The two tasks.** See above. The finder runs while following is on or the view is open, and stops when the robot sleeps. Frames go to the screen only while the view is open.
 - **The rest.** As in [09-wifi](../09-wifi).
 
 ## Try next
 
-- Turn the head toward the face: a small step of yaw and pitch toward the center of the box, with a dead zone so it does not shake.
-- Make the eyes on the face look at the person when the view is closed.
-- When the head follows the face, don't show the camera: the eyes look at the person instead, and the PSRAM is free for the finder.
+- Measure the camera's view angle, and use it instead of the 18 and 12 degree guesses.
+- Turn the whole body toward the face when the head reaches the end of its yaw range.
+- Look at the newest face when there are several, or at the biggest one (the closest).
