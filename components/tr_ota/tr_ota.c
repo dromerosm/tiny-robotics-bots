@@ -128,11 +128,16 @@ static void start_log(void)
     }
 }
 
-// GET /favicon.ico: nothing, so browsers do not fill the log with 404 warnings.
+// GET /favicon.ico: the robot icon of robotics.diegoromero.es (an SVG, 0.5 KB).
+// Browsers ask for it anyway; a 404 would fill the log with warnings.
+extern const char favicon_start[] asm("_binary_favicon_svg_start");
+extern const char favicon_end[] asm("_binary_favicon_svg_end");
+
 static esp_err_t favicon_handler(httpd_req_t *req)
 {
-    httpd_resp_set_status(req, "204 No Content");
-    return httpd_resp_send(req, NULL, 0);
+    httpd_resp_set_type(req, "image/svg+xml");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, favicon_start, favicon_end - favicon_start - 1); // no final 0
 }
 
 // GET /log: the ring, oldest first.

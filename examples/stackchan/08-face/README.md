@@ -37,7 +37,7 @@ Then open `http://stackchan.local/` in a browser. It goes to the page, which has
 
 | Request | What it does |
 | --- | --- |
-| `GET /face` | Looking around on or off, and where the head points |
+| `GET /face` | The views, looking around on or off, where the head points, and the sound direction |
 | `POST /face?idle=0` or `idle=1` | Stop or start looking around. Token needed |
 | `POST /face?blink=1` | Blink once. Token needed |
 

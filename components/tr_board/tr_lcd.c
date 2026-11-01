@@ -155,6 +155,23 @@ static esp_err_t backlight_on(i2c_master_bus_handle_t bus)
     return err;
 }
 
+// Like M5GFX on the CoreS3: brightness 0..255 sets DLDO1 to (b + 641) >> 5,
+// 2.5 to 3.3 V in steps of 100 mV.
+esp_err_t tr_lcd_brightness(int percent)
+{
+    if (!panel) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    percent = percent < 1 ? 1 : percent > 100 ? 100 : percent;
+    i2c_master_bus_handle_t bus;
+    i2c_master_dev_handle_t axp;
+    ESP_RETURN_ON_ERROR(tr_board_i2c(&bus), TAG, "I2C");
+    ESP_RETURN_ON_ERROR(add_device(bus, AXP2101_ADDR, 400000, &axp), TAG, "AXP2101");
+    const esp_err_t err = write_reg(axp, AXP_DLDO1_V, (percent * 255 / 100 + 641) >> 5);
+    i2c_master_bus_rm_device(axp);
+    return err;
+}
+
 static bool on_band_sent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *ctx)
 {
     BaseType_t woken = pdFALSE;

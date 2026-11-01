@@ -7,7 +7,7 @@
 //   GET  /i2c                           the chips on the internal I2C bus
 //   GET  /sensors                       touch, motion, clock, power chip, temperature
 //   GET  /leds, POST /leds?color=ff8800&side=left|right|all   side LEDs (token needed)
-//   GET  /camera.jpg                    one camera frame, JPEG
+//   GET  /camera.jpg                    one camera frame, JPEG (CONFIG_TR_WEB_CAMERA)
 //   GET  /app                           a page with all of the above
 //
 // Nothing moves at boot. After a move the torque goes off again, unless hold=1,
@@ -20,6 +20,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "img_converters.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "tr_board.h"
@@ -250,6 +251,7 @@ static esp_err_t leds_post(httpd_req_t *req)
     return leds_get(req);
 }
 
+#if CONFIG_TR_WEB_CAMERA
 // GET /camera.jpg: one frame from the camera, as JPEG. Starts the camera the first time.
 static esp_err_t camera_get(httpd_req_t *req)
 {
@@ -273,6 +275,7 @@ static esp_err_t camera_get(httpd_req_t *req)
     free(jpg);
     return err;
 }
+#endif
 
 // Power and IO registers, for debugging the board's power setup.
 static const struct {
@@ -385,7 +388,9 @@ esp_err_t tr_web_start(void)
         {.uri = "/sensors", .method = HTTP_GET, .handler = sensors_get},
         {.uri = "/leds", .method = HTTP_GET, .handler = leds_get},
         {.uri = "/leds", .method = HTTP_POST, .handler = leds_post},
+#if CONFIG_TR_WEB_CAMERA
         {.uri = "/camera.jpg", .method = HTTP_GET, .handler = camera_get},
+#endif
         {.uri = "/regs", .method = HTTP_GET, .handler = regs_get},
         {.uri = "/reg", .method = HTTP_POST, .handler = reg_post},
     };

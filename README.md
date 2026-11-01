@@ -45,6 +45,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 06 | [status](examples/stackchan/06-status) | Show the robot's status (Wi-Fi, battery, firmware) on the real screen | ✅ (no screen in esp-emu) |
 | 07 | [head](examples/stackchan/07-head) | Read and move the head servos over Wi-Fi, from a page the robot serves | ✅ (no servos in esp-emu) |
 | 08 | [face](examples/stackchan/08-face) | The face on the real screen, a head that looks around, an audio analyzer and the camera, all from the page too | ✅ (no screen or servos in esp-emu) |
+| 09 | [wifi](examples/stackchan/09-wifi) | 08 without microphones and camera, the screen at 20 %, and the Wi-Fi networks around in the right eye | ✅ (no screen or servos in esp-emu) |
 
 ### BALA2 Fire
 

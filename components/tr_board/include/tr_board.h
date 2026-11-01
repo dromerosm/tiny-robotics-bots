@@ -57,6 +57,9 @@ void tr_board_status(char *text, size_t size);
 // emulator does not model the screen.
 esp_err_t tr_lcd_init(void);
 
+// Backlight from 1 to 100 %, after tr_lcd_init. Less light uses less power.
+esp_err_t tr_lcd_brightness(int percent);
+
 void tr_lcd_fill(uint16_t color);
 void tr_lcd_fill_rect(int x, int y, int w, int h, uint16_t color);
 
@@ -125,6 +128,17 @@ esp_err_t tr_led_show(void);
 // answer is skipped. status writes one or two lines per sensor.
 esp_err_t tr_sensors_init(void);
 void tr_sensors_status(char *text, size_t size);
+// The power chip (AXP2101) as numbers. Needs tr_sensors_init().
+typedef struct {
+    bool battery;      // a battery is connected
+    int percent;       // its fuel gauge, 0..100
+    int millivolts;    // battery voltage, as the power chip measures it
+    bool usb;          // USB power in
+    int usb_mv;        // 0 when not known
+    int system_mv;     // the system rail
+    const char *state; // "standby", "charging" or "discharging"
+} tr_power_t;
+esp_err_t tr_power_read(tr_power_t *power);
 // The first point touching the screen, in screen pixels. False if none.
 // Needs tr_sensors_init().
 bool tr_touch_read(int *x, int *y);

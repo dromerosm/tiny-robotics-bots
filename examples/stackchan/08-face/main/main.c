@@ -410,10 +410,10 @@ static void face_task(void *arg)
 static esp_err_t face_get(httpd_req_t *req)
 {
     char text[256];
-    int n =
-        snprintf(text, sizeof(text),
-                 "looking around: %s\nhead: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
-                 idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
+    int n = snprintf(text, sizeof(text),
+                     "views: face status audio camera\nlooking around: %s\n"
+                     "head: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
+                     idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
     float lag, match, db;
     int64_t age;
     if (audio_direction(&lag, &match, &db, &age)) {

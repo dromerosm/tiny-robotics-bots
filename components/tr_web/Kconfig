@@ -1,0 +1,8 @@
+menu "tr_web"
+    config TR_WEB_CAMERA
+        bool "Serve camera frames at /camera.jpg"
+        default y
+        help
+            Turn it off in an example without the camera. The camera code
+            then stays out of the app, and the page hides its camera card.
+endmenu
