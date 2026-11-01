@@ -4,36 +4,70 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StackChan</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
 <style>
-  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5b6475; --accent: #1f5fbf; --line: #d9dde5; }
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5b6475; --accent: #1f5fbf; --line: #d9dde5; --good: #1d7a3a; --warn: #9a6a00; --bad: #b3261e; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a3acbd; --accent: #7fb0ff; --line: #2c3340; }
+    :root { --bg: #12151b; --card: #1b2029; --text: #e7eaf0; --muted: #a3acbd; --accent: #7fb0ff; --line: #2c3340; --good: #6fd08c; --warn: #f0c75e; --bad: #ff8a80; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, sans-serif; }
-  h1 { font-size: 20px; margin: 0 0 12px; }
+  header { max-width: 1000px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; margin-bottom: 12px; }
+  header > div { flex: 1 1 260px; }
+  h1 { font-size: 20px; margin: 0; }
+  #sub { color: var(--muted); font-size: 13px; }
   h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
   main { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); max-width: 1000px; }
-  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
   pre { margin: 0; white-space: pre-wrap; font: 13px/1.45 ui-monospace, monospace; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+  tr:last-child th, tr:last-child td { border-bottom: 0; }
+  th { color: var(--muted); font-weight: 500; width: 40%; padding-right: 8px; }
+  table.grid th { width: auto; }
+  table.grid td, table.grid th { padding-right: 8px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
   label { display: block; margin: 8px 0 2px; }
   input[type=range] { width: 100%; }
   #cam { width: 100%; border-radius: 6px; background: #000; }
   input[type=color] { width: 64px; height: 36px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
-  input[type=password] { width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  input[type=password] { width: 100%; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .row:empty { display: none; }
   button { padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--card); font-weight: 600; cursor: pointer; }
   button.plain { background: transparent; color: var(--accent); }
-  #msg { color: var(--muted); min-height: 1.4em; margin-top: 8px; }
+  #pingres { margin-top: 6px; font-size: 13px; min-height: 1.2em; }
+  #msg { color: var(--muted); min-height: 1.4em; margin-top: 4px; font-size: 13px; }
   .wide { grid-column: 1 / -1; }
+  .scroll { overflow-x: auto; }
   #log { max-height: 320px; overflow: auto; }
 </style>
 </head>
 <body>
-<h1>StackChan</h1>
+<header>
+  <div>
+    <h1>StackChan</h1>
+    <div id="sub">…</div>
+  </div>
+  <div>
+    <label for="token">Update token (from the USB port or the status screen, kept in this browser)</label>
+    <input id="token" type="password" autocomplete="off">
+    <div id="msg"></div>
+  </div>
+</header>
 <main>
+  <section><h2>Battery</h2><table id="battery"></table></section>
+  <section><h2>Robot</h2><table id="robot"></table></section>
   <section>
-    <h2>Move the head</h2>
+    <h2>Network</h2>
+    <table id="network"></table>
+    <div class="row"><button id="ping" class="plain">Ping (5 requests)</button></div>
+    <div id="pingres"></div>
+  </section>
+  <section>
+    <h2 id="headtitle">Head</h2>
+    <div class="scroll"><table id="servos" class="grid"></table></div>
     <label for="yaw">Yaw <span id="yawv">0</span>° (−90 to 90)</label>
     <input id="yaw" type="range" min="-90" max="90" step="1" value="0">
     <label for="pitch">Pitch <span id="pitchv">5</span>° (5 to 85)</label>
@@ -45,13 +79,10 @@
       <button id="home" class="plain">Home</button>
       <button id="off" class="plain">Power off</button>
     </div>
-    <label for="token">Update token (from the USB port, kept in this browser)</label>
-    <input id="token" type="password" autocomplete="off">
-    <div id="msg"></div>
   </section>
   <section id="face" hidden>
     <h2>Face</h2>
-    <pre id="facestate">…</pre>
+    <table id="facestate"></table>
     <div class="row">
       <button id="idleon">Look around</button>
       <button id="idleoff" class="plain">Stay still</button>
@@ -62,11 +93,17 @@
       <button class="plain" data-view="status">Status</button>
       <button class="plain" data-view="audio">Audio</button>
       <button class="plain" data-view="camera">Camera</button>
+      <button class="plain" data-view="wifi">Wi-Fi</button>
     </div>
     <div class="row"><button class="plain" id="calib">Calibrate sound (5 claps in front)</button></div>
   </section>
+  <section id="netcard" hidden>
+    <h2 id="nettitle">Wi-Fi networks</h2>
+    <div class="scroll"><table id="nets" class="grid"></table></div>
+  </section>
   <section>
     <h2>Side LEDs</h2>
+    <table id="leds"></table>
     <label for="color">Color</label>
     <input id="color" type="color" value="#ff8800">
     <div class="row">
@@ -75,17 +112,15 @@
       <button data-side="all">Both</button>
       <button id="ledsoff" class="plain">Off</button>
     </div>
-    <pre id="leds">…</pre>
   </section>
-  <section>
+  <section id="camcard">
     <h2>Camera</h2>
     <img id="cam" alt="Camera frame" hidden>
     <div class="row"><button id="snap">Take a picture</button></div>
   </section>
-  <section><h2>Head servos</h2><pre id="head">…</pre></section>
-  <section><h2>Sensors</h2><pre id="sensors">…</pre></section>
-  <section><h2>Robot</h2><pre id="status">…</pre></section>
-  <section><h2>Chips on the I2C bus</h2><pre id="i2c">…</pre></section>
+  <section><h2>Touch and motion</h2><table id="touch"></table></section>
+  <section><h2>Room</h2><table id="room"></table></section>
+  <section><h2>Chips on the I2C bus</h2><table id="i2c" class="grid"></table></section>
   <section class="wide"><h2>Log (last 4 KB, kept across restarts)</h2><pre id="log">…</pre></section>
 </main>
 <script>
@@ -102,10 +137,141 @@ async function text(url, opts) {
   if (!r.ok) throw new Error(t.trim() || r.status);
   return t;
 }
+const auth = () => ({ method: "POST", headers: { "X-Token": token.value } });
+
+// Tables are built from text nodes only: nothing the robot sends becomes HTML.
+// rows: [[key, value, class?]]; a key of null makes a value that spans the row.
+function kv(table, rows) {
+  table.replaceChildren(...rows.map(([k, v, cls]) => {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.textContent = v;
+    if (cls) td.className = cls;
+    if (k === null) {
+      td.colSpan = 2;
+    } else {
+      const th = document.createElement("th");
+      th.textContent = k;
+      tr.append(th);
+    }
+    tr.append(td);
+    return tr;
+  }));
+}
+// cls(row, column) can give a cell a class, like "bad".
+function grid(table, head, rows, cls) {
+  const line = (cells, tag, r) => {
+    const tr = document.createElement("tr");
+    cells.forEach((c, i) => {
+      const el = document.createElement(tag);
+      el.textContent = c;
+      if (tag === "td") el.className = "num " + ((cls && cls(r, i)) || "");
+      tr.append(el);
+    });
+    return tr;
+  };
+  table.replaceChildren(line(head, "th"), ...rows.map((r) => line(r, "td", r)));
+}
+// As on the robot: red for open or WEP, yellow for old WPA, green for WPA3.
+function securityClass(s) {
+  if (s === "open" || s === "WEP") return "bad";
+  if (s === "WPA" || s === "WPA/2") return "warn";
+  if (s.includes("WPA3") || s === "OWE") return "good";
+  return "";
+}
+// "key: value" lines into a map. Keys are lower case.
+function lines(t) {
+  const m = new Map();
+  for (const l of t.split("\n")) {
+    const i = l.indexOf(": ");
+    if (i > 0) m.set(l.slice(0, i).trim().toLowerCase(), l.slice(i + 2).trim());
+  }
+  return m;
+}
+const deg = (s) => s.replace(/ C$/, " °C");
+
+// The latest text from each endpoint, so each card can mix them.
+const last = { status: "", sensors: "", face: "" };
+
+function showStatus() {
+  const s = lines(last.status), n = lines(last.sensors), f = lines(last.face);
+  const first = last.status.split("\n")[0] || "";
+  const app = first.match(/^(\S+) (\S+), built (.+), running from (\S+) \((.+)\)$/);
+  $("sub").textContent = app ? `${app[1]} ${app[2]} · up ${s.get("uptime") || "?"}` : first;
+
+  // Battery: the INA226 (GET /), the power chip (/sensors), and the example's
+  // guess of the time left (/face), when it has one.
+  const rows = [];
+  const ina = (s.get("battery") || "").match(/^([\d.]+ V), (\d+ mA) \((\w+)\)$/);
+  if (ina) rows.push(["Voltage", ina[1]], ["Current", `${ina[2]}, ${ina[3]}`]);
+  else if (s.has("battery")) rows.push(["Battery", s.get("battery")]);
+  const fb = (f.get("battery") || "").match(/average (\d+ mA)(?:, about (.+) left)?/);
+  if (fb) {
+    rows.push(["Average", fb[1]]);
+    if (fb[2]) {
+      const h = +(fb[2].match(/^(\d+) h/) || [0, 0])[1], min = +(fb[2].match(/(\d+) min/) || [0, 0])[1];
+      const total = h * 60 + min;
+      rows.push(["Time left", "about " + fb[2], total >= 60 ? "good" : total >= 20 ? "warn" : "bad"]);
+    }
+  }
+  for (const l of last.sensors.split("\n")) {
+    let m = l.match(/^power chip: battery (.+?), (\d+)%, ([\d.]+ V), (\w+)$/);
+    if (m) rows.push(["Charge", m[2] + " %", +m[2] >= 30 ? "" : +m[2] >= 15 ? "warn" : "bad"], ["State", m[4]]);
+    if (m && m[1] !== "present") rows.push(["Battery", m[1], "bad"]);
+    m = l.match(/^power chip: USB (\w+)(?:, ([\d.]+ V))?, system ([\d.]+ V)$/);
+    if (m) rows.push(["USB", m[2] ? `${m[1]}, ${m[2]}` : m[1]], ["System", m[3]]);
+  }
+  kv($("battery"), rows.length ? rows : [[null, "No battery data"]]);
+
+  const robot = [];
+  if (app) robot.push(["App", app[1]], ["Version", app[2]], ["Built", app[3]], ["Running from", `${app[4]} (${app[5]})`]);
+  for (const [k, label] of [["uptime", "Uptime"], ["last restart", "Last restart"], ["free memory", "Free memory"]]) {
+    if (s.has(k)) robot.push([label, s.get(k)]);
+  }
+  if (n.has("esp32-s3")) robot.push(["Chip temperature", deg(n.get("esp32-s3"))]);
+  kv($("robot"), robot);
+
+  const net = [];
+  const w = (s.get("wi-fi") || "").match(/^(.+), (-?\d+ dBm), channel (\d+), IP (\S+)$/);
+  if (w) net.push(["Network", w[1]], ["Signal", w[2], parseInt(w[2]) >= -67 ? "good" : parseInt(w[2]) >= -80 ? "warn" : "bad"], ["Channel", w[3]], ["IP", w[4]]);
+  else if (s.has("wi-fi")) net.push(["Wi-Fi", s.get("wi-fi")]);
+  net.push(["Name", "stackchan.local"]);
+  kv($("network"), net);
+
+  const touch = [];
+  for (const [k, label] of [["head touch", "Head touch"], ["screen touch", "Screen touch"], ["accel", "Acceleration"], ["gyro", "Rotation"]]) {
+    if (n.has(k)) touch.push([label, n.get(k)]);
+  }
+  kv($("touch"), touch.length ? touch : [[null, "No data"]]);
+
+  const room = [];
+  if (n.has("clock")) room.push(["Clock", n.get("clock")]);
+  const light = (n.get("light") || "").match(/^(.+?), proximity (.+)$/);
+  if (light) room.push(["Light", light[1]], ["Proximity", light[2]]);
+  else if (n.has("light")) room.push(["Light", n.get("light")]);
+  if (n.has("motion chip")) room.push(["Motion chip", deg(n.get("motion chip"))]);
+  kv($("room"), room.length ? room : [[null, "No data"]]);
+}
+
+function showHead(t) {
+  const rows = [];
+  for (const l of t.split("\n")) {
+    const m = l.match(/^(yaw|pitch)\s*: (-?[\d.]+) deg \(raw (\d+), zero (\d+)\), torque (\w+), (\w+), load (-?\d+), ([\d.]+) V, (-?\d+) C/);
+    if (m) rows.push([m[1], m[2] + "°", `${m[3]}/${m[4]}`, m[5] === "on" ? `on, ${m[6]}` : "off", m[8], m[9]]);
+  }
+  if (rows.length) {
+    grid($("servos"), ["Servo", "Angle", "Raw/zero", "Torque", "V", "°C"], rows);
+  } else {
+    kv($("servos"), [[null, t.trim() || "No servos"]]);
+  }
+  const p = lines(t).get("servo power");
+  $("headtitle").textContent = p ? `Head (servo power ${p})` : "Head";
+}
+
 async function post(path) {
   $("msg").textContent = "Working…";
   try {
-    $("head").textContent = await text(path, { method: "POST", headers: { "X-Token": token.value } });
+    showHead(await text(path, auth()));
     $("msg").textContent = "Done.";
   } catch (e) {
     $("msg").textContent = "Error: " + e.message;
@@ -114,27 +280,88 @@ async function post(path) {
 $("move").onclick = () => post(`/head?yaw=${$("yaw").value}&pitch=${$("pitch").value}&ms=${$("ms").value}`);
 $("home").onclick = () => { $("yaw").value = 0; $("pitch").value = 5; $("yawv").textContent = 0; $("pitchv").textContent = 5; post("/head?yaw=0&pitch=5&ms=1500"); };
 $("off").onclick = () => post("/head/off");
+
+// Ping: 5 requests one after the other to /favicon.ico (0.5 KB, not cached
+// here), timed in the browser. It measures the network and the robot's web server.
+$("ping").onclick = async () => {
+  $("ping").disabled = true;
+  $("pingres").className = "";
+  $("pingres").textContent = "Pinging…";
+  const times = [];
+  let lost = 0;
+  for (let i = 0; i < 5; i++) {
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 3000);
+    const t0 = performance.now();
+    try {
+      await fetch("/favicon.ico?ping=" + Date.now(), { cache: "no-store", signal: ctl.signal });
+      times.push(performance.now() - t0);
+    } catch (e) {
+      lost++;
+    }
+    clearTimeout(timer);
+  }
+  if (times.length) {
+    const avg = times.reduce((a, b) => a + b) / times.length;
+    $("pingres").textContent = `${times.length}/5 answered: min ${Math.min(...times).toFixed(0)} ms, average ${avg.toFixed(0)} ms, max ${Math.max(...times).toFixed(0)} ms`;
+    $("pingres").className = lost ? "bad" : avg < 100 ? "good" : avg < 300 ? "warn" : "bad";
+  } else {
+    $("pingres").textContent = "No answer (3 s timeout each)";
+    $("pingres").className = "bad";
+  }
+  $("ping").disabled = false;
+};
+
 let busy = false;
 async function refresh() {
   if (busy) return;
   busy = true;
   try {
-    $("status").textContent = await text("/");
-    $("head").textContent = await text("/head");
-    $("sensors").textContent = await text("/sensors");
+    last.status = await text("/");
+    last.sensors = await text("/sensors");
+    showStatus();
+    showHead(await text("/head"));
     const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
     log.textContent = await text("/log");
     if (atEnd) log.scrollTop = log.scrollHeight;
   } catch (e) {
-    $("status").textContent = "No answer: " + e.message;
+    $("sub").textContent = "No answer: " + e.message;
   }
   busy = false;
 }
-// The face card shows only when the example has a face (GET /face).
+
+// The face card shows only when the example has a face (GET /face). Its
+// "views:" line says which view buttons to show. A "battery:" line goes to the
+// battery card, and a Wi-Fi scan (lines that start with two spaces) to its own card.
+function showFace(t) {
+  last.face = t;
+  const f = lines(t);
+  const rows = [];
+  for (const [k, label] of [["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"]]) {
+    if (f.has(k)) rows.push([label, f.get(k)]);
+  }
+  kv($("facestate"), rows);
+  const views = (f.get("views") || "").split(" ");
+  for (const b of document.querySelectorAll("button[data-view]")) b.hidden = !views.includes(b.dataset.view);
+  $("calib").hidden = !views.includes("audio");
+  $("face").hidden = false;
+
+  const nets = [];
+  for (const l of t.split("\n")) {
+    const m = l.match(/^  (.+?)\s+(-?\d+) dBm\s+ch\s+(\d+)\s+(\S+)$/);
+    if (m) nets.push([m[1], m[2], m[3], m[4]]);
+  }
+  $("netcard").hidden = !f.has("wi-fi");
+  if (f.has("wi-fi")) {
+    $("nettitle").textContent = "Wi-Fi networks (" + f.get("wi-fi") + ")";
+    nets.sort((a, b) => b[1] - a[1]); // strongest first
+    if (nets.length) grid($("nets"), ["Name", "dBm", "Channel", "Security"], nets, (r, i) => (i === 0 || i === 3 ? securityClass(r[3]) : ""));
+    else kv($("nets"), [[null, "Open the Wi-Fi view on the robot to scan."]]);
+  }
+  showStatus();
+}
 async function face(path) {
   try {
-    $("facestate").textContent = await text(path, path === "/face" ? {} : { method: "POST", headers: { "X-Token": token.value } });
-    $("face").hidden = false;
+    showFace(await text(path, path === "/face" ? {} : auth()));
   } catch (e) {
     if (path !== "/face") $("msg").textContent = "Error: " + e.message;
   }
@@ -148,9 +375,13 @@ for (const b of document.querySelectorAll("button[data-view]")) {
   b.onclick = () => face("/face?view=" + b.dataset.view);
 }
 face("/face");
+
+function showLeds(t) {
+  kv($("leds"), [...lines(t)].map(([k, v]) => [k[0].toUpperCase() + k.slice(1), v === "#000000" ? "off" : v]));
+}
 async function leds(side, color) {
   try {
-    $("leds").textContent = await text(`/leds?side=${side}&color=${color}`, { method: "POST", headers: { "X-Token": token.value } });
+    showLeds(await text(`/leds?side=${side}&color=${color}`, auth()));
   } catch (e) {
     $("msg").textContent = "Error: " + e.message;
   }
@@ -164,8 +395,13 @@ $("snap").onclick = () => {
   $("cam").src = "/camera.jpg?t=" + Date.now();
 };
 $("cam").onerror = () => { $("msg").textContent = "No picture: is there a camera?"; };
-text("/leds").then((t) => { $("leds").textContent = t; }).catch(() => {});
-text("/i2c").then((t) => { $("i2c").textContent = t; }).catch(() => {});
+// An example without the camera has no /camera.jpg: 404, not 405 for HEAD.
+fetch("/camera.jpg", { method: "HEAD" }).then((r) => { $("camcard").hidden = r.status === 404; }).catch(() => {});
+text("/leds").then(showLeds).catch(() => {});
+text("/i2c").then((t) => {
+  const rows = t.split("\n").filter(Boolean).map((l) => [l.slice(0, 4), l.slice(5)]);
+  grid($("i2c"), ["Address", "Chip"], rows);
+}).catch(() => {});
 refresh();
 setInterval(refresh, 1000);
 </script>

@@ -168,6 +168,39 @@ static int read14(int c, uint8_t reg)
     return rd(c, reg, b, 2) == ESP_OK ? ((b[0] & 0x3F) << 8 | b[1]) : -1;
 }
 
+// Power chip (AXP2101): status 0x00-0x01, fuel gauge 0xA4, ADCs 0x34-0x3A.
+// Call with the lock held.
+static esp_err_t power_read(tr_power_t *p)
+{
+    static const char *dir[4] = {"standby", "charging", "discharging", "?"};
+    uint8_t st[2], pct;
+    if (!dev[POWER] || rd(POWER, 0x00, st, 2) != ESP_OK || rd(POWER, 0xA4, &pct, 1) != ESP_OK) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    const int vbus = read14(POWER, 0x38);
+    *p = (tr_power_t){
+        .battery = st[0] & 0x08,
+        .percent = pct,
+        .millivolts = read14(POWER, 0x34),
+        .usb = st[0] & 0x20,
+        .usb_mv = st[0] & 0x20 && vbus >= 0 && vbus < 0x3FFF - 32 ? vbus : 0,
+        .system_mv = read14(POWER, 0x3A),
+        .state = dir[st[1] >> 5 & 3],
+    };
+    return ESP_OK;
+}
+
+esp_err_t tr_power_read(tr_power_t *p)
+{
+    if (!lock) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const esp_err_t err = power_read(p);
+    xSemaphoreGive(lock);
+    return err;
+}
+
 void tr_sensors_status(char *text, size_t size)
 {
     int at = 0;
@@ -230,18 +263,15 @@ void tr_sensors_status(char *text, size_t size)
     }
 
     // Power chip (AXP2101).
-    uint8_t st[2], pct;
-    if (dev[POWER] && rd(POWER, 0x00, st, 2) == ESP_OK && rd(POWER, 0xA4, &pct, 1) == ESP_OK) {
-        static const char *dir[4] = {"standby", "charging", "discharging", "?"};
+    tr_power_t p;
+    if (power_read(&p) == ESP_OK) {
         at = add(text, size, at, "power chip: battery %s, %d%%, %.2f V, %s\n",
-                 st[0] & 0x08 ? "present" : "not found", pct, read14(POWER, 0x34) / 1000.0f,
-                 dir[st[1] >> 5 & 3]);
-        const int vbus = read14(POWER, 0x38), vsys = read14(POWER, 0x3A);
-        at = add(text, size, at, "power chip: USB %s", st[0] & 0x20 ? "in" : "out");
-        if (st[0] & 0x20 && vbus >= 0 && vbus < 0x3FFF - 32) {
-            at = add(text, size, at, ", %.2f V", vbus / 1000.0f);
+                 p.battery ? "present" : "not found", p.percent, p.millivolts / 1000.0f, p.state);
+        at = add(text, size, at, "power chip: USB %s", p.usb ? "in" : "out");
+        if (p.usb_mv) {
+            at = add(text, size, at, ", %.2f V", p.usb_mv / 1000.0f);
         }
-        at = add(text, size, at, ", system %.2f V\n", vsys / 1000.0f);
+        at = add(text, size, at, ", system %.2f V\n", p.system_mv / 1000.0f);
     } else {
         at = add(text, size, at, "power chip: no answer\n");
     }

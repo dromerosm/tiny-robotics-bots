@@ -48,7 +48,8 @@ tr_lcd_fill_rect(0, 0, TR_LCD_W, 30, TR_LCD_RGB(20, 60, 120));
 1. AW9523 (`0x58`): sets P0_0 (touch reset) and P1_1 (screen reset) high. It reads each register first and changes only those bits, plus port 0 push-pull (register `0x11`, bit 4), as the BSP sets it. We don't use Espressif's AW9523 driver: it sets all 16 pins to low outputs, and the other pins drive power lines of the CoreS3.
 2. Touch chip (`0x38`): its firmware ID (register `0xA6`) is `0x12` on the ILI9342E screen (units from August 2026 on). Other values mean ILI9342C.
    Our unit has the ILI9342E (firmware ID `0x12`).
-3. AXP2101 (`0x34`): backlight on DLDO1 at 3.3 V (register `0x99` = 28, then bit 7 of `0x90`).
+   On a cold start this is the first time the touch chip runs. `tr_sensors_init()` may run before it and get no answer at `0x38`. It adds the touch anyway, so the touch works once `tr_lcd_init()` has taken it out of reset.
+3. AXP2101 (`0x34`): backlight on DLDO1 at 3.3 V (register `0x99` = 28, then bit 7 of `0x90`). `tr_lcd_brightness(percent)` dims it later as M5GFX does: 20 % is 2.6 V and saves about 110 mA (see [09-wifi](../../examples/stackchan/09-wifi)).
 4. SPI3 at 40 MHz: SCLK G36, MOSI G37, DC G35, CS G3, no MISO. The `esp_lcd_ili9341` driver, BGR order, colors inverted, and extra setup commands for the ILI9342E.
 
 For pictures that change, like a face, `tr_lcd_render(fn, ctx)` draws the whole screen from a function that gives each pixel's color. It sends 15 bands of 16 rows, about 40 ms, with no flicker. [08-face](../../examples/stackchan/08-face) uses it.
@@ -79,6 +80,8 @@ char text[1024];
 tr_sensors_status(text, sizeof(text));  // one or two lines per sensor
 int x, y;
 if (tr_touch_read(&x, &y)) { ... }      // a finger on the screen, in pixels
+tr_power_t p;
+if (tr_power_read(&p) == ESP_OK) { ... } // the power chip as numbers: %, USB, voltages, state
 ```
 
 | Sensor | Chip, address | What we read | Source |
