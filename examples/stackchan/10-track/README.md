@@ -1,6 +1,6 @@
 # StackChan 10: find faces (step one of face tracking)
 
-[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face, about 8 frames per second. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
+[09-wifi](../09-wifi) plus a camera that finds faces. Tap the left eye: the screen shows what the camera sees, with a green box on each face. The screen shows about 13 frames per second, and the robot looks for faces about 6.6 times per second, on the second core. This is the first step of face tracking. The robot finds faces and shows them, but the head does not follow them yet.
 
 Everything else stays as in 09: the face, the Wi-Fi list on the right eye, the status screen on the mouth, sleep after a minute with no touch on battery ([tr_board](../../../components/tr_board#sleep)), updates over Wi-Fi ([tr_ota](../../../components/tr_ota)) and the page at `http://stackchan.local/app` ([tr_web](../../../components/tr_web)).
 
@@ -39,7 +39,7 @@ curl -H "X-Token: <token>" --data-binary @examples/stackchan/10-track/build/trac
 | The right eye | **Wi-Fi** (as in 09) | A tap on the top bar |
 | The mouth | **Status** (as in 09) | A tap on the top bar |
 
-`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. While it is open, `GET /face` has a `track:` line, and `/log` gets two lines every 2 s: the faces, the time to find them and the frames per second, then the time per frame for the camera and the screen. The open view keeps the robot awake.
+`POST /face?view=track` (token needed) opens it too, and the page has a **Faces** button. While it is open, `GET /face` has a `track:` line, and `/log` gets a line every 2 s: the faces, the time to find them, finds per second, and frames per second on the screen. The open view keeps the robot awake.
 
 ## Expected output
 
@@ -62,10 +62,11 @@ Measured on our robot on 2026-11-01:
 | --- | --- |
 | App size | 2.26 MB (09-wifi: 1.01 MB). esp-dl, the camera driver and the model add about 1.25 MB. 2.68 MB of the 4.94 MB app slot stay free |
 | Model | MSR + MNP, int8, 190 KB in flash. It loads in 0.6 s, the first time the view opens |
-| Internal RAM free | 103 KB after the model loaded (lowest 54 KB, while it loaded). The second screen band (10 KB) is part of this |
-| PSRAM free | 7.5 MB of 8 MB. The model and the camera frames use about 0.8 MB |
-| Time to find faces | 73 ms with no face, 80 to 90 ms with one |
-| Frames per second | 8.0 to 8.3 (no face) |
+| Internal RAM free | 97 KB after the model loaded (lowest 54 KB, while it loaded). The second screen band (10 KB) and the finder task's stack (6 KB) are part of this |
+| PSRAM free | 7.3 MB of 8 MB. The model, the camera frames and the finder's copy of a frame (150 KB) use about 1 MB |
+| Time to find faces | 92 ms with no face, 113 ms with one (on core 1, while core 0 shows frames) |
+| Screen | 13.3 frames per second |
+| Finds | 6.6 per second |
 | Battery current with the view open | about 138 mA (average) |
 
 What made it faster:
@@ -91,16 +92,31 @@ Then the rest of each frame. We timed each part on the robot:
 - **The screen.** `tr_lcd` sends the screen in bands of 16 rows through a DMA buffer. With one buffer, it filled a band, sent it and waited, one band at a time. Now it has two: one goes out on SPI while the next one is filled. 32 ms is close to the limit of SPI at 40 MHz for 320 x 240 pixels (31 ms). This also helps the camera in [08-face](../08-face). It costs 10 KB more of internal DMA memory.
 - **The touch.** The view read the touch 2 times with 30 ms pauses after each frame. Now it reads it once per frame at the top of the loop, as the face does. A tap still closes the view.
 
+Then we split the work over the two cores:
+
+| | One core | Two cores |
+| --- | --- | --- |
+| Screen | 8.2 frames/s | **13.3 frames/s** |
+| Finds | 8.2 per second | 6.6 per second |
+| Time to find faces (no face) | 80 ms | 92 ms |
+
+- **The finder** is a task on core 1. The face task, on core 0, takes each camera frame and shows it. When the finder is free, the face task first copies the frame for it (150 KB in PSRAM) and wakes it.
+- **Only the face task takes frames from the camera.** In our first try both tasks took frames: the face task got nearly all of them, the finder found faces only 0.4 times per second, and the camera timed out (`cam_hal: Failed to get frame: timeout`).
+- **Finding is slower on two cores** (80 to 92 ms): both cores, the camera and the screen use the PSRAM at the same time.
+- **The finder gets every second frame.** It needs 92 ms, a bit more than one screen frame (75 ms), so it is still busy when the next frame comes. 13.3 / 2 = 6.6.
+- The screen is smoother and the box still follows the face (checked on the robot). For the head, 6.6 finds per second is enough: a servo move takes at least 100 ms.
+
 When it loads the model, esp-dl writes two warnings to `/log`: `dl::Model: minimize() will delete unused inference variables`. They come from the library and mean nothing for us: we only run the model, we don't test it.
 
 ## How it works
 
 - **The model.** `face.cpp` makes one `HumanFaceDetect` (the MSR + MNP model) the first time the view opens. MSR finds candidate boxes in a smaller copy of the frame, and MNP checks each one at 48 x 48. esp-dl makes the smaller copy itself.
-- **The frame.** The camera gives RGB565 with the high byte first, which is `DL_IMAGE_PIX_TYPE_RGB565BE` in esp-dl, so the frame goes to the model as it is. The boxes are drawn into the frame, and the frame goes to the screen with `tr_lcd_blit()`.
+- **The frame.** The camera gives RGB565 with the high byte first, which is `DL_IMAGE_PIX_TYPE_RGB565BE` in esp-dl, so the copy goes to the model as it is. The face task draws the last boxes into the frame, and the frame goes to the screen with `tr_lcd_blit()`.
+- **The two tasks.** See above. The finder runs only while the view is open, and stops when it closes, when the robot sleeps, or when another view opens over HTTP.
 - **The rest.** As in [09-wifi](../09-wifi).
 
 ## Try next
 
 - Turn the head toward the face: a small step of yaw and pitch toward the center of the box, with a dead zone so it does not shake.
 - Make the eyes on the face look at the person when the view is closed.
-- Find faces on the second core while the first one shows the frame, so the two overlap.
+- When the head follows the face, don't show the camera: the eyes look at the person instead, and the finder gets every frame.
