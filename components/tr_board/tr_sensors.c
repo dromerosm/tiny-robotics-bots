@@ -110,7 +110,11 @@ esp_err_t tr_sensors_init(void)
     for (int c = 0; c < COUNT; c++) {
         if (i2c_master_probe(bus, chip[c].addr, TIMEOUT_MS) != ESP_OK) {
             ESP_LOGW(TAG, "no answer at 0x%02X", chip[c].addr);
-            continue;
+            // On a cold start the screen touch is still in reset until
+            // tr_lcd_init, so add it anyway: reads work once it is out.
+            if (c != SCREEN_TOUCH) {
+                continue;
+            }
         }
         const i2c_device_config_t cfg = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -123,9 +127,6 @@ esp_err_t tr_sensors_init(void)
     }
     if (dev[HEAD_TOUCH] && head_touch_init() != ESP_OK) {
         ESP_LOGW(TAG, "head touch setup failed");
-    }
-    if (dev[SCREEN_TOUCH]) {
-        wr(SCREEN_TOUCH, 0xA4, 0x00); // polling mode, as M5GFX sets it
     }
     if (dev[POWER]) {
         wr(POWER, 0x30, 0x3F); // all ADC channels on, as M5Unified does
@@ -274,9 +275,13 @@ bool tr_touch_read(int *x, int *y)
     if (!lock || !dev[SCREEN_TOUCH]) {
         return false;
     }
+    static bool polling;
     uint8_t b[5];
     xSemaphoreTake(lock, portMAX_DELAY);
     const bool ok = rd(SCREEN_TOUCH, 0x02, b, 5) == ESP_OK;
+    if (ok && !polling) {
+        polling = wr(SCREEN_TOUCH, 0xA4, 0x00) == ESP_OK; // polling mode, as M5GFX sets it
+    }
     xSemaphoreGive(lock);
     if (!ok || (b[0] & 0x0F) == 0 || (b[0] & 0x0F) > 2) {
         return false;
