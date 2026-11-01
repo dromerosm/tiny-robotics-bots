@@ -38,11 +38,17 @@ esp_err_t tr_ota_start(void);
 typedef void (*tr_ota_status_fn)(char *text, size_t size);
 esp_err_t tr_ota_add_status(tr_ota_status_fn fn);
 
-// Add an endpoint of the example to the web server (up to 16), before or after
+// Add an endpoint of the example to the web server (up to 20), before or after
 // tr_ota_start(). For anything that changes the robot, check the token first:
-//   if (!tr_ota_token_ok(req)) return ESP_FAIL;   // it has sent the 403 answer
+//   if (!tr_ota_token_ok(req)) return ESP_OK;   // it has sent the 403 answer
+// Return ESP_OK after an error answer too: ESP_FAIL makes the server close the
+// connection and log "uri handler execution failed", with no reason.
 esp_err_t tr_ota_add_uri(const httpd_uri_t *uri);
 bool tr_ota_token_ok(httpd_req_t *req);
+
+// Send an error answer, like tr_ota_send_error(req, "409 Conflict", "no servos\n").
+// It closes the connection after it when the request has a body.
+void tr_ota_send_error(httpd_req_t *req, const char *status, const char *text);
 
 // The status text of GET / (one item per line), for a screen.
 void tr_ota_status_text(char *text, size_t size);

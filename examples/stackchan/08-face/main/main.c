@@ -390,7 +390,7 @@ static esp_err_t face_get(httpd_req_t *req)
 static esp_err_t face_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     tr_sleep_wake(); // a change on the screen or the head: wake first
     char query[64], value[8];

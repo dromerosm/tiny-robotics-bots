@@ -51,7 +51,7 @@ static esp_netif_t *sta;
 #define MAX_STATUS 4
 static tr_ota_status_fn status_fns[MAX_STATUS];
 
-#define MAX_URIS 16
+#define MAX_URIS 20
 static httpd_uri_t extra_uris[MAX_URIS];
 static int extra_count;
 static httpd_handle_t server;
@@ -132,6 +132,19 @@ static void start_log(void)
 // Browsers ask for it anyway; a 404 would fill the log with warnings.
 extern const char favicon_start[] asm("_binary_favicon_svg_start");
 extern const char favicon_end[] asm("_binary_favicon_svg_end");
+
+// GET /apple-touch-icon.png: the same robot as a 180 x 180 PNG, made by
+// touch-icon.py. Safari asks for it (and for the "-precomposed" name) when
+// the page is saved to the home screen; it does not take an SVG.
+extern const uint8_t touch_icon_start[] asm("_binary_apple_touch_icon_png_start");
+extern const uint8_t touch_icon_end[] asm("_binary_apple_touch_icon_png_end");
+
+static esp_err_t touch_icon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "image/png");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)touch_icon_start, touch_icon_end - touch_icon_start);
+}
 
 static esp_err_t favicon_handler(httpd_req_t *req)
 {
@@ -271,6 +284,8 @@ static void wifi_task(void *arg)
         wifi_config_t cfg = {0};
         strlcpy((char *)cfg.sta.ssid, net->ssid, sizeof(cfg.sta.ssid));
         strlcpy((char *)cfg.sta.password, net->password, sizeof(cfg.sta.password));
+        // With a password, WPA2 at least: never an open network with the same name.
+        cfg.sta.threshold.authmode = net->password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
         xEventGroupClearBits(wifi_events, LOST);
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
         esp_wifi_connect();
@@ -310,9 +325,21 @@ bool tr_ota_token_ok(httpd_req_t *req)
         strcmp(given, token) == 0) {
         return true;
     }
-    httpd_resp_set_status(req, "403 Forbidden");
-    httpd_resp_sendstr(req, "wrong or missing X-Token\n");
+    ESP_LOGW(TAG, "%s: 403, wrong or missing X-Token", req->uri);
+    tr_ota_send_error(req, "403 Forbidden", "wrong or missing X-Token\n");
     return false;
+}
+
+// Send an error answer. If the request has a body we did not read (an
+// update), close the connection after the answer, so the body is not read
+// as the next request. The handler then returns ESP_OK: the answer is sent.
+void tr_ota_send_error(httpd_req_t *req, const char *status, const char *text)
+{
+    httpd_resp_set_status(req, status);
+    httpd_resp_sendstr(req, text);
+    if (req->content_len > 0) {
+        httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    }
 }
 
 // POST /update: write the new app to the other slot, then restart.
@@ -320,13 +347,14 @@ static esp_err_t update_handler(httpd_req_t *req)
 {
     // The server is on the home network, so only someone who saw the USB port may update.
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
     esp_ota_handle_t ota;
     if (esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
+        ESP_LOGW(TAG, "update: could not start");
+        tr_ota_send_error(req, "500 Internal Server Error", "could not start the update\n");
+        return ESP_OK;
     }
     ESP_LOGI(TAG, "update: receiving %d bytes into %s", req->content_len, slot->label);
     static char buf[4096];
@@ -338,15 +366,18 @@ static esp_err_t update_handler(httpd_req_t *req)
         }
         if (n <= 0 || esp_ota_write(ota, buf, n) != ESP_OK) {
             esp_ota_abort(ota);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
+            ESP_LOGW(TAG, "update: %s after %d bytes", n <= 0 ? "connection lost" : "write failed",
+                     req->content_len - left);
+            tr_ota_send_error(req, "500 Internal Server Error", "update failed\n");
+            return ESP_OK;
         }
         left -= n;
     }
     // esp_ota_end() checks the image (chip, size, checksum) before we boot from it.
     if (esp_ota_end(ota) != ESP_OK || esp_ota_set_boot_partition(slot) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad image");
-        return ESP_FAIL;
+        ESP_LOGW(TAG, "update: bad image");
+        tr_ota_send_error(req, "400 Bad Request", "bad image\n");
+        return ESP_OK;
     }
     httpd_resp_sendstr(req, "ok, restarting\n");
     ESP_LOGI(TAG, "update: done, restarting");
@@ -487,7 +518,11 @@ static esp_err_t start_http(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.recv_wait_timeout = 10;
-    cfg.max_uri_handlers = 4 + MAX_URIS;
+    cfg.max_uri_handlers = 6 + MAX_URIS;
+    // When all sockets are in use (Safari opens several at once), close the
+    // one that waited longest instead of failing the new one. Before, accept
+    // failed (error 128) and the page waited for an answer that never came.
+    cfg.lru_purge_enable = true;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &cfg), TAG, "http");
     const httpd_uri_t update = {.uri = "/update", .method = HTTP_POST, .handler = update_handler};
     const httpd_uri_t info = {.uri = "/", .method = HTTP_GET, .handler = info_handler};
@@ -498,6 +533,14 @@ static esp_err_t start_http(void)
     const httpd_uri_t icon = {
         .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
     httpd_register_uri_handler(server, &icon);
+    const httpd_uri_t touch[] = {
+        {.uri = "/apple-touch-icon.png", .method = HTTP_GET, .handler = touch_icon_handler},
+        {.uri = "/apple-touch-icon-precomposed.png",
+         .method = HTTP_GET,
+         .handler = touch_icon_handler},
+    };
+    httpd_register_uri_handler(server, &touch[0]);
+    httpd_register_uri_handler(server, &touch[1]);
     for (int i = 0; i < extra_count; i++) {
         httpd_register_uri_handler(server, &extra_uris[i]);
     }

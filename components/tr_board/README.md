@@ -135,6 +135,10 @@ What goes off, in this order (wake does the opposite):
 | Motion | `0x08` | The BMI270 suspended (PWR_CTRL `0x7D` = 0, then PWR_CONF `0x7C` = 1) |
 | CPU | `0x10` | The task gives back two power locks, so the CPU drops to 80 MHz and sleeps between ticks (automatic light sleep, `CONFIG_PM_ENABLE` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE`). Wi-Fi stays connected in modem sleep. Only on the robot: without the power chip (as in the emulator) there is no light sleep |
 
+**Pins in light sleep.** On the ESP32-S3, ESP-IDF turns every pin off during light sleep, to avoid a reset on wake when a pin gets a small electrostatic pulse (`ESP_SLEEP_GPIO_RESET_WORKAROUND`, which turns on `CONFIG_PM_SLP_DISABLE_GPIO`). Then the green LED next to the RST button blinked with every tick, because it follows GPIO0. `tr_sleep_start()` keeps the pins we use as they are, with `gpio_sleep_sel_dis()`: GPIO0, the internal I2C (G11, G12), the screen (G3, G35, G36, G37) and the servo UART (G6, G7). The other pins keep the workaround.
+
+**While asleep**, `GET /sensors` says "off while the robot sleeps" for the motion sensor and the light sensor, instead of reading a chip that is off (the motion chip read -41 °C). `GET /head` shows the servos' last reading from before the sleep.
+
 An example with a loop checks `tr_sleep_asleep()`, waits in `tr_sleep_wait_awake()` instead of drawing, and draws again after. `POST /sleep?now=1&steps=0x01` sleeps with only some steps, to measure each one.
 
 ### What we can't turn off

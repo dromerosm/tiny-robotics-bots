@@ -28,6 +28,7 @@ ESP_ERROR_CHECK(tr_web_start());   // adds the endpoints, looks for the servos, 
 | `GET /camera.jpg` | One camera frame as JPEG (320 x 240). Starts the camera the first time. Not there with `CONFIG_TR_WEB_CAMERA=n` |
 | `GET /sleep` | Awake or asleep, the battery current, its average and the time left (the same lines as `GET /`) |
 | `POST /sleep?now=1`, `wake=1`, `after=60` | Sleep now, wake now, or the seconds with no touch before sleep (`0`: never), until the next restart. Token needed. `now=1&steps=0x01` sleeps with only some steps, to measure each one (see [tr_board](../tr_board#sleep)) |
+| `HEAD /camera.jpg` | 200 if the app has the camera, 404 if not. The page uses it to show or hide the camera card |
 | `GET /regs` | AXP2101, AW9523 and PY32 registers, for debugging the power setup |
 | `POST /reg?chip=aw&reg=0x03&val=0x83` | Write one register (`axp`, `aw` or `py32`). Token needed. Logged as a warning in `/log` first, in case it resets the robot |
 
@@ -39,7 +40,15 @@ It shows a **Face** card when the example answers `GET /face` (as 08-face does),
 
 **Ping** in the network card sends 5 requests one after the other to `/favicon.ico` (the 0.5 KB robot icon) and shows the fastest, average and slowest answer. It measures the Wi-Fi link and the web server together.
 
-An example without the camera sets `CONFIG_TR_WEB_CAMERA=n` (as [09-wifi](../../examples/stackchan/09-wifi) does). Then there is no `/camera.jpg`, the camera code stays out of the app, and the page hides its camera card: it asks with `HEAD /camera.jpg` and gets 404 instead of 405.
+An example without the camera sets `CONFIG_TR_WEB_CAMERA=n` (as [09-wifi](../../examples/stackchan/09-wifi) does). Then there is no `GET /camera.jpg`, the camera code stays out of the app, and the page hides its camera card. The page asks with `HEAD /camera.jpg`: tr_web answers 200 with the camera and 404 without it, with no body. Before, the server's own 404 sent a short body, which an answer to `HEAD` must not have. Browsers then closed those connections with a reset, and `/log` filled with `error in recv : 104`.
+
+## Many connections
+
+Every request of the page gives up after 8 s, so one that never gets an answer does not stop the updates. The server closes the connection that waited longest when all of its sockets are in use (`lru_purge_enable` in tr_ota), because Safari opens several at once. Before, Safari on an iPad showed empty cards: the server could not accept a new connection (`error in accept (128)` in `/log`), and the page waited for that answer for ever. In a test with 3 pages polling and 8 idle connections open, all 300 requests got an answer.
+
+## Errors in the log
+
+When a request fails, tr_web answers with the error and writes one line to `/log`, such as `W tr_web: /head: 409, no servos`. A wrong or missing token gives `W tr_ota: /sleep: 403, wrong or missing X-Token`. The handlers then return `ESP_OK`, not `ESP_FAIL`. With `ESP_FAIL` the server closes the connection and only logs `uri handler execution failed`, with no reason.
 
 ## For an example that moves the head too
 

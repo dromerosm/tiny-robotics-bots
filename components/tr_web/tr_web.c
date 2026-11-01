@@ -37,6 +37,7 @@
 static bool servos_found;
 static esp_err_t servo_err = ESP_ERR_INVALID_STATE;
 static bool powered, powered_before_sleep;
+static char head_before_sleep[2][160]; // the servos' last reading, shown while asleep
 static volatile int64_t last_move_us = -1;
 
 static bool query_float(httpd_req_t *req, const char *key, float *value)
@@ -51,11 +52,12 @@ static bool query_float(httpd_req_t *req, const char *key, float *value)
     return end != text;
 }
 
+// An error answer, with a line in /log that says which request and why.
 static esp_err_t send_error(httpd_req_t *req, const char *status, const char *text)
 {
-    httpd_resp_set_status(req, status);
-    httpd_resp_sendstr(req, text);
-    return ESP_FAIL;
+    ESP_LOGW("tr_web", "%s: %.3s, %.*s", req->uri, status, (int)strcspn(text, "\n"), text);
+    tr_ota_send_error(req, status, text);
+    return ESP_OK;
 }
 
 static void describe(tr_servo_t id, const char *name, char *line, size_t size)
@@ -80,6 +82,12 @@ static esp_err_t head_get(httpd_req_t *req)
         return httpd_resp_sendstr(req, line);
     }
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    if (!powered && tr_sleep_asleep() && head_before_sleep[0][0]) {
+        httpd_resp_sendstr_chunk(req, "servo power: off while the robot sleeps (last reading)\n");
+        httpd_resp_sendstr_chunk(req, head_before_sleep[0]);
+        httpd_resp_sendstr_chunk(req, head_before_sleep[1]);
+        return httpd_resp_sendstr_chunk(req, NULL);
+    }
     snprintf(line, sizeof(line), "servo power: %s\n", powered ? "on" : "off");
     httpd_resp_sendstr_chunk(req, line);
     if (powered) {
@@ -112,7 +120,7 @@ esp_err_t tr_web_head_power(void)
 static esp_err_t head_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     if (!servos_found) {
         return send_error(req, "409 Conflict", "no servos\n");
@@ -151,7 +159,7 @@ static esp_err_t head_post(httpd_req_t *req)
 static esp_err_t head_off(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     if (powered) {
         tr_servo_torque(TR_SERVO_YAW, false);
@@ -166,7 +174,7 @@ static esp_err_t head_off(httpd_req_t *req)
 static esp_err_t head_zero(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     float v;
     esp_err_t err = ESP_OK;
@@ -227,7 +235,7 @@ static esp_err_t leds_get(httpd_req_t *req)
 static esp_err_t leds_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     if (!servos_found) {
         return send_error(req, "409 Conflict", "no PY32, so no LEDs\n");
@@ -288,6 +296,20 @@ static esp_err_t camera_get(httpd_req_t *req)
 }
 #endif
 
+// HEAD /camera.jpg: 200 if this app has the camera, 404 if not, with no body
+// (an answer to HEAD must not have one). The page asks it to show its camera
+// card. Without this, the server's own 404 sent a body, and browsers then
+// closed the connection with a reset.
+static esp_err_t camera_head(httpd_req_t *req)
+{
+#if CONFIG_TR_WEB_CAMERA
+    httpd_resp_set_type(req, "image/jpeg");
+#else
+    httpd_resp_set_status(req, "404 Not Found");
+#endif
+    return httpd_resp_send(req, NULL, 0);
+}
+
 // Power and IO registers, for debugging the board's power setup.
 static const struct {
     const char *name;
@@ -332,7 +354,7 @@ static esp_err_t regs_get(httpd_req_t *req)
 static esp_err_t reg_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     char query[64], chip[8] = "", reg[8] = "", val[8] = "";
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -376,7 +398,7 @@ static esp_err_t sleep_get(httpd_req_t *req)
 static esp_err_t sleep_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
-        return ESP_FAIL;
+        return ESP_OK;
     }
     char query[64], value[12];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
@@ -423,9 +445,12 @@ static void on_sleep(bool going_to_sleep)
     }
     if (going_to_sleep) {
         powered_before_sleep = powered;
+        head_before_sleep[0][0] = 0;
         if (powered) {
             tr_servo_torque(TR_SERVO_YAW, false);
             tr_servo_torque(TR_SERVO_PITCH, false);
+            describe(TR_SERVO_YAW, "yaw  ", head_before_sleep[0], sizeof(head_before_sleep[0]));
+            describe(TR_SERVO_PITCH, "pitch", head_before_sleep[1], sizeof(head_before_sleep[1]));
             tr_servo_power(false);
             powered = false;
         }
@@ -477,6 +502,7 @@ esp_err_t tr_web_start(void)
 #if CONFIG_TR_WEB_CAMERA
         {.uri = "/camera.jpg", .method = HTTP_GET, .handler = camera_get},
 #endif
+        {.uri = "/camera.jpg", .method = HTTP_HEAD, .handler = camera_head},
         {.uri = "/sleep", .method = HTTP_GET, .handler = sleep_get},
         {.uri = "/sleep", .method = HTTP_POST, .handler = sleep_post},
         {.uri = "/regs", .method = HTTP_GET, .handler = regs_get},
