@@ -1,6 +1,6 @@
 # StackChan 07: move the head over Wi-Fi
 
-Read and move StackChan's two head servos from your computer or phone. The robot serves a small page, `http://stackchan.local/app`, with the status, the servos and the I2C chips, and sliders to move the head. The same actions also work with `curl`. Like every example that runs on the robot, it keeps the updates over Wi-Fi from [tr_ota](../../../components/tr_ota). The endpoints and the page live in [tr_web](../../../components/tr_web), so other examples can use them.
+Read and move StackChan's two head servos from your computer or phone. The robot serves a small page, `http://stackchan.local/app`, with the status, the servos and the I2C chips, and sliders to move the head. The same actions also work with `curl`. Like every example that runs on the robot, it keeps the updates over Wi-Fi from [tr_ota](../../../components/tr_ota). The endpoints and the page live in [tr_web](../../../components/tr_web), so other examples can use them. After a minute with no use, on battery, the robot sleeps and the servos go off. A move from the page or `curl` wakes it first (see [tr_board](../../../components/tr_board#sleep)).
 
 | | |
 | --- | --- |
@@ -86,4 +86,3 @@ The servos warmed from 22 °C to 25 °C over the test, and the voltage stayed at
 ## Try next
 
 - Put the face from [04-face](../04-face) on the real screen, and make the head follow it.
-- Read more sensors on the page: light (LTR553), motion (BMI270), head touch (Si12T).

@@ -43,7 +43,9 @@ static const char *TAG = "tr_lcd";
 #define BAND_H 16 // rows sent at once; the largest text (scale 2) is 16 rows high
 
 static esp_lcd_panel_handle_t panel;
-static uint16_t *band; // one band of pixels, in DMA memory
+static esp_lcd_panel_io_handle_t io;
+static volatile bool off; // tr_lcd_power(false): no drawing
+static uint16_t *band;    // one band of pixels, in DMA memory
 static SemaphoreHandle_t band_free;
 
 // ILI9342E setup, copied from the BSP (ili9342e_init_cmds.h, Apache-2.0).
@@ -172,6 +174,43 @@ esp_err_t tr_lcd_brightness(int percent)
     return err;
 }
 
+bool tr_lcd_ready(void)
+{
+    return panel != NULL;
+}
+
+// DLDO1 on or off; its voltage (the brightness) stays.
+static esp_err_t backlight(bool on)
+{
+    uint8_t en;
+    const esp_err_t err = tr_board_reg_read(AXP2101_ADDR, AXP_LDO_EN, &en);
+    if (err != ESP_OK) {
+        return err; // no power chip, as in the emulator: nothing to say
+    }
+    const uint8_t now = on ? en | AXP_DLDO1_ON : en & ~AXP_DLDO1_ON;
+    return now == en ? ESP_OK : tr_board_reg_write(AXP2101_ADDR, AXP_LDO_EN, now);
+}
+
+esp_err_t tr_lcd_power(bool on)
+{
+    if (!panel) {
+        return on ? ESP_OK : backlight(false);
+    }
+    if (!on) {
+        off = true;
+        xSemaphoreTake(band_free, portMAX_DELAY); // the last band has gone out
+        xSemaphoreGive(band_free);
+        esp_lcd_panel_io_tx_param(io, 0x28, NULL, 0); // display off
+        esp_lcd_panel_io_tx_param(io, 0x10, NULL, 0); // sleep in
+        return backlight(false);
+    }
+    esp_lcd_panel_io_tx_param(io, 0x11, NULL, 0); // sleep out
+    vTaskDelay(pdMS_TO_TICKS(120));               // the datasheet's wait after sleep out
+    esp_lcd_panel_io_tx_param(io, 0x29, NULL, 0); // display on
+    off = false;
+    return backlight(true);
+}
+
 static bool on_band_sent(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *ctx)
 {
     BaseType_t woken = pdFALSE;
@@ -214,7 +253,6 @@ esp_err_t tr_lcd_init(void)
         .trans_queue_depth = 10,
         .on_color_trans_done = on_band_sent,
     };
-    esp_lcd_panel_io_handle_t io;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io),
                         TAG, "panel IO");
 
@@ -260,7 +298,7 @@ static void take_band(void)
 
 void tr_lcd_fill_rect(int x, int y, int w, int h, uint16_t color)
 {
-    if (!panel || w <= 0 || h <= 0) {
+    if (!panel || off || w <= 0 || h <= 0) {
         return;
     }
     for (int row = y; row < y + h; row += BAND_H) {
@@ -280,7 +318,7 @@ void tr_lcd_fill(uint16_t color)
 
 void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *text)
 {
-    if (!panel || scale < 1 || scale > 2) {
+    if (!panel || off || scale < 1 || scale > 2) {
         return;
     }
     const int cell_w = 6 * scale, h = 8 * scale;
@@ -320,7 +358,7 @@ void tr_lcd_text(int x, int y, int scale, uint16_t fg, uint16_t bg, const char *
 
 void tr_lcd_blit(int x, int y, int w, int h, const uint8_t *pixels)
 {
-    if (!panel || w <= 0 || w > TR_LCD_W) {
+    if (!panel || off || w <= 0 || w > TR_LCD_W) {
         return;
     }
     // Copy through the DMA band: the frame may be in PSRAM.
@@ -335,7 +373,7 @@ void tr_lcd_blit(int x, int y, int w, int h, const uint8_t *pixels)
 
 void tr_lcd_render_rows(int y0, int y1, tr_lcd_pixel_fn pixel, void *ctx)
 {
-    if (!panel) {
+    if (!panel || off) {
         return;
     }
     y0 = y0 < 0 ? 0 : y0;

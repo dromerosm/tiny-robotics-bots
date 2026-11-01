@@ -2,6 +2,8 @@
 
 StackChan's face on the real screen. At boot the head goes home (straight ahead, pitch 5°) and stays still. From the page at `http://stackchan.local/app` you can make it look around on its own, stop it, make it blink, or move the head by hand. The eyes follow where the head really points, and they blink every few seconds.
 
+The screen runs at 20 % to save power. After a minute with no touch, on battery, the robot sleeps: the screen and the servos go off, and a touch on the screen or the head wakes it. An open view (status, audio, camera) keeps it awake. See [tr_board](../../../components/tr_board#sleep).
+
 It brings together what 05 to 07 built: updates over Wi-Fi ([tr_ota](../../../components/tr_ota)), the screen and the servos ([tr_board](../../../components/tr_board)), and the page ([tr_web](../../../components/tr_web)).
 
 | | |
@@ -45,7 +47,7 @@ All of [07-head](../07-head)'s requests work too (`/head`, `/head/off`, `/i2c`, 
 
 ## The status screen
 
-Tap the mouth on the screen. A status screen opens with the same facts as `http://stackchan.local/`, the sensors, and the **update token** on the last line. **UP** and **DOWN** at the bottom scroll, and **X** at the top right closes it. The numbers change every second. The head stays still while it is open.
+Tap the mouth on the screen. The status screen of [tr_web](../../../components/tr_web#status-screen) opens, one section per page: Battery (with the time left and the sleep state), Robot, Network (with the **update token**), Touch and motion, and Room. **PREV** and **NEXT** at the bottom change the section, and a tap on the top bar closes it. The numbers change every second. The head stays still while it is open.
 
 The token is shown here because only someone who holds the robot can see it. `tr_ota_token()` gives it to the example; never log it or send it over the network.
 
@@ -96,6 +98,7 @@ head: yaw -35.9, pitch 8.4 degrees
 - **At boot.** The head moves home in 1 s (yaw 0°, pitch 5°), then the torque goes off. Looking around is off until you turn it on.
 - **Looking around.** Every 2 to 5 seconds the head moves to a random spot: yaw -40° to 40°, pitch 5° to 35°, in 0.9 s. Then the torque goes off. After a move from the page or `curl`, it waits 20 seconds before it looks around again.
 - **The eyes.** The task reads both servos every 200 ms. The eyes move 0.5 pixel per degree of yaw and 0.6 pixel per degree of pitch, so they point where the head points. If the eyes look the opposite way to the head, flip the sign of `EYE_X_PER_DEG`.
+- **Sleep.** When the robot sleeps, `tr_sleep_asleep()` is true and the face task waits in `tr_sleep_wait_awake()`. When it wakes, the servos get their power back if they had it, and the task draws the face again.
 - **Drawing.** It only draws when the eyes move or blink. Each frame is the whole screen, sent in 15 bands of 16 rows. That takes about 40 ms, so there is no flicker.
 
 ## Try next

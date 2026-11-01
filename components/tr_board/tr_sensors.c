@@ -17,6 +17,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tr_board.h"
+#include "tr_board_priv.h"
 
 static const char *TAG = "tr_sensors";
 
@@ -94,6 +95,16 @@ static esp_err_t motion_init(void)
     return wr(MOTION, 0x7D, 0x0E); // temperature, accel and gyro on
 }
 
+// Light (LTR553): brightness on (ALS_CONTR 0x80 bit 0) and proximity on
+// (PS_CONTR 0x81 bit 1), as M5CoreS3's LTR5XX driver does. Again after its
+// power comes back.
+static void light_init(void)
+{
+    if (dev[LIGHT] && (wr(LIGHT, 0x80, 0x01) != ESP_OK || wr(LIGHT, 0x81, 0x02) != ESP_OK)) {
+        ESP_LOGW(TAG, "light sensor setup failed");
+    }
+}
+
 esp_err_t tr_sensors_init(void)
 {
     if (lock) {
@@ -131,11 +142,7 @@ esp_err_t tr_sensors_init(void)
     if (dev[POWER]) {
         wr(POWER, 0x30, 0x3F); // all ADC channels on, as M5Unified does
     }
-    // Light (LTR553): brightness on (ALS_CONTR 0x80 bit 0) and proximity on
-    // (PS_CONTR 0x81 bit 1), as M5CoreS3's LTR5XX driver does.
-    if (dev[LIGHT] && (wr(LIGHT, 0x80, 0x01) != ESP_OK || wr(LIGHT, 0x81, 0x02) != ESP_OK)) {
-        ESP_LOGW(TAG, "light sensor setup failed");
-    }
+    light_init();
     motion_ready = dev[MOTION] && motion_init() == ESP_OK;
     if (dev[MOTION] && !motion_ready) {
         ESP_LOGW(TAG, "motion sensor setup failed");
@@ -303,6 +310,7 @@ void tr_sensors_status(char *text, size_t size)
 bool tr_touch_read(int *x, int *y)
 {
     if (!lock || !dev[SCREEN_TOUCH]) {
+        tr_sleep_touch(0, false);
         return false;
     }
     static bool polling;
@@ -313,22 +321,72 @@ bool tr_touch_read(int *x, int *y)
         polling = wr(SCREEN_TOUCH, 0xA4, 0x00) == ESP_OK; // polling mode, as M5GFX sets it
     }
     xSemaphoreGive(lock);
-    if (!ok || (b[0] & 0x0F) == 0 || (b[0] & 0x0F) > 2) {
-        return false;
+    const bool down = ok && (b[0] & 0x0F) >= 1 && (b[0] & 0x0F) <= 2;
+    if (!tr_sleep_touch(0, down)) {
+        return false; // no touch, or the one that woke the robot
     }
     *x = (b[1] & 0x0F) << 8 | b[2];
     *y = (b[3] & 0x0F) << 8 | b[4];
     return true;
 }
 
+// A zone that got stronger than at the last read. A zone can stay at a level
+// with no hand on it (ours stayed at 3 for minutes), so only a rise counts.
+static bool head_rise(int now, int before)
+{
+    for (int z = 0; z < 3; z++) {
+        if ((now >> 2 * z & 3) > (before >> 2 * z & 3)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int tr_head_touch(void)
 {
     if (!lock || !dev[HEAD_TOUCH]) {
+        tr_sleep_touch(1, false);
         return 0;
     }
+    static int before;
     uint8_t v = 0;
     xSemaphoreTake(lock, portMAX_DELAY);
     const bool ok = rd(HEAD_TOUCH, 0x10, &v, 1) == ESP_OK;
     xSemaphoreGive(lock);
-    return ok ? v & 0x3F : 0;
+    const int now = ok ? v & 0x3F : 0;
+    const bool rise = head_rise(now, before);
+    before = now;
+    return tr_sleep_touch(1, rise) ? now : 0;
+}
+
+// Sleep: the camera's power off (it also feeds the light sensor), and the
+// motion sensor suspended (PWR_CTRL 0x7D off, then PWR_CONF 0x7C advanced
+// power save). Waking undoes both and sets the light sensor up again.
+void tr_sensors_sleep(bool asleep, bool camera, bool motion)
+{
+    if (!lock) {
+        return;
+    }
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (motion && motion_ready) {
+        if (asleep) {
+            wr(MOTION, 0x7D, 0x00);
+            wr(MOTION, 0x7C, 0x01);
+        } else {
+            wr(MOTION, 0x7C, 0x00);
+            esp_rom_delay_us(1000); // Bosch: 450 us after power save off
+            wr(MOTION, 0x7D, 0x0E);
+        }
+    }
+    xSemaphoreGive(lock);
+    if (camera && !tr_cam_started()) {
+        if (asleep) {
+            tr_cam_power_off();
+        } else if (tr_cam_power() == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            xSemaphoreTake(lock, portMAX_DELAY);
+            light_init();
+            xSemaphoreGive(lock);
+        }
+    }
 }

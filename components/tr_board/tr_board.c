@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -16,9 +17,13 @@
 #define INA226_ADDR      0x41
 #define INA226_SHUNT     0x01 // signed, 2.5 uV per bit
 #define INA226_BUS       0x02 // 1.25 mV per bit
+#define INA226_CONFIG    0x00
 #define INA226_MAKER     0xFE // 0x5449, "TI"
 #define INA226_MAKER_TI  0x5449
 #define SHUNT_MICRO_OHMS 10000 // 10 mOhm in the body (schematic)
+// Continuous shunt and bus, 1.1 ms each, average of 64: a new value every
+// 141 ms. The average smooths the Wi-Fi bursts, so one read means more.
+#define INA226_SETUP 0x4727
 
 static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t ina226;
@@ -81,6 +86,12 @@ static esp_err_t ina226_open(void)
             err = ESP_ERR_NOT_FOUND; // something else answers at 0x41
             i2c_master_bus_rm_device(ina226);
         }
+        // Our setup, every start: the chip keeps its own while the battery
+        // lasts, and once a glitch on the bus left it stuck on one reading.
+        if (err == ESP_OK) {
+            const uint8_t setup[3] = {INA226_CONFIG, INA226_SETUP >> 8, INA226_SETUP & 0xFF};
+            err = i2c_master_transmit(ina226, setup, 3, I2C_TIMEOUT);
+        }
         if (err != ESP_OK) {
             ina226 = NULL;
         }
@@ -129,6 +140,16 @@ void tr_board_status(char *text, size_t size)
                  b.milliamps > 0   ? "discharging"
                  : b.milliamps < 0 ? "charging"
                                    : "idle");
+    }
+    size_t at = strlen(text);
+    const int m = tr_battery_minutes_left();
+    if (m >= 0 && at < size) {
+        at += snprintf(text + at, size - at,
+                       "battery use: average %.0f mA, about %d h %02d min left\n",
+                       tr_battery_average_ma(), m / 60, m % 60);
+    }
+    if (at < size) {
+        tr_sleep_status(text + at, size - at);
     }
 }
 

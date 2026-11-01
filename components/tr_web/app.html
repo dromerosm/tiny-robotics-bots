@@ -57,7 +57,14 @@
   </div>
 </header>
 <main>
-  <section><h2>Battery</h2><table id="battery"></table></section>
+  <section>
+    <h2>Battery</h2>
+    <table id="battery"></table>
+    <div class="row">
+      <button id="sleepnow" class="plain">Sleep now</button>
+      <button id="wakenow" class="plain">Wake up</button>
+    </div>
+  </section>
   <section><h2>Robot</h2><table id="robot"></table></section>
   <section>
     <h2>Network</h2>
@@ -194,18 +201,18 @@ const deg = (s) => s.replace(/ C$/, " °C");
 const last = { status: "", sensors: "", face: "" };
 
 function showStatus() {
-  const s = lines(last.status), n = lines(last.sensors), f = lines(last.face);
+  const s = lines(last.status), n = lines(last.sensors);
   const first = last.status.split("\n")[0] || "";
   const app = first.match(/^(\S+) (\S+), built (.+), running from (\S+) \((.+)\)$/);
   $("sub").textContent = app ? `${app[1]} ${app[2]} · up ${s.get("uptime") || "?"}` : first;
 
-  // Battery: the INA226 (GET /), the power chip (/sensors), and the example's
-  // guess of the time left (/face), when it has one.
+  // Battery: the INA226 with its average and the guess of the time left
+  // (GET /), and the power chip (/sensors).
   const rows = [];
   const ina = (s.get("battery") || "").match(/^([\d.]+ V), (\d+ mA) \((\w+)\)$/);
   if (ina) rows.push(["Voltage", ina[1]], ["Current", `${ina[2]}, ${ina[3]}`]);
   else if (s.has("battery")) rows.push(["Battery", s.get("battery")]);
-  const fb = (f.get("battery") || "").match(/average (\d+ mA)(?:, about (.+) left)?/);
+  const fb = (s.get("battery use") || "").match(/average (\d+ mA)(?:, about (.+) left)?/);
   if (fb) {
     rows.push(["Average", fb[1]]);
     if (fb[2]) {
@@ -221,6 +228,7 @@ function showStatus() {
     m = l.match(/^power chip: USB (\w+)(?:, ([\d.]+ V))?, system ([\d.]+ V)$/);
     if (m) rows.push(["USB", m[2] ? `${m[1]}, ${m[2]}` : m[1]], ["System", m[3]]);
   }
+  if (s.has("sleep")) rows.push(["Sleep", s.get("sleep"), s.get("sleep").startsWith("asleep") ? "warn" : ""]);
   kv($("battery"), rows.length ? rows : [[null, "No battery data"]]);
 
   const robot = [];
@@ -280,6 +288,20 @@ async function post(path) {
 $("move").onclick = () => post(`/head?yaw=${$("yaw").value}&pitch=${$("pitch").value}&ms=${$("ms").value}`);
 $("home").onclick = () => { $("yaw").value = 0; $("pitch").value = 5; $("yawv").textContent = 0; $("pitchv").textContent = 5; post("/head?yaw=0&pitch=5&ms=1500"); };
 $("off").onclick = () => post("/head/off");
+
+// Sleep: the robot sleeps after a minute with no touch, on battery. These
+// buttons do it now. The next refresh shows the new state.
+async function sleep(path) {
+  $("msg").textContent = "Working…";
+  try {
+    await text(path, auth());
+    $("msg").textContent = "Done.";
+  } catch (e) {
+    $("msg").textContent = "Error: " + e.message;
+  }
+}
+$("sleepnow").onclick = () => sleep("/sleep?now=1");
+$("wakenow").onclick = () => sleep("/sleep?wake=1");
 
 // Ping: 5 requests one after the other to /favicon.ico (0.5 KB, not cached
 // here), timed in the browser. It measures the network and the robot's web server.

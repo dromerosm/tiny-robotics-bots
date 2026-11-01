@@ -42,8 +42,15 @@ typedef struct {
 // Read the body battery. ESP_ERR_NOT_FOUND if the INA226 does not answer (as in the emulator).
 esp_err_t tr_battery_read(tr_battery_t *battery);
 
-// One line about the battery, for a status page. Fits tr_ota_add_status().
+// The battery for a status page: voltage and current, the average use and
+// the time left, and the sleep state (tr_sleep_status). Fits tr_ota_add_status().
 void tr_board_status(char *text, size_t size);
+
+// The battery current averaged over about 20 s, in mA (0 when it does not
+// discharge), and a guess of the minutes left at that use (-1 if not known).
+// The sleep task updates both once a second, so they need tr_sleep_start().
+float tr_battery_average_ma(void);
+int tr_battery_minutes_left(void);
 
 // The screen: 320 x 240, RGB565 colors.
 #define TR_LCD_W            320
@@ -59,6 +66,13 @@ esp_err_t tr_lcd_init(void);
 
 // Backlight from 1 to 100 %, after tr_lcd_init. Less light uses less power.
 esp_err_t tr_lcd_brightness(int percent);
+// Screen off: the panel sleeps (0x28, 0x10) and the backlight (DLDO1) turns
+// off. Drawing does nothing until it is on again. On: the panel wakes (0x11,
+// 120 ms, 0x29) and the backlight comes back at the same brightness. Without
+// tr_lcd_init, off turns the backlight off and on does nothing.
+esp_err_t tr_lcd_power(bool on);
+// True after tr_lcd_init worked.
+bool tr_lcd_ready(void);
 
 void tr_lcd_fill(uint16_t color);
 void tr_lcd_fill_rect(int x, int y, int w, int h, uint16_t color);
@@ -142,7 +156,9 @@ esp_err_t tr_power_read(tr_power_t *power);
 // The first point touching the screen, in screen pixels. False if none.
 // Needs tr_sensors_init().
 bool tr_touch_read(int *x, int *y);
-// The head touch zones, 2 bits each (zone 1 in bits 0-1). 0 = no touch.
+// The head touch zones, 2 bits each (zone 1 in bits 0-1), when a zone got
+// stronger since the last read; 0 otherwise. A zone can stay high with no hand
+// on it, so only a rise counts as a touch.
 int tr_head_touch(void);
 
 // The two microphones (ES7210 on I2S: MCLK G0, BCLK G34, WS G33, data G14).
@@ -159,6 +175,42 @@ esp_err_t tr_cam_start(void);
 // Only the camera's power (AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0).
 // The light sensor needs it too.
 esp_err_t tr_cam_power(void);
+
+// Sleep. After CONFIG_TR_SLEEP_AFTER_S seconds with no touch, on battery,
+// the robot turns off what nobody uses: the screen, the servos and LEDs (with
+// tr_web), the camera's power (and the light sensor), the motion sensor, and
+// it lets the CPU slow down and sleep between ticks. Wi-Fi stays on, so the
+// page and updates still work, a bit slower. A touch on the screen or the
+// head wakes it, and the example does not see that touch. It never sleeps
+// with USB power, and plugging USB in wakes it.
+//
+// tr_web_start() starts it. An example with a loop calls tr_sleep_asleep()
+// and waits with tr_sleep_wait_awake() instead of drawing, and calls
+// tr_sleep_activity() while someone uses a screen that is open.
+#define TR_SLEEP_SCREEN 0x01 // panel asleep, backlight off, no drawing
+#define TR_SLEEP_HOOKS  0x02 // the hooks: servos and LEDs off (tr_web), the example's own
+#define TR_SLEEP_CAMERA                                                                            \
+    0x04 // camera power off (ALDO3, BLDO1, BLDO2, AW9523 P1_0), light sensor too
+#define TR_SLEEP_MOTION 0x08 // motion sensor (BMI270) suspended
+#define TR_SLEEP_CPU    0x10 // light sleep and 80 MHz between ticks (CONFIG_PM_ENABLE)
+#define TR_SLEEP_ALL    0x1F
+esp_err_t tr_sleep_start(void);
+bool tr_sleep_asleep(void);
+void tr_sleep_wait_awake(void);
+// Someone uses the robot: the count starts again.
+void tr_sleep_activity(void);
+// Wake now, and wait until it is awake (up to 3 s). Counts as activity.
+esp_err_t tr_sleep_wake(void);
+// Sleep now, with only some steps (to measure what each one saves).
+esp_err_t tr_sleep_now(uint32_t steps);
+// Seconds with no touch before it sleeps. 0 turns sleep off.
+void tr_sleep_set_after(int seconds);
+// fn(true) runs before the robot sleeps, fn(false) after it wakes, in the
+// sleep task. Up to 4.
+typedef void (*tr_sleep_fn)(bool going_to_sleep);
+esp_err_t tr_sleep_add_hook(tr_sleep_fn fn);
+// One line: "sleep: awake, sleeps in 42 s", "sleep: asleep for 3 min 10 s"...
+void tr_sleep_status(char *text, size_t size);
 
 #ifdef __cplusplus
 }

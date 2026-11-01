@@ -5,7 +5,9 @@ if(NOT IDF_TARGET STREQUAL "esp32s3")
     return()
 endif()
 
-idf_component_register(SRCS "tr_web.c"
+idf_component_register(SRCS "tr_web.c" "tr_screen.c"
                        INCLUDE_DIRS "include"
-                       PRIV_REQUIRES tr_ota tr_board esp_http_server esp_timer
+                       REQUIRES tr_board
+                       PRIV_REQUIRES tr_ota esp_http_server esp_timer esp_wifi esp_netif
+                                     app_update esp_app_format
                        EMBED_TXTFILES "app.html")

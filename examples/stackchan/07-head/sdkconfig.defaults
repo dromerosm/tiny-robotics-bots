@@ -30,3 +30,7 @@ CONFIG_HM1055_SUPPORT=n
 CONFIG_HM0360_SUPPORT=n
 CONFIG_MEGA_CCM_SUPPORT=n
 CONFIG_GC0308_SUPPORT=y
+# Light sleep while the robot sleeps (tr_board): the CPU slows down to 80 MHz
+# and sleeps between ticks. Wi-Fi stays connected (modem sleep).
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
