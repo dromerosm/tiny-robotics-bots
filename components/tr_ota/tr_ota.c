@@ -228,6 +228,22 @@ static esp_err_t load_token(void)
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+#if CONFIG_LWIP_IPV6
+    // An IPv6 link-local address (fe80::), so mDNS answers the AAAA question
+    // too. Without it the robot answers AAAA with no IPv6 address and no
+    // "none" either, and macOS (curl, ssh) waited 5 s for it on every lookup
+    // of stackchan.local. The examples set CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0:
+    // with the duplicate check, the address never became valid on our network.
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        const esp_err_t err = esp_netif_create_ip6_linklocal(sta);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Wi-Fi: no IPv6 link-local address (%s)", esp_err_to_name(err));
+        }
+    } else if (base == IP_EVENT && id == IP_EVENT_GOT_IP6) {
+        const ip_event_got_ip6_t *got = data;
+        ESP_LOGI(TAG, "Wi-Fi: IPv6 " IPV6STR, IPV62STR(got->ip6_info.ip));
+    }
+#endif
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(wifi_events, GOT_IP);
         xEventGroupSetBits(wifi_events, LOST);
@@ -312,6 +328,9 @@ static esp_err_t start_wifi(void)
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "wifi init");
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL));
+#if CONFIG_LWIP_IPV6
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, on_wifi_event, NULL));
+#endif
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     xTaskCreate(wifi_task, "wifi", 4096, NULL, 5, NULL);

@@ -34,3 +34,6 @@ CONFIG_GC0308_SUPPORT=y
 # and sleeps between ticks. Wi-Fi stays connected (modem sleep).
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+# An IPv6 link-local address (tr_ota), so stackchan.local resolves at once on
+# macOS. Skip the duplicate check: with it the address never became valid.
+CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0
