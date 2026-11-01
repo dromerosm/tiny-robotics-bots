@@ -131,6 +131,7 @@ static esp_err_t head_post(httpd_req_t *req)
     query_float(req, "ms", &ms);
     query_float(req, "hold", &hold);
     last_move_us = esp_timer_get_time();
+    ESP_LOGI("tr_web", "head move from the page or curl: %s", req->uri); // to find it in /log
     tr_sleep_wake();
     if (tr_web_head_power() != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "servo power failed\n");

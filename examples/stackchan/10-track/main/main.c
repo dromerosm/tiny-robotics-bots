@@ -16,6 +16,8 @@
 // that for IDLE_PAUSE_US.
 //
 //   GET  /face                  idle on or off, where the head looks, last scan, faces
+//   POST /face?follow=0|1       stop or start following faces (token needed)
+//   GET  /track.csv             the record of finds and head moves (events.c)
 //   POST /face?idle=0|1         stop or start looking around (token needed)
 //   POST /face?blink=1          blink once (token needed)
 //   POST /face?view=face|status|wifi|track   change the screen (token needed)
@@ -36,6 +38,7 @@
 // GET /face lists the last scan too.
 //
 // The page at http://stackchan.local/app (tr_web) shows a card for this.
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +51,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "events.h"
 #include "face.h"
 #include "tr_board.h"
 #include "tr_ota.h"
@@ -66,8 +70,24 @@
 // eyes look the way the head turns; check it on the robot, and flip it if the
 // eyes look the other way.
 #define EYE_X_PER_DEG (-0.5f)
-#define BRIGHTNESS    20                 // screen backlight, in %
-#define SCAN_EVERY_US (10 * 1000 * 1000) // while the Wi-Fi list is open
+#define BRIGHTNESS    20 // screen backlight, in %
+// Following a face. The error is how far the face is from the center of the
+// camera frame, from -1 (one edge) to 1 (the other edge).
+#define FOLLOW_DEAD   0.15f // no move while the face is this close to the center
+#define FOLLOW_YAW    18.0f // degrees of yaw from the center to the edge of the frame (a guess)
+#define FOLLOW_PITCH  12.0f // the same for pitch (a guess)
+#define MS_PER_DEG    25    // move time per degree: about 40 degrees per second
+#define MOVE_MIN_MS   150
+#define MOVE_MAX_MS   600
+#define YAW_SIGN      1.0f    // flip if the head turns away from the face
+#define PITCH_SIGN    (-1.0f) // flip if the head looks away up or down
+#define EYE_FOLLOW_X  40.0f   // pixels the eyes and mouth move at an error of 1
+#define EYE_FOLLOW_Y  25.0f
+#define EYE_SIGN_X    1.0f                     // flip if the eyes look away from the face
+#define LOST_US       (1000 * 1000)            // no face for this long: the face is lost
+#define RELEASE_US    (2000 * 1000)            // torque off after this long with no move
+#define CENTER_FG     TR_LCD_RGB(90, 160, 255) // the center and dead zone in the camera view
+#define SCAN_EVERY_US (10 * 1000 * 1000)       // while the Wi-Fi list is open
 #define MAX_APS       32
 
 typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_WIFI, VIEW_TRACK, VIEW_COUNT } view_t;
@@ -77,6 +97,8 @@ static volatile bool view_request;
 
 // Off at boot: the head goes home and stays still. The page can turn it on.
 static volatile bool idle = false;
+// On at boot: the head follows a face (POST /face?follow=0 stops it).
+static volatile bool follow = true;
 static volatile bool blink_now;
 static volatile float head_yaw, head_pitch; // read from the servos
 
@@ -125,6 +147,8 @@ static void read_head(void)
 
 static void go_home(void)
 {
+    ESP_LOGI("face", "head: home (boot)");
+    events_note('H');
     if (tr_web_head_power() == ESP_OK) {
         tr_servo_move(TR_SERVO_YAW, HOME_YAW, HOME_MS);
         tr_servo_move(TR_SERVO_PITCH, HOME_PITCH, HOME_MS);
@@ -290,7 +314,8 @@ static void draw_exit_mark(camera_fb_t *fb)
 //   the camera. When it is busy, the finder gives the frame back itself.
 // So the screen shows exactly what was found, and never slows the finder.
 static bool track_ready;
-static volatile bool track_on; // the view is open: the finder works
+static volatile bool track_on;   // the finder works (follow is on, or the view is open)
+static volatile bool track_show; // the camera view is open: frames go to the screen
 static TaskHandle_t finder;
 static QueueHandle_t to_show; // one frame for the screen, with its boxes
 
@@ -303,6 +328,15 @@ typedef struct {
 // For GET /face and /log, over windows of 2 s. fps values are x 10.
 static volatile int track_faces, track_ms, track_fps10, show_fps10, show_ms;
 static volatile face_box_t track_best;
+
+// The last find, for following: the center of the best face and the frame
+// size. seq goes up with each find.
+typedef struct {
+    uint32_t seq;
+    int n, cx, cy, w, h;
+} target_t;
+static portMUX_TYPE target_lock = portMUX_INITIALIZER_UNLOCKED;
+static target_t target;
 
 // A box of 2-pixel lines on an RGB565 frame (high byte first).
 static void draw_box(camera_fb_t *fb, const face_box_t *b, uint16_t color)
@@ -344,14 +378,36 @@ static void finder_task(void *arg)
         if (f.n > 0) {
             track_best = f.boxes[0];
         }
-        // To the screen if it is free; if not, straight back to the camera.
-        if (!track_on || xQueueSend(to_show, &f, 0) != pdTRUE) {
+        // The record: every find with a face, and the first one without.
+        static int last_n;
+        if (f.n > 0) {
+            const face_box_t *b = &f.boxes[0];
+            const int cx = (b->x0 + b->x1) / 2, cy = (b->y0 + b->y1) / 2;
+            events_find(f.n, cx, cy, b->x1 - b->x0, b->score,
+                        (cx - fb->width / 2.0f) / (fb->width / 2.0f),
+                        (cy - fb->height / 2.0f) / (fb->height / 2.0f));
+        } else if (last_n > 0) {
+            events_find(0, 0, 0, 0, 0, 0, 0);
+        }
+        last_n = f.n;
+        taskENTER_CRITICAL(&target_lock);
+        target.seq++;
+        target.n = f.n;
+        target.w = fb->width;
+        target.h = fb->height;
+        if (f.n > 0) {
+            target.cx = (f.boxes[0].x0 + f.boxes[0].x1) / 2;
+            target.cy = (f.boxes[0].y0 + f.boxes[0].y1) / 2;
+        }
+        taskEXIT_CRITICAL(&target_lock);
+        // To the screen if the view is open and free; if not, back to the camera.
+        if (!track_show || xQueueSend(to_show, &f, 0) != pdTRUE) {
             esp_camera_fb_return(fb);
         }
         finds++;
         ms_sum += ms;
         const int64_t now = esp_timer_get_time();
-        if (now - window >= 2000000) {
+        if (now - window >= 10000000) { // every 10 s: /log holds only 4 KB
             track_ms = ms_sum / finds;
             track_fps10 = (int)(finds * 10000000LL / (now - window));
             ESP_LOGI("track", "%d face(s), find %d ms, %d.%d finds/s, show %d.%d frames/s (%d ms)",
@@ -398,19 +454,23 @@ static esp_err_t track_start(void)
     return ESP_OK;
 }
 
-// Open or close the view: the finder works only while it is open. On close,
-// a frame still waiting for the screen goes back to the camera.
-static void track_view(bool open)
+// Start or stop the finder, and send its frames to the screen or not. A frame
+// still waiting for the screen goes back to the camera when the view closes.
+static void track_set(bool on, bool show)
 {
-    track_on = open;
-    if (open) {
-        xTaskNotifyGive(finder);
-        return;
+    track_show = show;
+    if (!show) {
+        found_frame_t f;
+        if (to_show && xQueueReceive(to_show, &f, 0) == pdTRUE) {
+            esp_camera_fb_return(f.fb);
+        }
     }
-    track_faces = 0;
-    found_frame_t f;
-    if (to_show && xQueueReceive(to_show, &f, 0) == pdTRUE) {
-        esp_camera_fb_return(f.fb);
+    if (on && !track_on) {
+        track_on = true;
+        xTaskNotifyGive(finder);
+    } else if (!on) {
+        track_on = false;
+        track_faces = 0;
     }
 }
 
@@ -428,6 +488,15 @@ static void track_frame(void)
     for (int i = 0; i < f.n; i++) {
         draw_box(f.fb, &f.boxes[i], i == 0 ? GREEN : YELLOW);
     }
+    // The center and the dead zone, to check that the head centers the face.
+    const int cx = f.fb->width / 2, cy = f.fb->height / 2;
+    const int dx = (int)(FOLLOW_DEAD * cx), dy = (int)(FOLLOW_DEAD * cy);
+    const face_box_t dead = {cx - dx, cy - dy, cx + dx, cy + dy, 0};
+    const face_box_t cross_h = {cx - 8, cy, cx + 8, cy + 1, 0},
+                     cross_v = {cx, cy - 8, cx + 1, cy + 8, 0};
+    draw_box(f.fb, &dead, CENTER_FG);
+    draw_box(f.fb, &cross_h, CENTER_FG);
+    draw_box(f.fb, &cross_v, CENTER_FG);
     draw_exit_mark(f.fb);
     tr_lcd_blit(0, 0, f.fb->width, f.fb->height, f.fb->buf);
     esp_camera_fb_return(f.fb);
@@ -460,6 +529,92 @@ static void open_list(view_t v, int64_t now, int64_t *next_update)
     }
 }
 
+// Follow the face. For each new find: the error is how far the face is
+// from the center of the frame (-1 to 1). Outside the dead zone, the head
+// gets a new goal: where it is now (read from the servo) plus the angle of
+// the error. Finds made while the head turns give about the same goal, so
+// the goals don't add up, and the head turns smoothly with no pauses. (Steps
+// on top of the last commanded goal made it swing; steps with a pause after
+// each one made it jump.) The eyes and mouth move toward the face by
+// the same error, so they lead the head, and they come back to the center
+// as the head turns and the error goes down. Returns true if the head moved.
+static float err_x, err_y; // the last error, 0 when there is no face
+static float follow_yaw, follow_pitch;
+static bool following;         // a face was seen in the last LOST_US
+static int64_t last_seen = -1; // when, or -1
+static uint32_t seen_seq;
+
+// Move time for a turn of this many degrees: about the same speed for small
+// and big turns.
+static int move_ms(float degrees)
+{
+    const int ms = (int)(fabsf(degrees) * MS_PER_DEG);
+    return ms < MOVE_MIN_MS ? MOVE_MIN_MS : ms > MOVE_MAX_MS ? MOVE_MAX_MS : ms;
+}
+
+static bool follow_step(int64_t now)
+{
+    if (!follow || !track_on) {
+        following = false;
+        err_x = err_y = 0;
+        return false;
+    }
+    taskENTER_CRITICAL(&target_lock);
+    const target_t t = target;
+    taskEXIT_CRITICAL(&target_lock);
+    bool moved = false;
+    if (t.seq != seen_seq) {
+        seen_seq = t.seq;
+        if (t.n > 0 && t.w > 0 && t.h > 0) {
+            if (!following) { // start from where the head is now
+                follow_yaw = head_yaw;
+                follow_pitch = head_pitch;
+                events_note('S');
+            }
+            following = true;
+            last_seen = now;
+            tr_sleep_activity(); // someone is there: stay awake
+            err_x = (t.cx - t.w / 2.0f) / (t.w / 2.0f);
+            err_y = (t.cy - t.h / 2.0f) / (t.h / 2.0f);
+            const int64_t last_move = tr_web_last_move_us();
+            const bool paused = last_move >= 0 && now - last_move < IDLE_PAUSE_US;
+            if (!paused && tr_web_servos() &&
+                (fabsf(err_x) > FOLLOW_DEAD || fabsf(err_y) > FOLLOW_DEAD) &&
+                tr_web_head_power() == ESP_OK) {
+                tr_servo_state_t st;
+                if (fabsf(err_x) > FOLLOW_DEAD) {
+                    if (tr_servo_read(TR_SERVO_YAW, &st) == ESP_OK) {
+                        follow_yaw = st.degrees;
+                    }
+                    const float goal =
+                        fminf(fmaxf(follow_yaw + YAW_SIGN * err_x * FOLLOW_YAW, -80.0f), 80.0f);
+                    tr_servo_move(TR_SERVO_YAW, goal, move_ms(goal - follow_yaw));
+                    events_move('Y', follow_yaw, goal, move_ms(goal - follow_yaw));
+                    follow_yaw = goal;
+                }
+                if (fabsf(err_y) > FOLLOW_DEAD) {
+                    if (tr_servo_read(TR_SERVO_PITCH, &st) == ESP_OK) {
+                        follow_pitch = st.degrees;
+                    }
+                    const float goal =
+                        fminf(fmaxf(follow_pitch + PITCH_SIGN * err_y * FOLLOW_PITCH, TR_PITCH_MIN),
+                              TR_PITCH_MAX);
+                    tr_servo_move(TR_SERVO_PITCH, goal, move_ms(goal - follow_pitch));
+                    events_move('P', follow_pitch, goal, move_ms(goal - follow_pitch));
+                    follow_pitch = goal;
+                }
+                moved = true;
+            }
+        }
+    }
+    if (following && now - last_seen > LOST_US) {
+        following = false; // lost: the eyes go back to the center
+        events_note('L');
+        err_x = err_y = 0;
+    }
+    return moved;
+}
+
 static void face_task(void *arg)
 {
     const bool screen = tr_lcd_init() == ESP_OK;
@@ -486,7 +641,7 @@ static void face_task(void *arg)
         // Asleep: nothing to draw. Wait, then draw the face again.
         if (tr_sleep_asleep()) {
             if (track_on) {
-                track_view(false); // the finder stops too
+                track_set(false, false); // the finder stops too
             }
             tr_sleep_wait_awake();
             open = VIEW_FACE;
@@ -525,25 +680,37 @@ static void face_task(void *arg)
         if (tap && open == VIEW_FACE && on_left_eye(tap_x, tap_y)) {
             open = VIEW_TRACK;
         }
-        if (open != VIEW_TRACK && track_on) {
-            track_view(false); // closed over HTTP
-        }
-        if (open == VIEW_TRACK) {
-            if (track_start() != ESP_OK) {
+        // The finder works while the head follows faces, or the camera view is
+        // open; frames go to the screen only for the view.
+        const bool want_show = open == VIEW_TRACK;
+        if ((follow || want_show) && track_start() != ESP_OK) {
+            follow = false; // no camera (as in the emulator): don't try again
+            if (want_show) {
                 open = VIEW_FACE;
                 drawn.dx = 1000;
                 continue;
             }
-            if (!track_on) {
-                track_view(true);
-            }
+        }
+        if (follow || want_show) {
+            track_set(true, want_show);
+        } else if (track_on) {
+            track_set(false, false);
+        }
+        if (open == VIEW_TRACK) {
             tr_sleep_activity(); // an open view keeps the robot awake
+            if (follow_step(now)) {
+                release_at = now + RELEASE_US;
+            }
+            if (release_at && now >= release_at) {
+                tr_servo_torque(TR_SERVO_YAW, false);
+                tr_servo_torque(TR_SERVO_PITCH, false);
+                release_at = 0;
+            }
             track_frame();
             // Any tap on the screen (read once per frame, at the top of the
             // loop), or a touch on the head, goes back to the face.
             if (tap || tr_head_touch()) {
                 ESP_LOGI("face", "track closed");
-                track_view(false);
                 open = VIEW_FACE;
                 drawn.dx = 1000;
                 vTaskDelay(pdMS_TO_TICKS(300)); // let go first
@@ -601,9 +768,12 @@ static void face_task(void *arg)
             blink_end = now + 150000;
             next_blink = now + 2500000 + esp_random() % 3000000;
         }
+        if (follow_step(now)) {
+            release_at = now + RELEASE_US; // torque off when it stops following
+        }
         const int64_t last_move = tr_web_last_move_us();
         const bool paused = last_move >= 0 && now - last_move < IDLE_PAUSE_US;
-        if (tr_web_servos() && idle && !paused && now >= next_glance) {
+        if (tr_web_servos() && idle && !paused && !following && now >= next_glance) {
             glance();
             release_at = now + (GLANCE_MS + 300) * 1000;
             next_glance = now + 2000000 + esp_random() % 3000000;
@@ -619,9 +789,16 @@ static void face_task(void *arg)
             next_read = now + 200000;
         }
 
+        // Following: the eyes and mouth look at the face and come back to the
+        // center as the head catches up. Otherwise they point where the head points.
+        static float eye_x, eye_y;
+        const float to_x = follow ? EYE_SIGN_X * err_x * EYE_FOLLOW_X : head_yaw * EYE_X_PER_DEG;
+        const float to_y = follow ? err_y * EYE_FOLLOW_Y : -(head_pitch - 20) * 0.6f;
+        eye_x += (to_x - eye_x) * 0.5f; // halfway each frame: smooth, but quick
+        eye_y += (to_y - eye_y) * 0.5f;
         const face_t f = {
-            .dx = (int)(head_yaw * EYE_X_PER_DEG),
-            .dy = (int)(-(head_pitch - 20) * 0.6f),
+            .dx = (int)lroundf(eye_x),
+            .dy = (int)lroundf(eye_y),
             .closed = now < blink_end,
         };
         if (screen && (f.dx != drawn.dx || f.dy != drawn.dy || f.closed != drawn.closed)) {
@@ -636,8 +813,11 @@ static esp_err_t face_get(httpd_req_t *req)
 {
     static char text[2048];
     int n = snprintf(text, sizeof(text),
-                     "views: face status wifi track\nlooking around: %s\n"
+                     "views: face status wifi track\nfollowing: %s\nlooking around: %s\n"
                      "head: yaw %.1f, pitch %.1f degrees\nlast view asked: %s\n",
+                     !follow     ? "off"
+                     : following ? "on, a face is there"
+                                 : "on, no face",
                      idle ? "on" : "off", head_yaw, head_pitch, view_names[want_view]);
     // The faces, while the track view is open. The Wi-Fi scan comes last,
     // because the page reads lines that start with two spaces as networks.
@@ -677,6 +857,9 @@ static esp_err_t face_post(httpd_req_t *req)
     tr_sleep_wake(); // a change on the screen or the head: wake first
     char query[64], value[8];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "follow", value, sizeof(value)) == ESP_OK) {
+            follow = atoi(value) != 0;
+        }
         if (httpd_query_key_value(query, "idle", value, sizeof(value)) == ESP_OK) {
             idle = atoi(value) != 0;
         }
@@ -706,5 +889,8 @@ void app_main(void)
     const httpd_uri_t post = {.uri = "/face", .method = HTTP_POST, .handler = face_post};
     ESP_ERROR_CHECK(tr_ota_add_uri(&get));
     ESP_ERROR_CHECK(tr_ota_add_uri(&post));
+    const httpd_uri_t csv = {.uri = "/track.csv", .method = HTTP_GET, .handler = events_csv};
+    ESP_ERROR_CHECK(tr_ota_add_uri(&csv));
+    events_start();
     xTaskCreate(face_task, "face", 6144, NULL, 5, NULL);
 }

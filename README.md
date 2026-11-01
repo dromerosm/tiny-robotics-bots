@@ -46,7 +46,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 07 | [head](examples/stackchan/07-head) | Read and move the head servos over Wi-Fi, from a page the robot serves | ✅ (no servos in esp-emu) |
 | 08 | [face](examples/stackchan/08-face) | The face on the real screen, a head that looks around, an audio analyzer and the camera, all from the page too | ✅ (no screen or servos in esp-emu) |
 | 09 | [wifi](examples/stackchan/09-wifi) | 08 without microphones and camera, the screen at 20 %, and the Wi-Fi networks around in the right eye | ✅ (no screen or servos in esp-emu) |
-| 10 | [track](examples/stackchan/10-track) | 09 plus a camera that finds faces with esp-dl on the second core, about 10 times per second. Step one of face tracking | ✅ (no screen, camera or servos in esp-emu) |
+| 10 | [track](examples/stackchan/10-track) | 09 plus face tracking: esp-dl finds faces on the second core about 12 times per second, the head follows, and the eyes look at the person | ✅ (no screen, camera or servos in esp-emu) |
 
 ### BALA2 Fire
 
