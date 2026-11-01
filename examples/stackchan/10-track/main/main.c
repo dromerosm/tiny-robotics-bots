@@ -280,34 +280,13 @@ static void draw_exit_mark(camera_fb_t *fb)
     }
 }
 
-// Between two frames, rest and read the touch a few times, so a tap is not
-// missed and the other tasks on this core get their turn. (As in 08-face.)
-static bool rest_and_watch_touch(int *tap_x, int *tap_y)
-{
-    bool was_down = false;
-    for (int i = 0; i < 2; i++) {
-        vTaskDelay(pdMS_TO_TICKS(30));
-        int x, y;
-        const bool down = tr_touch_read(&x, &y);
-        if (down) {
-            *tap_x = x;
-            *tap_y = y;
-        }
-        if (was_down && !down) {
-            return true;
-        }
-        was_down = down;
-    }
-    return was_down; // still pressed: count it as a tap too
-}
-
 // Faces. The camera frame goes to face_find(), the boxes are drawn into the
 // frame, and the frame goes to the screen. The numbers are kept for GET /face
 // and /log.
 static bool track_ready;
 static volatile int track_faces, track_ms, track_fps10; // fps x 10
 static volatile face_box_t track_best;
-static int frames, ms_sum;
+static int frames, ms_sum, cam_us, show_us; // sums over the 2 s window
 static int64_t window_start;
 
 // A box of 2-pixel lines on an RGB565 frame (high byte first).
@@ -355,7 +334,9 @@ static esp_err_t track_start(void)
 // One frame: find the faces, draw them, show the frame.
 static void track_frame(void)
 {
+    const int64_t c0 = esp_timer_get_time();
     camera_fb_t *fb = esp_camera_fb_get();
+    cam_us += esp_timer_get_time() - c0;
     if (!fb) {
         return;
     }
@@ -366,9 +347,11 @@ static void track_frame(void)
     for (int i = 0; i < n; i++) {
         draw_box(fb, &boxes[i], i == 0 ? GREEN : YELLOW);
     }
+    const int64_t s0 = esp_timer_get_time();
     draw_exit_mark(fb);
     tr_lcd_blit(0, 0, fb->width, fb->height, fb->buf);
     esp_camera_fb_return(fb);
+    show_us += esp_timer_get_time() - s0;
 
     track_faces = n;
     if (n > 0) {
@@ -382,6 +365,9 @@ static void track_frame(void)
         track_fps10 = (int)(frames * 10000000LL / (now - window_start));
         ESP_LOGI("track", "%d face(s), find %d ms, %d.%d frames/s%s", n, track_ms, track_fps10 / 10,
                  track_fps10 % 10, n ? "" : " (no face)");
+        ESP_LOGI("track", "per frame: camera %d ms, show %d ms", cam_us / 1000 / frames,
+                 show_us / 1000 / frames);
+        cam_us = show_us = 0;
         if (n > 0) {
             ESP_LOGI("track", "best: %d,%d to %d,%d, score %.2f", boxes[0].x0, boxes[0].y0,
                      boxes[0].x1, boxes[0].y1, boxes[0].score);
@@ -477,15 +463,17 @@ static void face_task(void *arg)
             }
             tr_sleep_activity(); // an open view keeps the robot awake
             track_frame();
-            // Any tap on the screen, or a touch on the head, goes back to the face.
-            if (rest_and_watch_touch(&tap_x, &tap_y) || tr_head_touch()) {
+            // Any tap on the screen (read once per frame, at the top of the
+            // loop), or a touch on the head, goes back to the face.
+            if (tap || tr_head_touch()) {
                 ESP_LOGI("face", "track closed");
                 open = VIEW_FACE;
                 drawn.dx = 1000;
                 track_faces = 0;
                 vTaskDelay(pdMS_TO_TICKS(300)); // let go first
+                was_down = false;
             }
-            was_down = false;
+            vTaskDelay(1); // one tick for the tasks below ours (web server, sleep)
             wake = xTaskGetTickCount();
             continue;
         }
