@@ -26,12 +26,27 @@ int face_find(const uint8_t *rgb565, int w, int h, face_box_t *boxes, int max)
         .height = (uint16_t)h,
         .pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565BE,
     };
+    // Keep the biggest faces, biggest first: the biggest is usually the
+    // closest person, and that is the one the head follows.
     int n = 0;
-    for (const auto &r : detect->run(img)) { // strongest first
-        if (n >= max || r.box.size() < 4) {
-            break;
+    for (const auto &r : detect->run(img)) {
+        if (r.box.size() < 4) {
+            continue;
         }
-        boxes[n++] = {r.box[0], r.box[1], r.box[2], r.box[3], r.score};
+        const face_box_t b = {r.box[0], r.box[1], r.box[2], r.box[3], r.score};
+        const int area = (b.x1 - b.x0) * (b.y1 - b.y0);
+        int at = n < max ? n++ : max; // where it goes; max: smaller than all kept
+        while (at > 0 &&
+               (boxes[at - 1].x1 - boxes[at - 1].x0) * (boxes[at - 1].y1 - boxes[at - 1].y0) <
+                   area) {
+            if (at < max) {
+                boxes[at] = boxes[at - 1];
+            }
+            at--;
+        }
+        if (at < max) {
+            boxes[at] = b;
+        }
     }
     return n;
 }

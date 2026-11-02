@@ -73,21 +73,38 @@
 #define BRIGHTNESS    20 // screen backlight, in %
 // Following a face. The error is how far the face is from the center of the
 // camera frame, from -1 (one edge) to 1 (the other edge).
-#define FOLLOW_DEAD   0.15f // no move while the face is this close to the center
-#define FOLLOW_YAW    18.0f // degrees of yaw from the center to the edge of the frame (a guess)
-#define FOLLOW_PITCH  12.0f // the same for pitch (a guess)
-#define MS_PER_DEG    25    // move time per degree: about 40 degrees per second
-#define MOVE_MIN_MS   150
-#define MOVE_MAX_MS   600
-#define YAW_SIGN      1.0f    // flip if the head turns away from the face
-#define PITCH_SIGN    (-1.0f) // flip if the head looks away up or down
-#define EYE_FOLLOW_X  40.0f   // pixels the eyes and mouth move at an error of 1
-#define EYE_FOLLOW_Y  25.0f
-#define EYE_SIGN_X    1.0f                     // flip if the eyes look away from the face
-#define LOST_US       (1000 * 1000)            // no face for this long: the face is lost
-#define RELEASE_US    (2000 * 1000)            // torque off after this long with no move
-#define CENTER_FG     TR_LCD_RGB(90, 160, 255) // the center and dead zone in the camera view
-#define SCAN_EVERY_US (10 * 1000 * 1000)       // while the Wi-Fi list is open
+#define FOLLOW_DEAD  0.15f // no move while the face is this close to the center
+#define FOLLOW_YAW   18.0f // degrees of yaw from the center to the edge of the frame (a guess)
+#define FOLLOW_PITCH 12.0f // the same for pitch (a guess)
+#define MS_PER_DEG   25    // move time per degree: about 40 degrees per second
+#define MOVE_MIN_MS  150
+#define MOVE_MAX_MS  600
+#define YAW_SIGN     1.0f    // flip if the head turns away from the face
+#define PITCH_SIGN   (-1.0f) // flip if the head looks away up or down
+#define EYE_FOLLOW_X 40.0f   // pixels the eyes and mouth move at an error of 1
+#define EYE_FOLLOW_Y 25.0f
+#define EYE_SIGN_X   1.0f                     // flip if the eyes look away from the face
+#define LOST_US      (1000 * 1000)            // no face for this long: the face is lost
+#define RELEASE_US   (2000 * 1000)            // torque off after this long with no move
+#define CENTER_FG    TR_LCD_RGB(90, 160, 255) // the center and dead zone in the camera view
+// Searching. The camera sees about 47 x 37 degrees (57.6 degrees across,
+// from M5Stack's GC0308 camera specs, and the GC0308's 3.4 um pixels), a
+// quarter of the head's yaw range. So with no face, the head looks around:
+// each look goes far enough to see a new part of the room.
+#define SEARCH_AFTER_US   (5000 * 1000) // no face for this long: start searching
+#define SEARCH_YAW        70            // looks stay within +-70 degrees of yaw
+#define SEARCH_PITCH_LOW  5             // and 5 to 40 degrees of pitch
+#define SEARCH_PITCH_HIGH 40
+#define SEARCH_MIN_YAW    33            // a new look turns at least this far (0.7 x 47)
+#define SEARCH_MIN_PITCH  26            // or tilts at least this far (0.7 x 37)
+#define SEARCH_MAX_STEP   60            // but no look turns more than this (calm, not jumpy)
+#define SEARCH_MS_PER_DEG 50            // looks turn at about 20 degrees per second
+#define SEARCH_STAY_US    (3000 * 1000) // then it stays still this long (about 30 finds)
+// Below this, on battery, the head does not move. Servo moves on a nearly
+// empty battery made the power chip cut the power: the robot restarted
+// again and again (at 28 % charge, after following and searching).
+#define MOVE_MIN_MV   3600
+#define SCAN_EVERY_US (10 * 1000 * 1000) // while the Wi-Fi list is open
 #define MAX_APS       32
 
 typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_WIFI, VIEW_TRACK, VIEW_COUNT } view_t;
@@ -329,7 +346,7 @@ typedef struct {
 static volatile int track_faces, track_ms, track_fps10, show_fps10, show_ms;
 static volatile face_box_t track_best;
 
-// The last find, for following: the center of the best face and the frame
+// The last find, for following: the center of the biggest face and the frame
 // size. seq goes up with each find.
 typedef struct {
     uint32_t seq;
@@ -486,7 +503,7 @@ static void track_frame(void)
     }
     const int64_t t0 = esp_timer_get_time();
     for (int i = 0; i < f.n; i++) {
-        draw_box(f.fb, &f.boxes[i], i == 0 ? GREEN : YELLOW);
+        draw_box(f.fb, &f.boxes[i], i == 0 ? GREEN : YELLOW); // green: the biggest, followed
     }
     // The center and the dead zone, to check that the head centers the face.
     const int cx = f.fb->width / 2, cy = f.fb->height / 2;
@@ -544,6 +561,32 @@ static bool following;         // a face was seen in the last LOST_US
 static int64_t last_seen = -1; // when, or -1
 static uint32_t seen_seq;
 
+// True if the battery can take a head move: USB power, or the battery at
+// MOVE_MIN_MV or more. Read at most once a second; says so in /log when it
+// changes.
+static bool power_for_moves(int64_t now)
+{
+    static int64_t next_check;
+    static bool ok = true;
+    if (now >= next_check) {
+        next_check = now + 1000000;
+        tr_power_t p;
+        tr_battery_t b;
+        const bool usb = tr_power_read(&p) == ESP_OK && p.usb;
+        const bool now_ok = usb || tr_battery_read(&b) != ESP_OK || b.millivolts >= MOVE_MIN_MV;
+        if (now_ok != ok) {
+            ok = now_ok;
+            if (ok) {
+                ESP_LOGI("face", "battery ok again: the head moves");
+            } else {
+                ESP_LOGW("face", "battery below %d mV: the head stays still", MOVE_MIN_MV);
+                events_note('B');
+            }
+        }
+    }
+    return ok;
+}
+
 // Move time for a turn of this many degrees: about the same speed for small
 // and big turns.
 static int move_ms(float degrees)
@@ -578,7 +621,7 @@ static bool follow_step(int64_t now)
             err_y = (t.cy - t.h / 2.0f) / (t.h / 2.0f);
             const int64_t last_move = tr_web_last_move_us();
             const bool paused = last_move >= 0 && now - last_move < IDLE_PAUSE_US;
-            if (!paused && tr_web_servos() &&
+            if (!paused && tr_web_servos() && power_for_moves(now) &&
                 (fabsf(err_x) > FOLLOW_DEAD || fabsf(err_y) > FOLLOW_DEAD) &&
                 tr_web_head_power() == ESP_OK) {
                 tr_servo_state_t st;
@@ -615,6 +658,58 @@ static bool follow_step(int64_t now)
     return moved;
 }
 
+// Search for a face: with following on and no face for SEARCH_AFTER_US, look
+// at a random spot 33 to 60 degrees away (far enough to see a new part of the
+// room, near enough to stay calm), turn there slowly, stay SEARCH_STAY_US,
+// then look somewhere else. (With 1.2 s stays, 40 degrees per second and any
+// spot in the range, it moved too much and too fast.) A face found on the way takes over at once.
+// Searching is not activity, so with nobody there the robot still sleeps.
+static int64_t next_look;
+
+static bool search_step(int64_t now, int64_t follow_since)
+{
+    const int64_t quiet_since = last_seen > follow_since ? last_seen : follow_since;
+    const int64_t last_move = tr_web_last_move_us();
+    const bool paused = last_move >= 0 && now - last_move < IDLE_PAUSE_US;
+    if (!follow || !track_on || following || paused || !tr_web_servos() ||
+        now - quiet_since < SEARCH_AFTER_US || now < next_look || !power_for_moves(now)) {
+        return false;
+    }
+    if (tr_web_head_power() != ESP_OK) {
+        return false;
+    }
+    tr_servo_state_t st;
+    float yaw = head_yaw, pitch = head_pitch;
+    if (tr_servo_read(TR_SERVO_YAW, &st) == ESP_OK) {
+        yaw = st.degrees;
+    }
+    if (tr_servo_read(TR_SERVO_PITCH, &st) == ESP_OK) {
+        pitch = st.degrees;
+    }
+    float to_yaw, to_pitch;
+    for (int tries = 0;; tries++) { // a spot far enough to show a new part of the room
+        to_yaw = (float)((int)(esp_random() % (2 * SEARCH_YAW + 1)) - SEARCH_YAW);
+        to_pitch =
+            (float)(SEARCH_PITCH_LOW + esp_random() % (SEARCH_PITCH_HIGH - SEARCH_PITCH_LOW + 1));
+        const float dyaw = fabsf(to_yaw - yaw), dpitch = fabsf(to_pitch - pitch);
+        const bool new_place = dyaw >= SEARCH_MIN_YAW || dpitch >= SEARCH_MIN_PITCH;
+        if ((new_place && dyaw <= SEARCH_MAX_STEP && dpitch <= SEARCH_MAX_STEP) || tries >= 20) {
+            break;
+        }
+    }
+    // Slower than following: both axes arrive together, at about 20 degrees
+    // per second for the longer one.
+    const float far = fmaxf(fabsf(to_yaw - yaw), fabsf(to_pitch - pitch));
+    const int ms = (int)(far * SEARCH_MS_PER_DEG) < 400 ? 400 : (int)(far * SEARCH_MS_PER_DEG);
+    events_note('G');
+    tr_servo_move(TR_SERVO_YAW, to_yaw, ms);
+    tr_servo_move(TR_SERVO_PITCH, to_pitch, ms);
+    events_move('Y', yaw, to_yaw, ms);
+    events_move('P', pitch, to_pitch, ms);
+    next_look = now + ms * 1000LL + SEARCH_STAY_US;
+    return true;
+}
+
 static void face_task(void *arg)
 {
     const bool screen = tr_lcd_init() == ESP_OK;
@@ -636,14 +731,23 @@ static void face_task(void *arg)
     int top = 0, tap_x = 0, tap_y = 0;
     int64_t next_update = 0;
     TickType_t wake = xTaskGetTickCount();
+    // Since when following has been on with the robot awake: searching
+    // starts SEARCH_AFTER_US after this, or after the last face.
+    int64_t follow_since = esp_timer_get_time();
+    bool was_following_on = follow;
 
     for (;;) {
+        if (follow != was_following_on) {
+            was_following_on = follow;
+            follow_since = esp_timer_get_time();
+        }
         // Asleep: nothing to draw. Wait, then draw the face again.
         if (tr_sleep_asleep()) {
             if (track_on) {
                 track_set(false, false); // the finder stops too
             }
             tr_sleep_wait_awake();
+            follow_since = esp_timer_get_time();
             open = VIEW_FACE;
             was_down = false;
             drawn.dx = 1000;
@@ -698,7 +802,7 @@ static void face_task(void *arg)
         }
         if (open == VIEW_TRACK) {
             tr_sleep_activity(); // an open view keeps the robot awake
-            if (follow_step(now)) {
+            if (follow_step(now) || search_step(now, follow_since)) {
                 release_at = now + RELEASE_US;
             }
             if (release_at && now >= release_at) {
@@ -768,8 +872,8 @@ static void face_task(void *arg)
             blink_end = now + 150000;
             next_blink = now + 2500000 + esp_random() % 3000000;
         }
-        if (follow_step(now)) {
-            release_at = now + RELEASE_US; // torque off when it stops following
+        if (follow_step(now) || search_step(now, follow_since)) {
+            release_at = now + RELEASE_US; // torque off when it stops moving
         }
         const int64_t last_move = tr_web_last_move_us();
         const bool paused = last_move >= 0 && now - last_move < IDLE_PAUSE_US;
