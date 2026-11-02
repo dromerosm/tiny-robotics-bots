@@ -1,0 +1,11 @@
+// The robot's key server for 12-talk. It keeps the OpenAI API key and gives
+// the robot a short-lived Realtime session key. See README.md.
+{
+  "name": "stackchan-talk",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-25",
+  // The robot reaches it at <name>.<account>.workers.dev. No preview URLs.
+  "workers_dev": true,
+  "preview_urls": false,
+  // Secrets (wrangler secret put): OPENAI_API_KEY, ROBOT_TOKEN.
+}
