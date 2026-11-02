@@ -34,14 +34,14 @@
 #include "tr_screen.h"
 #include "tr_web.h"
 
-#define FRAME_MS   66 // about 15 frames per second
-#define BG         TR_LCD_RGB(0, 0, 0)
-#define FG         TR_LCD_RGB(255, 255, 255)
+#define FRAME_MS 66 // about 15 frames per second
+#define BG       TR_LCD_RGB(0, 0, 0)
+#define FG       TR_LCD_RGB(255, 255, 255)
 // The face's color says where the talk is: white off, yellow while it
 // connects (3 to 4 s), blue once the robot listens.
-#define CONNECTING TR_LCD_RGB(255, 200, 0)
-#define LISTENING  TR_LCD_RGB(80, 200, 255)
-#define BRIGHTNESS 20 // screen backlight, in %
+#define CONNECTING   TR_LCD_RGB(255, 200, 0)
+#define LISTENING    TR_LCD_RGB(80, 200, 255)
+#define BRIGHTNESS   20 // screen backlight, in %
 #define TOUCH_GAP_US (3 * 1000 * 1000)
 
 typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_COUNT } view_t;
@@ -164,10 +164,13 @@ static void face_task(void *arg)
         mouth += (talk_level() * 30.0f - mouth) * 0.5f;
         const face_t f = {
             .closed = now < blink_end,
-            .color = talk_live() ? LISTENING : talk_active() ? CONNECTING : FG,
+            .color = talk_live()     ? LISTENING
+                     : talk_active() ? CONNECTING
+                                     : FG,
             .mouth = (int)lroundf(mouth) & ~1,
         };
-        if (screen && (f.closed != drawn.closed || f.color != drawn.color || f.mouth != drawn.mouth)) {
+        if (screen &&
+            (f.closed != drawn.closed || f.color != drawn.color || f.mouth != drawn.mouth)) {
             tr_lcd_render(face_pixel, (void *)&f);
             drawn = f;
         }
