@@ -135,6 +135,8 @@ static volatile float level;                        // the robot's voice, 0..1
 static volatile float rms_in[4], rms_play, rms_out; // over the last second
 static volatile int frames10, aec_us, io_us;        // frames per 10 s, times per frame
 static volatile int answers, delegations, deltas, sent_msgs, overruns, skips, gaps;
+static volatile uint32_t received;     // samples of the robot's voice since the talk opened
+static volatile int64_t live_since;    // when session.started came
 static volatile int64_t talk_since;
 static volatile int last_latency_ms = -1; // your last words to the robot's first words
 static char last_error[160];
@@ -408,6 +410,7 @@ static void on_message(char *msg, int len)
             skips++;
         }
         ring_push(&voice, pcm, bytes / 2);
+        received += bytes / 2;
     } else if (strcmp(type, "session.output_transcript.delta") == 0) {
         char t[160];
         if (json_str(msg, "delta", t, sizeof(t))) {
@@ -429,6 +432,8 @@ static void on_message(char *msg, int len)
         ESP_LOGI(TAG, "handed to gpt-6-luna");
     } else if (strcmp(type, "session.started") == 0) {
         live = true;
+        live_since = esp_timer_get_time();
+        received = 0;
         ESP_LOGI(TAG, "session open in %lld ms", (esp_timer_get_time() - talk_since) / 1000);
     } else if (strcmp(type, "session.closed") == 0) {
         char r[48] = "";
@@ -689,13 +694,14 @@ esp_err_t talk_get(httpd_req_t *req)
                      "talk: %s%s%s\nreference delay %d samples, sending %s\n"
                      "levels (rms, last second): in %.0f %.0f %.0f %.0f, played %.0f, cleaned %.0f\n"
                      "answers %d, handed to gpt-6-luna %d, messages sent %d, voice pieces %d, AEC overruns %d, "
-                     "voice skips %d, gaps %d\nlast answer: first words %d ms after your last words\n"
+                     "voice skips %d, gaps %d\nvoice received %.1f s in %.1f s, buffered now %d ms\nlast answer: first words %d ms after your last words\n"
                      "audio: %d frames per 10 s (real time: %d), AEC %d us, play+record %d us per %d us frame\n"
                      "internal RAM: free %u KB, lowest %u KB, biggest block %u KB\n",
                      names[state], last_error[0] ? ", last error: " : "", last_error, ref_delay,
                      send_raw ? "microphone a as it is" : "the cleaned sound", rms_in[0], rms_in[1], rms_in[2],
                      rms_in[3], rms_play, rms_out, answers, delegations, sent_msgs, deltas, overruns, skips, gaps,
-                     last_latency_ms, frames10, frame ? 10 * RATE / frame : 0, aec_us, io_us,
+                     received / (float)RATE, live_since ? (esp_timer_get_time() - live_since) / 1e6f : 0.0f,
+                     (int)((voice.in - voice.out) * 1000 / RATE), last_latency_ms, frames10, frame ? 10 * RATE / frame : 0, aec_us, io_us,
                      frame ? frame * 1000000 / RATE : 0,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
                      (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024,
