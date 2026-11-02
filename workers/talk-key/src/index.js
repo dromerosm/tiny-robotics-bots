@@ -1,23 +1,41 @@
-// POST /key with the header X-Robot-Token: a Realtime session key that
-// works for 60 s, for one session with our settings. The robot never sees
-// the OpenAI API key, and it can't change the model or the settings.
-const MODEL = "gpt-realtime-2.1";
-
+// GET /live (a WebSocket, with the header X-Robot-Token): the robot's talk
+// with GPT-Live, through this Worker.
+//
+// GPT-Live has no short-lived keys for devices, so the Worker opens the
+// session to OpenAI itself, with our API key, and passes the messages both
+// ways. The robot never sees the key. The Worker also starts the session
+// with our settings, so the robot can't change the model, the voice or the
+// delegation:
+// - gpt-live-1 talks and listens, full duplex;
+// - when it needs to look something up or think, it hands the task to
+//   gpt-6-luna (Responses delegation), with web search. Add its tools in
+//   SESSION.delegation.responses.tools.
+//
+// From the robot it passes only audio (session.input_audio.append) and
+// session.close. To the robot it passes everything except the delegated
+// model's own events (response.event): they are big, and the robot does not
+// need them.
 const SESSION = {
-  type: "realtime",
-  model: MODEL,
+  model: "gpt-live-1",
+  // In Spanish, so the model stays in Spanish.
   instructions:
-    "You are StackChan, a small robot on a desk. You see the person through a camera " +
-    "and turn your head to follow their face. Speak Spanish unless the person speaks " +
-    "another language. Keep answers short: one or two sentences.",
-  audio: {
-    input: {
-      format: { type: "audio/pcm", rate: 24000 },
-      // The server hears when the person starts and stops talking. When the
-      // person talks over the robot, the answer stops (full duplex).
-      turn_detection: { type: "server_vad", create_response: true, interrupt_response: true },
+    "Eres StackChan, un robot pequeño que vive en un escritorio. " +
+    "Habla siempre en español de España, aunque te hablen en otro idioma o no entiendas lo que oyes. " +
+    "Nunca cambies de idioma. Responde corto: una o dos frases. " +
+    "Si te preguntan algo de hoy (tiempo, noticias, horarios, precios), algo que hay que buscar o calcular, " +
+    "o algo que no sabes seguro, delega la tarea.",
+  // 16 kHz, the robot's own rate: no conversion on the robot.
+  audio: { format: { type: "audio/pcm", rate: 16000 }, output: { voice: "vesper" } },
+  delegation: {
+    type: "responses",
+    responses: {
+      model: "gpt-6-luna",
+      instructions:
+        "Tu respuesta la dirá en voz alta un robot. En español de España, en dos frases como mucho, " +
+        "sin enlaces, sin listas y sin markdown.",
+      tools: [{ type: "web_search" }],
+      tool_choice: "auto",
     },
-    output: { format: { type: "audio/pcm", rate: 24000 }, voice: "marin" },
   },
 };
 
@@ -30,29 +48,65 @@ function same(a, b) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (request.method !== "POST" || url.pathname !== "/key") {
+    if (url.pathname !== "/live" || request.headers.get("Upgrade") !== "websocket") {
       return new Response("not found\n", { status: 404 });
     }
     const token = request.headers.get("X-Robot-Token") || "";
     if (!env.ROBOT_TOKEN || !same(token, env.ROBOT_TOKEN)) {
       return new Response("forbidden\n", { status: 403 });
     }
-    const r = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ expires_after: { anchor: "created_at", seconds: 60 }, session: SESSION }),
+
+    const r = await fetch("https://api.openai.com/v1/live/sessions", {
+      headers: { Upgrade: "websocket", Authorization: `Bearer ${env.OPENAI_API_KEY}` },
     });
-    if (!r.ok) {
+    const openai = r.webSocket;
+    if (!openai) {
       console.log("OpenAI said", r.status, await r.text());
       return new Response(`OpenAI said ${r.status}\n`, { status: 502 });
     }
-    const d = await r.json();
-    // Plain text, two lines, easy to read on the robot: the model, the key.
-    return new Response(`${MODEL}\n${d.value}\n`, {
-      headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+    openai.accept();
+    openai.send(JSON.stringify({ type: "session.start", session: SESSION }));
+
+    const [client, robot] = Object.values(new WebSocketPair());
+    robot.accept();
+
+    robot.addEventListener("message", (e) => {
+      if (typeof e.data !== "string") {
+        return;
+      }
+      let type;
+      try {
+        type = JSON.parse(e.data).type;
+      } catch {
+        return;
+      }
+      if (type === "session.input_audio.append" || type === "session.close") {
+        openai.send(e.data);
+      }
     });
+    openai.addEventListener("message", (e) => {
+      if (typeof e.data !== "string" || e.data.includes('"type": "response.event"') ||
+          e.data.includes('"type":"response.event"')) {
+        return;
+      }
+      try {
+        robot.send(e.data);
+      } catch {
+        // the robot is gone
+      }
+    });
+    const close = (ws, code, reason) => {
+      try {
+        ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);
+      } catch {
+        // already closed
+      }
+    };
+    robot.addEventListener("close", (e) => close(openai, e.code, e.reason));
+    openai.addEventListener("close", (e) => close(robot, e.code, e.reason));
+    robot.addEventListener("error", () => close(openai, 1011, "robot error"));
+    openai.addEventListener("error", () => close(robot, 1011, "OpenAI error"));
+
+    return new Response(null, { status: 101, webSocket: client });
   },
 };

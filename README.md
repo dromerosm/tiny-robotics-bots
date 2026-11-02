@@ -48,7 +48,8 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 09 | [wifi](examples/stackchan/09-wifi) | 08 without microphones and camera, the screen at 20 %, and the Wi-Fi networks around in the right eye | ✅ (no screen or servos in esp-emu) |
 | 10 | [track](examples/stackchan/10-track) | 09 plus face tracking: esp-dl finds faces on the second core about 12 times per second, the head follows the biggest face and searches when there is none, and the eyes look at the person | ✅ (no screen, camera or servos in esp-emu) |
 | 11 | [track](examples/stackchan/11-track) | 10 on less battery: fewer finds and no servo power while it searches, the camera off while it sleeps (32 mA asleep, 136 mA searching) | ✅ (no screen, camera or servos in esp-emu) |
-| 12 | [talk](examples/stackchan/12-talk) | Talk with the robot through OpenAI's Realtime API, full duplex: speaker and both microphones at once, and esp-sr's echo canceller on both microphones (40 to 53 dB of echo removed). The API key stays in a Cloudflare Worker | ✅ (no screen or audio in esp-emu) |
+| 12 | [talk](examples/stackchan/12-talk) | Talk with the robot through OpenAI's GPT-Live, full duplex: speaker and both microphones at once, and esp-sr's echo canceller on both microphones (40 to 58 dB of echo removed). It hands searches to `gpt-6-luna`. The API key stays in a Cloudflare Worker | ✅ (no screen or audio in esp-emu) |
+| 13 | [home](examples/stackchan/13-home) | 12's talk plus the plugs on the home network (Tuya 3.3 and 3.4, no cloud): a Home screen on the left eye, switch them by voice, and `/home` on the web | ✅ (no screen or audio; it reads the real plugs through the emulator's network) |
 
 ### BALA2 Fire
 

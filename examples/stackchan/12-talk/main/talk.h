@@ -14,6 +14,8 @@ void talk_open(void);
 void talk_close(void);
 // True while a talk is open or opening.
 bool talk_active(void);
+// True once the server listens (the session has started).
+bool talk_live(void);
 // The loudness of the robot's voice now, 0 to 1, for the mouth.
 float talk_level(void);
 // GET /talk and POST /talk?start=1|stop=1|test=lanes|test=aec (see talk.c).
