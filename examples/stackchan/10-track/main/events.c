@@ -11,7 +11,7 @@
 
 typedef struct {
     uint32_t ms;     // since boot
-    char kind;       // F find, M move, S seen, L lost, H home
+    char kind;       // F find, M move, S seen, L lost, G search look, B battery low, H home
     char axis;       // M: 'Y' or 'P'
     int8_t faces;    // F
     int16_t cx, cy;  // F: the best face's center, in frame pixels
@@ -84,6 +84,8 @@ static int line(const event_t *e, char *out, size_t size)
             return snprintf(out, size, "%lu,%s,,,,,,,,,,,\n", (unsigned long)e->ms,
                             e->kind == 'S'   ? "seen"
                             : e->kind == 'L' ? "lost"
+                            : e->kind == 'G' ? "search"
+                            : e->kind == 'B' ? "battery_low"
                                              : "home");
     }
 }

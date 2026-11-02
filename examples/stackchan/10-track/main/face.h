@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define FACE_MAX 4 // we keep the best ones
+#define FACE_MAX 4 // we keep the biggest ones
 
 typedef struct {
     int x0, y0, x1, y1; // the box, in pixels of the frame
@@ -20,7 +20,7 @@ typedef struct {
 // Load the model (the first call takes a while). ESP_ERR_NO_MEM if it does not fit.
 esp_err_t face_start(void);
 // Look for faces in an RGB565 frame (high byte first, as the camera gives it).
-// Returns how many it put in boxes, strongest first.
+// Returns how many it put in boxes, biggest first (the closest person).
 int face_find(const uint8_t *rgb565, int w, int h, face_box_t *boxes, int max);
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 # StackChan 10: follow a face
 
-[09-wifi](../09-wifi) plus a camera that finds faces, and a head that follows them. The robot looks for faces about 12 times per second on the second core. When it sees one, the head turns toward it, and the eyes and mouth move toward the person first and come back to the center as the head catches up. Following is on at boot.
+[09-wifi](../09-wifi) plus a camera that finds faces, and a head that follows them. The robot looks for faces about 12 times per second on the second core. When it sees one, the head turns toward it, and the eyes and mouth move toward the person first and come back to the center as the head catches up. Following is on at boot. With no face for 5 s, the head searches: it looks at a new part of the room every few seconds. With two or more faces, it follows the one with the biggest box (usually the closest person).
 
 Tap the left eye to check it: the screen shows what the camera sees, with a green box on the face, a blue cross at the center and the blue dead zone around it. The head keeps following while this view is open.
 
@@ -149,9 +149,25 @@ We tried three ways on the robot:
 
 - **Eyes and mouth.** They move by the same error (40 pixels sideways, 25 up and down at an error of 1), halfway each frame. So they look at the person before the head arrives, and come back to the center as the error goes down. With no face for 1 s, they go back to the center.
 - **Directions.** The signs (`YAW_SIGN`, `PITCH_SIGN`, `EYE_SIGN_X`) were checked on the robot: the head turns toward you, the eyes look at you. The camera image is not a mirror.
-- **18 and 12 degrees** are guesses of half the camera's view, not measured. They worked on our robot.
+- **18 and 12 degrees** are a bit less than half the camera's view (about 24 and 18 degrees, see below). A bit less makes the head stop short rather than go past the face.
+- **Two faces.** `face_find()` returns the faces biggest first, so the green box and the face the head follows are the biggest one. We have not tried it with two people yet.
+- **Low battery.** On battery below 3.6 V the head does not move at all (following and searching). The eyes still look at the person. On a nearly empty battery (28 %), moves made the power chip cut the power, and the robot restarted again and again (`last restart: power on`). `/log` and the record (`battery_low`) say when it happens.
 - **Sleep.** A face in view counts as activity. With no one there for a minute, on battery, the robot sleeps as usual, and the finder stops.
 - **Page moves win.** After a move from the page or `curl`, following waits 20 s, as looking around does.
+
+## Searching
+
+The camera sees little. M5Stack does not give the CoreS3 camera's view angle, but it gives 57.6 degrees for the same GC0308 camera on two other products ([Stamp-AddOn Cam0308](https://docs.m5stack.com/en/stamp/Stamp-AddOn_Cam0308), AtomS3R Cam). With the GC0308's 640 x 480 pixels of 3.4 um ([datasheet](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/docs/datasheet/core/K128%20CoreS3/GC0308.PDF)), 57.6 degrees fits the diagonal: about **47 degrees across and 37 up and down**. That the CoreS3 has the same lens is our guess. The head turns 180 degrees, so the camera sees about a quarter of it.
+
+So with following on and no face for 5 s, the head searches:
+
+- It looks at a random spot within -70 to 70 degrees of yaw and 5 to 40 of pitch, at least 33 degrees of yaw (0.7 x 47) or 26 of pitch (0.7 x 37) from where it is, so each look shows a new part of the room. No look turns more than 60 degrees.
+- It turns at about 20 degrees per second, then stays still for 3 s (about 30 finds), then looks somewhere else.
+- A face found on the way takes over at once.
+- Searching does not count as activity: with nobody there for a minute, on battery, the robot sleeps.
+- Each look is a `search` line in the record, with its moves.
+
+Our first try (looks 1.2 s apart, 40 degrees per second, any spot in the range) found the face, but moved too much and too fast. The values above were calm and found the face (checked on the robot).
 
 ## How it works
 
@@ -164,4 +180,4 @@ We tried three ways on the robot:
 
 - Measure the camera's view angle, and use it instead of the 18 and 12 degree guesses.
 - Turn the whole body toward the face when the head reaches the end of its yaw range.
-- Look at the newest face when there are several, or at the biggest one (the closest).
+- Try two people, and keep following the same face while a bigger one walks past.
