@@ -117,7 +117,8 @@ typedef struct {
 // Find the PY32 and set up the UART. It does not power or move the servos.
 // ESP_ERR_NOT_FOUND without the body (as in the emulator).
 esp_err_t tr_servo_init(void);
-// Servo power (VM_EN). Waits 500 ms after power on.
+// Servo power (VM_EN). After power on it waits until both servos answer, up
+// to 2 s (ESP_ERR_TIMEOUT if they do not).
 esp_err_t tr_servo_power(bool on);
 esp_err_t tr_servo_read(tr_servo_t id, tr_servo_state_t *state);
 // Move to an angle in ms milliseconds (100..5000). Out-of-range angles are clamped.
@@ -172,6 +173,12 @@ esp_err_t tr_mic_read(int16_t *samples, int count);
 // when there is PSRAM. Powers it on the first call. Then take frames with
 // esp_camera_fb_get() and give them back with esp_camera_fb_return().
 esp_err_t tr_cam_start(void);
+// Stop the camera (esp_camera_deinit) and free its frames, so the sleep step
+// can cut its power. Give back every frame first, and take no new ones until
+// tr_cam_start() again.
+esp_err_t tr_cam_stop(void);
+// True between tr_cam_start() and tr_cam_stop().
+bool tr_cam_started(void);
 // Only the camera's power (AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0).
 // The light sensor needs it too.
 esp_err_t tr_cam_power(void);

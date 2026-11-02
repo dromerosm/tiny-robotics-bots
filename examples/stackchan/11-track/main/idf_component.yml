@@ -1,0 +1,2 @@
+dependencies:
+  espressif/human_face_detect: "~0.5.2"
