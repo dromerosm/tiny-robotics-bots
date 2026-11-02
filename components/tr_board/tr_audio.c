@@ -48,15 +48,24 @@ esp_err_t tr_audio_start(uint32_t sample_rate)
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan, &tx, &rx), TAG, "I2S");
     const i2s_std_config_t std = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {.mclk = I2S_MCLK, .bclk = I2S_BCLK, .ws = I2S_WS, .dout = I2S_DOUT, .din = I2S_GPIO_UNUSED},
+        .slot_cfg =
+            I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {.mclk = I2S_MCLK,
+                     .bclk = I2S_BCLK,
+                     .ws = I2S_WS,
+                     .dout = I2S_DOUT,
+                     .din = I2S_GPIO_UNUSED},
     };
     i2s_tdm_config_t tdm = {
         .clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(sample_rate),
         .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO,
             I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3),
-        .gpio_cfg = {.mclk = I2S_MCLK, .bclk = I2S_BCLK, .ws = I2S_WS, .dout = I2S_GPIO_UNUSED, .din = I2S_DIN},
+        .gpio_cfg = {.mclk = I2S_MCLK,
+                     .bclk = I2S_BCLK,
+                     .ws = I2S_WS,
+                     .dout = I2S_GPIO_UNUSED,
+                     .din = I2S_DIN},
     };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx, &std), TAG, "TX");
     ESP_RETURN_ON_ERROR(i2s_channel_init_tdm_mode(rx, &tdm), TAG, "RX");
@@ -76,7 +85,8 @@ esp_err_t tr_audio_start(uint32_t sample_rate)
     };
     const audio_codec_if_t *aw_if = aw88298_codec_new(&aw);
     ESP_RETURN_ON_FALSE(spk_ctrl && aw_if, ESP_FAIL, TAG, "AW88298");
-    esp_codec_dev_cfg_t dev = {.dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = aw_if, .data_if = data_if};
+    esp_codec_dev_cfg_t dev = {
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT, .codec_if = aw_if, .data_if = data_if};
     speaker = esp_codec_dev_new(&dev);
     ESP_RETURN_ON_FALSE(speaker, ESP_FAIL, TAG, "speaker");
 
@@ -89,14 +99,19 @@ esp_err_t tr_audio_start(uint32_t sample_rate)
     };
     const audio_codec_if_t *es_if = es7210_codec_new(&es);
     ESP_RETURN_ON_FALSE(mic_ctrl && es_if, ESP_FAIL, TAG, "ES7210");
-    dev = (esp_codec_dev_cfg_t){.dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es_if, .data_if = data_if};
+    dev = (esp_codec_dev_cfg_t){
+        .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = es_if, .data_if = data_if};
     mics = esp_codec_dev_new(&dev);
     ESP_RETURN_ON_FALSE(mics, ESP_FAIL, TAG, "microphones");
 
-    esp_codec_dev_sample_info_t fs = {.bits_per_sample = 32, .channel = 2, .sample_rate = sample_rate};
-    ESP_RETURN_ON_FALSE(esp_codec_dev_open(speaker, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open speaker");
-    fs = (esp_codec_dev_sample_info_t){.bits_per_sample = 16, .channel = TR_AUDIO_INPUTS, .sample_rate = sample_rate};
-    ESP_RETURN_ON_FALSE(esp_codec_dev_open(mics, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open microphones");
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = 32, .channel = 2, .sample_rate = sample_rate};
+    ESP_RETURN_ON_FALSE(esp_codec_dev_open(speaker, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
+                        "open speaker");
+    fs = (esp_codec_dev_sample_info_t){
+        .bits_per_sample = 16, .channel = TR_AUDIO_INPUTS, .sample_rate = sample_rate};
+    ESP_RETURN_ON_FALSE(esp_codec_dev_open(mics, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
+                        "open microphones");
     esp_codec_dev_set_out_vol(speaker, 70);
     esp_codec_dev_set_in_gain(mics, 30.0f);
     return ESP_OK;
@@ -105,7 +120,8 @@ esp_err_t tr_audio_start(uint32_t sample_rate)
 esp_err_t tr_audio_read(int16_t *frames, int count)
 {
     ESP_RETURN_ON_FALSE(mics, ESP_ERR_INVALID_STATE, TAG, "not started");
-    return esp_codec_dev_read(mics, frames, count * TR_AUDIO_INPUTS * sizeof(int16_t)) == ESP_CODEC_DEV_OK
+    return esp_codec_dev_read(mics, frames, count * TR_AUDIO_INPUTS * sizeof(int16_t)) ==
+                   ESP_CODEC_DEV_OK
                ? ESP_OK
                : ESP_FAIL;
 }

@@ -63,17 +63,17 @@ static const char *TAG = "talk";
 #define RING        RATE                 // 1 s of the robot's voice
 #define MIC_RING    (RATE * 2)           // 2 s of the cleaned sound, to send
 #define MAX_TALK_US (5 * 60 * 1000000LL) // a talk ends after 5 minutes
-#define SEND_MS     40                   // microphone sound per WebSocket message: short, so you are heard soon
-#define RX_MAX      (64 * 1024)          // the biggest message we take
+#define SEND_MS     40 // microphone sound per WebSocket message: short, so you are heard soon
+#define RX_MAX      (64 * 1024) // the biggest message we take
 // The robot's voice comes over the network in bursts. After the buffer runs
 // empty, play waits for PREFILL (fewer gaps); above MAX_BUFFERED the oldest
 // part goes (it would only delay the robot, and its stop when you cut in).
 #define PREFILL      (RATE * 200 / 1000) // 120 ms left 14 gaps in 73 s
 #define MAX_BUFFERED (RATE * 500 / 1000)
-#define MAX_DELAY   2048                 // reference delay line, in samples
-#define SLOTS       4                    // frames on their way to the AEC
-#define VOLUME      60                   // 40 was too quiet
-#define FILTER      4                    // AEC filter, in frames: 2 removed only 6 dB of echo
+#define MAX_DELAY    2048 // reference delay line, in samples
+#define SLOTS        4    // frames on their way to the AEC
+#define VOLUME       60   // 40 was too quiet
+#define FILTER       4    // AEC filter, in frames: 2 removed only 6 dB of echo
 
 // The ES7210 inputs: 0 and 2 are the microphones (1 carries the amplifier's
 // output, 3 is empty). As the reference, input 1 removed only about 8 dB
@@ -85,11 +85,11 @@ static const char *TAG = "talk";
 static volatile int ref_delay = 79; // measured by the tone test
 
 static aec_handle_t *aec;
-static int frame;                // samples per AEC frame
-static QueueHandle_t to_aec;     // indices into slots[]
-static int16_t *slots[SLOTS];    // mic a, mic b, reference: each FRAME samples
+static int frame;             // samples per AEC frame
+static QueueHandle_t to_aec;  // indices into slots[]
+static int16_t *slots[SLOTS]; // mic a, mic b, reference: each FRAME samples
 static bool started;
-static volatile bool send_raw;   // send microphone a as it is, to compare
+static volatile bool send_raw; // send microphone a as it is, to compare
 
 // The robot's voice, 16 kHz mono, in PSRAM. One writer (the WebSocket task),
 // one reader (the audio task). The same kind of ring holds the cleaned
@@ -135,8 +135,8 @@ static volatile float level;                        // the robot's voice, 0..1
 static volatile float rms_in[4], rms_play, rms_out; // over the last second
 static volatile int frames10, aec_us, io_us;        // frames per 10 s, times per frame
 static volatile int answers, delegations, deltas, sent_msgs, overruns, skips, gaps;
-static volatile uint32_t received;     // samples of the robot's voice since the talk opened
-static volatile int64_t live_since;    // when session.started came
+static volatile uint32_t received;  // samples of the robot's voice since the talk opened
+static volatile int64_t live_since; // when session.started came
 static volatile int64_t talk_since;
 static volatile int last_latency_ms = -1; // your last words to the robot's first words
 static char last_error[160];
@@ -174,7 +174,9 @@ static void audio_task(void *arg)
         if (test == TEST_TONE) { // 1 s quiet, then 1 s of 1 kHz
             for (int i = 0; i < frame; i++) {
                 const int t = test_pos + i;
-                play[i] = t >= RATE && t < 2 * RATE ? (int16_t)(8000 * sinf(2 * M_PI * 1000 * t / RATE)) : 0;
+                play[i] = t >= RATE && t < 2 * RATE
+                              ? (int16_t)(8000 * sinf(2 * M_PI * 1000 * t / RATE))
+                              : 0;
             }
             got = frame;
         } else if (test == TEST_BURSTS) { // 1 s quiet, then 0.5 s noise, 0.5 s quiet, x5
@@ -342,10 +344,10 @@ static esp_websocket_client_handle_t ws;
 // The send task uses ws while the session task may close and free it: both
 // hold this lock. Without it, the robot restarted at the end of a talk.
 static SemaphoreHandle_t ws_lock;
-static char *rx;     // one message, put together from its pieces
-static int16_t *pcm; // decoded voice, 16 kHz
-static volatile bool live;  // session.started: the server takes audio
-static int64_t heard_at;    // the last piece of your words the server wrote down
+static char *rx;                   // one message, put together from its pieces
+static int16_t *pcm;               // decoded voice, 16 kHz
+static volatile bool live;         // session.started: the server takes audio
+static int64_t heard_at;           // the last piece of your words the server wrote down
 static char said[256], heard[256]; // the robot's words, and yours, as they come
 
 // A JSON string value after "key":", copied into out. Enough for our events
@@ -400,8 +402,8 @@ static void on_message(char *msg, int len)
         p = p ? strchr(p + 8, '"') : NULL;
         const char *end = p ? strchr(p + 1, '"') : NULL;
         size_t bytes = 0;
-        if (!end || mbedtls_base64_decode((unsigned char *)pcm, RX_MAX, &bytes, (unsigned char *)p + 1,
-                                          end - p - 1) != 0) {
+        if (!end || mbedtls_base64_decode((unsigned char *)pcm, RX_MAX, &bytes,
+                                          (unsigned char *)p + 1, end - p - 1) != 0) {
             return;
         }
         deltas++;
@@ -526,7 +528,8 @@ static void session_task(void *arg)
         live = false;
         xSemaphoreGive(ws_lock);
         ring_flush(&voice);
-        ESP_LOGI(TAG, "talk ended after %lld s: %d answers, %d handed to gpt-6-luna, %d messages sent",
+        ESP_LOGI(TAG,
+                 "talk ended after %lld s: %d answers, %d handed to gpt-6-luna, %d messages sent",
                  (esp_timer_get_time() - talk_since) / 1000000, answers, delegations, sent_msgs);
         state = T_OFF;
     }
@@ -555,7 +558,8 @@ static void send_task(void *arg)
             ring_pop(from, mic, per_msg);
             int len = snprintf(msg, 64, "{\"type\":\"session.input_audio.append\",\"audio\":\"");
             size_t olen = 0;
-            mbedtls_base64_encode((unsigned char *)msg + len, b64_size, &olen, (unsigned char *)mic, per_msg * 2);
+            mbedtls_base64_encode((unsigned char *)msg + len, b64_size, &olen, (unsigned char *)mic,
+                                  per_msg * 2);
             len += olen;
             len += snprintf(msg + len, 8, "\"}");
             if (esp_websocket_client_send_text(ws, msg, len, pdMS_TO_TICKS(1000)) > 0) {
@@ -622,7 +626,8 @@ esp_err_t talk_start(void)
     xTaskCreatePinnedToCore(send_task, "send", 4096, NULL, 5, NULL, 0);
     xTaskCreate(session_task, "talk", 6144, NULL, 4, &session);
     started = true;
-    ESP_LOGI(TAG, "audio ready in %lld ms; free: internal %u KB, PSRAM %u KB", (esp_timer_get_time() - t0) / 1000,
+    ESP_LOGI(TAG, "audio ready in %lld ms; free: internal %u KB, PSRAM %u KB",
+             (esp_timer_get_time() - t0) / 1000,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     return ESP_OK;
@@ -690,22 +695,25 @@ esp_err_t talk_get(httpd_req_t *req)
 {
     static char text[1024];
     static const char *names[] = {"off", "opening", "open", "closing"};
-    int n = snprintf(text, sizeof(text),
-                     "talk: %s%s%s\nreference delay %d samples, sending %s\n"
-                     "levels (rms, last second): in %.0f %.0f %.0f %.0f, played %.0f, cleaned %.0f\n"
-                     "answers %d, handed to gpt-6-luna %d, messages sent %d, voice pieces %d, AEC overruns %d, "
-                     "voice skips %d, gaps %d\nvoice received %.1f s in %.1f s, buffered now %d ms\nlast answer: first words %d ms after your last words\n"
-                     "audio: %d frames per 10 s (real time: %d), AEC %d us, play+record %d us per %d us frame\n"
-                     "internal RAM: free %u KB, lowest %u KB, biggest block %u KB\n",
-                     names[state], last_error[0] ? ", last error: " : "", last_error, ref_delay,
-                     send_raw ? "microphone a as it is" : "the cleaned sound", rms_in[0], rms_in[1], rms_in[2],
-                     rms_in[3], rms_play, rms_out, answers, delegations, sent_msgs, deltas, overruns, skips, gaps,
-                     received / (float)RATE, live_since ? (esp_timer_get_time() - live_since) / 1e6f : 0.0f,
-                     (int)((voice.in - voice.out) * 1000 / RATE), last_latency_ms, frames10, frame ? 10 * RATE / frame : 0, aec_us, io_us,
-                     frame ? frame * 1000000 / RATE : 0,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
-                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024,
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+    int n = snprintf(
+        text, sizeof(text),
+        "talk: %s%s%s\nreference delay %d samples, sending %s\n"
+        "levels (rms, last second): in %.0f %.0f %.0f %.0f, played %.0f, cleaned %.0f\n"
+        "answers %d, handed to gpt-6-luna %d, messages sent %d, voice pieces %d, AEC overruns %d, "
+        "voice skips %d, gaps %d\nvoice received %.1f s in %.1f s, buffered now %d ms\nlast "
+        "answer: first words %d ms after your last words\n"
+        "audio: %d frames per 10 s (real time: %d), AEC %d us, play+record %d us per %d us frame\n"
+        "internal RAM: free %u KB, lowest %u KB, biggest block %u KB\n",
+        names[state], last_error[0] ? ", last error: " : "", last_error, ref_delay,
+        send_raw ? "microphone a as it is" : "the cleaned sound", rms_in[0], rms_in[1], rms_in[2],
+        rms_in[3], rms_play, rms_out, answers, delegations, sent_msgs, deltas, overruns, skips,
+        gaps, received / (float)RATE,
+        live_since ? (esp_timer_get_time() - live_since) / 1e6f : 0.0f,
+        (int)((voice.in - voice.out) * 1000 / RATE), last_latency_ms, frames10,
+        frame ? 10 * RATE / frame : 0, aec_us, io_us, frame ? frame * 1000000 / RATE : 0,
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024,
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
     if (env_n > 0 && test == TEST_NONE) {
         n += snprintf(text + n, sizeof(text) - n, "last test: onset delay per input (samples):");
         for (int l = 0; l < 4; l++) {
