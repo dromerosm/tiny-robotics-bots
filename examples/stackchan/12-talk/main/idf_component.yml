@@ -1,0 +1,4 @@
+dependencies:
+  # Echo cancelling and noise reduction for the talk (audio front end, AFE).
+  espressif/esp-sr: "*"
+  espressif/esp_websocket_client: "*"

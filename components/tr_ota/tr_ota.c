@@ -51,7 +51,7 @@ static esp_netif_t *sta;
 #define MAX_STATUS 4
 static tr_ota_status_fn status_fns[MAX_STATUS];
 
-#define MAX_URIS 20
+#define MAX_URIS 24
 static httpd_uri_t extra_uris[MAX_URIS];
 static int extra_count;
 static httpd_handle_t server;

@@ -169,6 +169,19 @@ int tr_head_touch(void);
 esp_err_t tr_mic_start(uint32_t sample_rate, int channels);
 esp_err_t tr_mic_read(int16_t *samples, int count);
 
+// Full duplex: the speaker and the microphones at the same time, for echo
+// cancelling. One I2S bus, so not together with tr_mic_*. start opens both
+// at sample_rate. read waits for count frames of TR_AUDIO_INPUTS samples
+// (the ES7210's four inputs, in TDM slot order). write plays count mono
+// samples and waits while the output buffers are full. Volume 0 to 100,
+// microphone gain in dB.
+#define TR_AUDIO_INPUTS 4
+esp_err_t tr_audio_start(uint32_t sample_rate);
+esp_err_t tr_audio_read(int16_t *frames, int count);
+esp_err_t tr_audio_write(const int16_t *samples, int count);
+esp_err_t tr_audio_volume(int percent);
+esp_err_t tr_audio_gain(float db);
+
 // The camera (GC0308 on the DVP port), 320 x 240 RGB565, frames in PSRAM
 // when there is PSRAM. Powers it on the first call. Then take frames with
 // esp_camera_fb_get() and give them back with esp_camera_fb_return().
