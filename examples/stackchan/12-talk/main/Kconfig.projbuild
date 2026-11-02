@@ -1,10 +1,10 @@
-menu "12-talk key server"
+menu "12-talk Worker"
     # From environment variables, as the Wi-Fi settings: scripts/build.sh
     # passes them from the file in WIFI_ENV. Never in git.
     config TALK_URL
-        string "Key Worker URL (POST /key)"
+        string "Talk Worker WebSocket URL (wss://.../live)"
         default "$(TALK_URL)"
     config TALK_TOKEN
-        string "Robot token for the key Worker"
+        string "Robot token for the talk Worker"
         default "$(TALK_TOKEN)"
 endmenu

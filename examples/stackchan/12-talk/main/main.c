@@ -37,7 +37,12 @@
 #define FRAME_MS   66 // about 15 frames per second
 #define BG         TR_LCD_RGB(0, 0, 0)
 #define FG         TR_LCD_RGB(255, 255, 255)
+// The face's color says where the talk is: white off, yellow while it
+// connects (3 to 4 s), blue once the robot listens.
+#define CONNECTING TR_LCD_RGB(255, 200, 0)
+#define LISTENING  TR_LCD_RGB(80, 200, 255)
 #define BRIGHTNESS 20 // screen backlight, in %
+#define TOUCH_GAP_US (3 * 1000 * 1000)
 
 typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_COUNT } view_t;
 static const char *view_names[] = {"face", "status"};
@@ -47,6 +52,7 @@ static volatile bool blink_now;
 
 typedef struct {
     bool closed;
+    uint16_t color;
     int mouth; // extra mouth height in pixels, while the robot speaks
 } face_t;
 
@@ -58,14 +64,14 @@ static uint16_t face_pixel(int x, int y, void *ctx)
         const int cx = i ? 225 : 95, cy = 95;
         if (f->closed) {
             if (abs(x - cx) <= 18 && abs(y - cy) <= 3) {
-                return FG;
+                return f->color;
             }
         } else if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= 16 * 16) {
-            return FG;
+            return f->color;
         }
     }
     if (x >= 120 && x < 200 && y >= 160 - f->mouth / 2 && y < 165 + f->mouth / 2) {
-        return FG;
+        return f->color;
     }
     return BG;
 }
@@ -88,16 +94,22 @@ static void face_task(void *arg)
     bool was_down = false;
     int tap_x = 0, tap_y = 0;
     float mouth = 0;
+    int64_t touch_ok_at = 0;
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
         const int64_t now = esp_timer_get_time();
 
-        // A touch on the head starts or ends a talk.
-        if (tr_head_touch()) {
-            if (talk_active()) {
+        // A touch on the head starts or ends a talk. One stroke gives many
+        // touches (12 in a second), so after each one the next TOUCH_GAP_US
+        // do nothing.
+        if (tr_head_touch() && now >= touch_ok_at) {
+            touch_ok_at = now + TOUCH_GAP_US;
+            if (talk_live()) {
                 ESP_LOGI("face", "head touch: end the talk");
                 talk_close();
+            } else if (talk_active()) {
+                ESP_LOGI("face", "head touch: still connecting, the talk stays");
             } else {
                 ESP_LOGI("face", "head touch: start a talk");
                 talk_open();
@@ -150,8 +162,12 @@ static void face_task(void *arg)
             next_blink = now + 2500000 + esp_random() % 3000000;
         }
         mouth += (talk_level() * 30.0f - mouth) * 0.5f;
-        const face_t f = {.closed = now < blink_end, .mouth = (int)lroundf(mouth) & ~1};
-        if (screen && (f.closed != drawn.closed || f.mouth != drawn.mouth)) {
+        const face_t f = {
+            .closed = now < blink_end,
+            .color = talk_live() ? LISTENING : talk_active() ? CONNECTING : FG,
+            .mouth = (int)lroundf(mouth) & ~1,
+        };
+        if (screen && (f.closed != drawn.closed || f.color != drawn.color || f.mouth != drawn.mouth)) {
             tr_lcd_render(face_pixel, (void *)&f);
             drawn = f;
         }

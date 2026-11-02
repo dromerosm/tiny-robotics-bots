@@ -9,15 +9,17 @@
 // - aec (core 1): esp-sr's echo canceller (AEC) on both microphones, with
 //   its non-linear stage for the echo that is left. The two cleaned
 //   microphones are averaged into one sound;
-// - send: during a talk, every SEND_MS it sends the cleaned sound to the
-//   Realtime API at 24 kHz;
-// - session: gets a session key from our key Worker, opens the WebSocket,
-//   and closes it at the end. The WebSocket client's own task receives the
-//   robot's voice (24 kHz), which goes to the play buffer at 16 kHz.
+// - send: during a talk, every SEND_MS it sends the cleaned sound;
+// - session: opens the WebSocket to our Worker (workers/talk-key), which
+//   opens the session with GPT-Live (gpt-live-1) and passes the messages
+//   both ways, and closes it at the end. The WebSocket client's own task
+//   receives the robot's voice, which goes to the play buffer.
 //
-// Full duplex: the microphones stay open while the robot speaks. The server
-// hears when the person starts talking (input_audio_buffer.speech_started)
-// and stops the answer; the robot drops what is left in its play buffer.
+// Everything is 16 kHz, so there is no rate conversion. Full duplex: the
+// microphones stay open while the robot speaks, and gpt-live-1 itself stops
+// when you talk over it. Its voice comes in real time, so there is little
+// to drop. When it needs to look something up, it hands the task to
+// gpt-6-luna (set in the Worker).
 //
 // No AFE (esp-sr's whole audio front end) and no BSS (its two-microphone
 // separation): together they needed more than all of core 1, and added
@@ -31,6 +33,7 @@
 //                              sets it from what it measures)
 //   POST /talk?send=aec|mic    send the cleaned sound, or microphone a as it is
 //   POST /talk?volume=40       speaker volume, 0 to 100
+//   POST /talk?nlp=0|1|2        how hard the AEC cuts what is left of the echo
 #include "talk.h"
 
 #include <math.h>
@@ -47,6 +50,7 @@
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "sdkconfig.h"
@@ -56,15 +60,19 @@
 static const char *TAG = "talk";
 
 #define RATE        16000
-#define API_RATE    24000
-#define RING        (RATE * 30)          // 30 s of the robot's voice
+#define RING        RATE                 // 1 s of the robot's voice
 #define MIC_RING    (RATE * 2)           // 2 s of the cleaned sound, to send
 #define MAX_TALK_US (5 * 60 * 1000000LL) // a talk ends after 5 minutes
-#define SEND_MS     100                  // microphone sound per WebSocket message
-#define RX_MAX      (256 * 1024)         // the biggest message we take
+#define SEND_MS     40                   // microphone sound per WebSocket message: short, so you are heard soon
+#define RX_MAX      (64 * 1024)          // the biggest message we take
+// The robot's voice comes over the network in bursts. After the buffer runs
+// empty, play waits for PREFILL (fewer gaps); above MAX_BUFFERED the oldest
+// part goes (it would only delay the robot, and its stop when you cut in).
+#define PREFILL      (RATE * 200 / 1000) // 120 ms left 14 gaps in 73 s
+#define MAX_BUFFERED (RATE * 500 / 1000)
 #define MAX_DELAY   2048                 // reference delay line, in samples
 #define SLOTS       4                    // frames on their way to the AEC
-#define VOLUME      40                   // at 70 the microphones clip
+#define VOLUME      60                   // 40 was too quiet
 #define FILTER      4                    // AEC filter, in frames: 2 removed only 6 dB of echo
 
 // The ES7210 inputs: 0 and 2 are the microphones (1 carries the amplifier's
@@ -119,26 +127,6 @@ static void ring_flush(ring_t *r)
     r->out = r->in;
 }
 
-// Linear resampling, for any ratio, in pieces. step = input rate / output rate.
-typedef struct {
-    float pos, step;
-    int16_t prev;
-} resampler_t;
-
-static int resample(resampler_t *r, const int16_t *in, int n, int16_t *out)
-{
-    int k = 0;
-    for (int i = 0; i < n; i++) {
-        while (r->pos < 1.0f) {
-            out[k++] = (int16_t)(r->prev + (in[i] - r->prev) * r->pos);
-            r->pos += r->step;
-        }
-        r->pos -= 1.0f;
-        r->prev = in[i];
-    }
-    return k;
-}
-
 // State and numbers for GET /talk.
 typedef enum { T_OFF, T_OPENING, T_OPEN, T_CLOSING } tstate_t;
 static volatile tstate_t state = T_OFF;
@@ -146,9 +134,9 @@ static volatile bool close_asked;
 static volatile float level;                        // the robot's voice, 0..1
 static volatile float rms_in[4], rms_play, rms_out; // over the last second
 static volatile int frames10, aec_us, io_us;        // frames per 10 s, times per frame
-static volatile int barge_ins, answers, deltas, sent_msgs, overruns;
-static volatile int64_t talk_since, speech_stopped_at, first_audio_ms = -1;
-static volatile int last_latency_ms = -1;
+static volatile int answers, delegations, deltas, sent_msgs, overruns, skips, gaps;
+static volatile int64_t talk_since;
+static volatile int last_latency_ms = -1; // your last words to the robot's first words
 static char last_error[160];
 
 // Tests (test=lanes and test=aec). Loudness per frame from the start: the
@@ -195,7 +183,15 @@ static void audio_task(void *arg)
             }
             got = frame;
         } else {
-            got = ring_pop(&voice, play, frame);
+            static bool waiting = true;
+            if (waiting && voice.in - voice.out >= PREFILL) {
+                waiting = false;
+            }
+            got = waiting ? 0 : ring_pop(&voice, play, frame);
+            if (!waiting && got < frame) {
+                waiting = true;
+                gaps += state == T_OPEN;
+            }
         }
         if (got < frame) {
             memset(play + got, 0, (frame - got) * 2);
@@ -338,26 +334,37 @@ static void aec_task(void *arg)
 }
 
 // ---------------------------------------------------------------------------
-// The WebSocket session
+// The WebSocket session, through our Worker to GPT-Live
 
 static esp_websocket_client_handle_t ws;
+// The send task uses ws while the session task may close and free it: both
+// hold this lock. Without it, the robot restarted at the end of a talk.
+static SemaphoreHandle_t ws_lock;
 static char *rx;     // one message, put together from its pieces
-static int16_t *pcm; // decoded voice, 24 kHz
-static int16_t *pcm16;
-static resampler_t down = {.step = (float)API_RATE / RATE};
+static int16_t *pcm; // decoded voice, 16 kHz
+static volatile bool live;  // session.started: the server takes audio
+static int64_t heard_at;    // the last piece of your words the server wrote down
+static char said[256], heard[256]; // the robot's words, and yours, as they come
 
-// A JSON string value after "key":", copied into out. Enough for our events.
+// A JSON string value after "key":", copied into out. Enough for our events
+// (the escapes stay as they are).
 static bool json_str(const char *msg, const char *key, char *out, size_t size)
 {
     char pat[32];
-    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
     const char *p = strstr(msg, pat);
     if (!p) {
         return false;
     }
     p += strlen(pat);
+    while (*p == ' ') {
+        p++;
+    }
+    if (*p++ != '"') {
+        return false;
+    }
     size_t n = 0;
-    while (p[n] && p[n] != '"' && n + 1 < size) {
+    while (p[n] && !(p[n] == '"' && (n == 0 || p[n - 1] != '\\')) && n + 1 < size) {
         n++;
     }
     memcpy(out, p, n);
@@ -365,58 +372,74 @@ static bool json_str(const char *msg, const char *key, char *out, size_t size)
     return true;
 }
 
+// Words come in small pieces. Keep them, and log a line at the end of a
+// sentence or when the line is full.
+static void words(char *line, size_t size, const char *piece, const char *who)
+{
+    strncat(line, piece, size - strlen(line) - 1);
+    const size_t n = strlen(line);
+    if (n > 0 && (strchr(".?!", line[n - 1]) || n + 32 > size)) {
+        ESP_LOGI(TAG, "%s:%s", who, line);
+        line[0] = 0;
+    }
+}
+
 static void on_message(char *msg, int len)
 {
     msg[len] = 0;
-    char type[64];
+    char type[48];
     if (!json_str(msg, "type", type, sizeof(type))) {
         return;
     }
-    if (strcmp(type, "response.output_audio.delta") == 0) {
-        char *p = strstr(msg, "\"delta\":\"");
-        if (!p) {
-            return;
-        }
-        p += 9;
-        char *end = strchr(p, '"');
-        if (!end) {
-            return;
-        }
+    if (strcmp(type, "session.output_audio.delta") == 0) {
+        // The voice comes in real time, silence too: the buffer stays short.
+        // If it grows (the clocks differ a little), drop the oldest part.
+        const char *p = strstr(msg, "\"delta\":");
+        p = p ? strchr(p + 8, '"') : NULL;
+        const char *end = p ? strchr(p + 1, '"') : NULL;
         size_t bytes = 0;
-        if (mbedtls_base64_decode((unsigned char *)pcm, RX_MAX, &bytes, (unsigned char *)p, end - p) != 0) {
+        if (!end || mbedtls_base64_decode((unsigned char *)pcm, RX_MAX, &bytes, (unsigned char *)p + 1,
+                                          end - p - 1) != 0) {
             return;
         }
-        if (deltas++ == 0 || first_audio_ms < 0) {
-            if (speech_stopped_at > 0) {
-                last_latency_ms = (esp_timer_get_time() - speech_stopped_at) / 1000;
-                ESP_LOGI(TAG, "first sound of the answer %d ms after you stopped", last_latency_ms);
+        deltas++;
+        if (voice.in - voice.out > MAX_BUFFERED) {
+            voice.out = voice.in - PREFILL;
+            skips++;
+        }
+        ring_push(&voice, pcm, bytes / 2);
+    } else if (strcmp(type, "session.output_transcript.delta") == 0) {
+        char t[160];
+        if (json_str(msg, "delta", t, sizeof(t))) {
+            if (heard_at > 0) {
+                last_latency_ms = (esp_timer_get_time() - heard_at) / 1000;
+                heard_at = 0;
+                answers++;
             }
-            first_audio_ms = (esp_timer_get_time() - talk_since) / 1000;
+            words(said, sizeof(said), t, "robot");
         }
-        const int n = resample(&down, pcm, bytes / 2, pcm16);
-        ring_push(&voice, pcm16, n);
-    } else if (strcmp(type, "input_audio_buffer.speech_started") == 0) {
-        if (voice.in != voice.out) {
-            barge_ins++;
-            ESP_LOGI(TAG, "you talked over the robot: its answer stops");
+    } else if (strcmp(type, "session.input_transcript.delta") == 0) {
+        char t[160];
+        if (json_str(msg, "delta", t, sizeof(t))) {
+            heard_at = esp_timer_get_time();
+            words(heard, sizeof(heard), t, "you");
         }
-        ring_flush(&voice);
-    } else if (strcmp(type, "input_audio_buffer.speech_stopped") == 0) {
-        speech_stopped_at = esp_timer_get_time();
-        first_audio_ms = -1;
-    } else if (strcmp(type, "response.done") == 0) {
-        answers++;
-    } else if (strcmp(type, "session.created") == 0) {
+    } else if (strcmp(type, "session.delegation.created") == 0) {
+        delegations++;
+        ESP_LOGI(TAG, "handed to gpt-6-luna");
+    } else if (strcmp(type, "session.started") == 0) {
+        live = true;
         ESP_LOGI(TAG, "session open in %lld ms", (esp_timer_get_time() - talk_since) / 1000);
+    } else if (strcmp(type, "session.closed") == 0) {
+        char r[48] = "";
+        json_str(msg, "reason", r, sizeof(r));
+        ESP_LOGI(TAG, "the server closed the session: %s", r);
+        close_asked = true;
     } else if (strcmp(type, "error") == 0) {
         char m[120] = "";
         json_str(msg, "message", m, sizeof(m));
         snprintf(last_error, sizeof(last_error), "%s", m);
         ESP_LOGW(TAG, "error from the API: %s", m);
-    } else if (strcmp(type, "response.output_audio_transcript.done") == 0) {
-        char t[200] = "";
-        json_str(msg, "transcript", t, sizeof(t));
-        ESP_LOGI(TAG, "robot: %s", t);
     }
 }
 
@@ -435,8 +458,8 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *event_d
             on_message(rx, d->payload_len);
         }
     } else if (id == WEBSOCKET_EVENT_DISCONNECTED || id == WEBSOCKET_EVENT_CLOSED) {
-        if (state == T_OPEN) {
-            ESP_LOGW(TAG, "the API closed the talk");
+        if (state == T_OPEN && !close_asked) {
+            ESP_LOGW(TAG, "the connection closed");
             close_asked = true;
         }
     } else if (id == WEBSOCKET_EVENT_ERROR) {
@@ -444,52 +467,11 @@ static void ws_event(void *arg, esp_event_base_t base, int32_t id, void *event_d
     }
 }
 
-// A session key from our key Worker: two lines, the model and the key.
-static esp_err_t get_key(char *model, size_t msize, char *key, size_t ksize)
-{
-    if (!CONFIG_TALK_URL[0] || !CONFIG_TALK_TOKEN[0]) {
-        snprintf(last_error, sizeof(last_error), "no key server set (TALK_URL, TALK_TOKEN)");
-        return ESP_ERR_INVALID_STATE;
-    }
-    esp_http_client_config_t cfg = {
-        .url = CONFIG_TALK_URL,
-        .method = HTTP_METHOD_POST,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 10000,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    esp_http_client_set_header(c, "X-Robot-Token", CONFIG_TALK_TOKEN);
-    char body[160] = "";
-    esp_err_t err = esp_http_client_open(c, 0);
-    int status = 0, n = 0;
-    if (err == ESP_OK) {
-        esp_http_client_fetch_headers(c);
-        status = esp_http_client_get_status_code(c);
-        n = esp_http_client_read_response(c, body, sizeof(body) - 1);
-    }
-    esp_http_client_cleanup(c);
-    if (err != ESP_OK || status != 200 || n <= 0) {
-        snprintf(last_error, sizeof(last_error), "key server: %s, HTTP %d", esp_err_to_name(err), status);
-        return ESP_FAIL;
-    }
-    body[n] = 0;
-    char *nl = strchr(body, '\n');
-    if (!nl) {
-        return ESP_FAIL;
-    }
-    *nl = 0;
-    snprintf(model, msize, "%s", body);
-    char *k = nl + 1;
-    k[strcspn(k, "\r\n")] = 0;
-    snprintf(key, ksize, "%s", k);
-    return ESP_OK;
-}
-
 static TaskHandle_t session;
 
 static void session_task(void *arg)
 {
-    char model[48], key[96], url[128], header[128];
+    char header[160];
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (state != T_OPENING) {
@@ -497,16 +479,14 @@ static void session_task(void *arg)
         }
         talk_since = esp_timer_get_time();
         last_error[0] = 0;
-        if (get_key(model, sizeof(model), key, sizeof(key)) != ESP_OK) {
-            ESP_LOGW(TAG, "no session key: %s", last_error);
+        if (!CONFIG_TALK_URL[0] || !CONFIG_TALK_TOKEN[0]) {
+            snprintf(last_error, sizeof(last_error), "no Worker set (TALK_URL, TALK_TOKEN)");
             state = T_OFF;
             continue;
         }
-        ESP_LOGI(TAG, "session key in %lld ms, model %s", (esp_timer_get_time() - talk_since) / 1000, model);
-        snprintf(url, sizeof(url), "wss://api.openai.com/v1/realtime?model=%s", model);
-        snprintf(header, sizeof(header), "Authorization: Bearer %s\r\n", key);
+        snprintf(header, sizeof(header), "X-Robot-Token: %s\r\n", CONFIG_TALK_TOKEN);
         const esp_websocket_client_config_t cfg = {
-            .uri = url,
+            .uri = CONFIG_TALK_URL,
             .headers = header,
             .crt_bundle_attach = esp_crt_bundle_attach,
             .buffer_size = 8192,
@@ -516,9 +496,10 @@ static void session_task(void *arg)
         };
         ws = esp_websocket_client_init(&cfg);
         esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, ws_event, NULL);
-        close_asked = false;
-        barge_ins = answers = deltas = sent_msgs = 0;
-        speech_stopped_at = 0;
+        close_asked = live = false;
+        answers = delegations = deltas = sent_msgs = skips = gaps = 0;
+        heard_at = 0;
+        said[0] = heard[0] = 0;
         last_latency_ms = -1;
         if (esp_websocket_client_start(ws) == ESP_OK) {
             state = T_OPEN;
@@ -529,31 +510,37 @@ static void session_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         state = T_CLOSING;
+        xSemaphoreTake(ws_lock, portMAX_DELAY);
+        if (esp_websocket_client_is_connected(ws)) {
+            static const char bye[] = "{\"type\":\"session.close\"}";
+            esp_websocket_client_send_text(ws, bye, sizeof(bye) - 1, pdMS_TO_TICKS(1000));
+        }
         esp_websocket_client_close(ws, pdMS_TO_TICKS(2000));
         esp_websocket_client_destroy(ws);
         ws = NULL;
+        live = false;
+        xSemaphoreGive(ws_lock);
         ring_flush(&voice);
-        ESP_LOGI(TAG, "talk ended after %lld s: %d answers, %d interruptions, %d messages sent",
-                 (esp_timer_get_time() - talk_since) / 1000000, answers, barge_ins, sent_msgs);
+        ESP_LOGI(TAG, "talk ended after %lld s: %d answers, %d handed to gpt-6-luna, %d messages sent",
+                 (esp_timer_get_time() - talk_since) / 1000000, answers, delegations, sent_msgs);
         state = T_OFF;
     }
 }
 
-
-// During a talk: the cleaned sound to the API, at 24 kHz, every SEND_MS.
+// During a talk: the cleaned sound to the server, every SEND_MS.
 static void send_task(void *arg)
 {
-    const int per_msg = RATE * SEND_MS / 1000; // samples at 16 kHz
+    const int per_msg = RATE * SEND_MS / 1000;
     int16_t *mic = heap_caps_malloc(per_msg * 2, MALLOC_CAP_SPIRAM);
-    int16_t *up = heap_caps_malloc((per_msg * API_RATE / RATE + 16) * 2, MALLOC_CAP_SPIRAM);
-    const size_t b64_size = (per_msg * API_RATE / RATE + 16) * 2 * 4 / 3 + 128;
+    const size_t b64_size = per_msg * 2 * 4 / 3 + 16;
     char *msg = heap_caps_malloc(b64_size + 64, MALLOC_CAP_SPIRAM);
-    resampler_t upr = {.step = (float)RATE / API_RATE};
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(SEND_MS));
         ring_t *from = send_raw ? &raw : &clean;
-        if (state != T_OPEN || !ws || !esp_websocket_client_is_connected(ws)) {
+        xSemaphoreTake(ws_lock, portMAX_DELAY);
+        if (state != T_OPEN || !live || !ws || !esp_websocket_client_is_connected(ws)) {
+            xSemaphoreGive(ws_lock);
             ring_flush(&raw);
             ring_flush(&clean);
             continue;
@@ -561,19 +548,18 @@ static void send_task(void *arg)
         ring_flush(send_raw ? &clean : &raw);
         while (from->in - from->out >= (uint32_t)per_msg) {
             ring_pop(from, mic, per_msg);
-            const int have = resample(&upr, mic, per_msg, up);
-            int len = snprintf(msg, 64, "{\"type\":\"input_audio_buffer.append\",\"audio\":\"");
+            int len = snprintf(msg, 64, "{\"type\":\"session.input_audio.append\",\"audio\":\"");
             size_t olen = 0;
-            mbedtls_base64_encode((unsigned char *)msg + len, b64_size, &olen, (unsigned char *)up, have * 2);
+            mbedtls_base64_encode((unsigned char *)msg + len, b64_size, &olen, (unsigned char *)mic, per_msg * 2);
             len += olen;
             len += snprintf(msg + len, 8, "\"}");
             if (esp_websocket_client_send_text(ws, msg, len, pdMS_TO_TICKS(1000)) > 0) {
                 sent_msgs++;
             }
         }
+        xSemaphoreGive(ws_lock);
     }
 }
-
 // ---------------------------------------------------------------------------
 
 esp_err_t talk_start(void)
@@ -588,7 +574,9 @@ esp_err_t talk_start(void)
         return err;
     }
     tr_audio_volume(VOLUME);
-    // Full duplex mode, with the aggressive non-linear stage. Its memory
+    // Full duplex mode, with the normal non-linear stage: it removed as much
+    // echo as the aggressive one (46 to 51 dB), and it cuts less of your
+    // voice when you talk over the robot. Its memory
     // (about 90 KB) in internal RAM: in PSRAM it took 28 ms of each 32.
     aec_config_t cfg = {
         .mic_num = 2,
@@ -598,7 +586,7 @@ esp_err_t talk_start(void)
         .sample_rate = RATE,
         .caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT,
         .mode = AEC_MODE_FD_LOW_COST,
-        .nlp_level = AEC_NLP_LEVEL_AGGR,
+        .nlp_level = AEC_NLP_LEVEL_NORMAL,
     };
     aec = aec_create_from_config(&cfg);
     if (!aec) {
@@ -612,10 +600,10 @@ esp_err_t talk_start(void)
     raw.s = heap_caps_malloc(MIC_RING * 2, MALLOC_CAP_SPIRAM);
     rx = heap_caps_malloc(RX_MAX, MALLOC_CAP_SPIRAM);
     pcm = heap_caps_malloc(RX_MAX, MALLOC_CAP_SPIRAM);
-    pcm16 = heap_caps_malloc(RX_MAX, MALLOC_CAP_SPIRAM);
-    if (!voice.s || !clean.s || !raw.s || !rx || !pcm || !pcm16) {
+    if (!voice.s || !clean.s || !raw.s || !rx || !pcm) {
         return ESP_ERR_NO_MEM;
     }
+    ws_lock = xSemaphoreCreateMutex();
     to_aec = xQueueCreate(SLOTS - 2, sizeof(int)); // one being filled, one in the AEC
     for (int i = 0; i < SLOTS; i++) {
         slots[i] = heap_caps_aligned_alloc(16, frame * 3 * 2, MALLOC_CAP_SPIRAM);
@@ -654,6 +642,11 @@ void talk_close(void)
 bool talk_active(void)
 {
     return state != T_OFF;
+}
+
+bool talk_live(void)
+{
+    return state == T_OPEN && live;
 }
 
 float talk_level(void)
@@ -695,13 +688,13 @@ esp_err_t talk_get(httpd_req_t *req)
     int n = snprintf(text, sizeof(text),
                      "talk: %s%s%s\nreference delay %d samples, sending %s\n"
                      "levels (rms, last second): in %.0f %.0f %.0f %.0f, played %.0f, cleaned %.0f\n"
-                     "answers %d, interruptions %d, messages sent %d, voice pieces %d, overruns %d\n"
-                     "last answer started %d ms after you stopped\n"
+                     "answers %d, handed to gpt-6-luna %d, messages sent %d, voice pieces %d, AEC overruns %d, "
+                     "voice skips %d, gaps %d\nlast answer: first words %d ms after your last words\n"
                      "audio: %d frames per 10 s (real time: %d), AEC %d us, play+record %d us per %d us frame\n"
                      "internal RAM: free %u KB, lowest %u KB, biggest block %u KB\n",
                      names[state], last_error[0] ? ", last error: " : "", last_error, ref_delay,
                      send_raw ? "microphone a as it is" : "the cleaned sound", rms_in[0], rms_in[1], rms_in[2],
-                     rms_in[3], rms_play, rms_out, answers, barge_ins, sent_msgs, deltas, overruns,
+                     rms_in[3], rms_play, rms_out, answers, delegations, sent_msgs, deltas, overruns, skips, gaps,
                      last_latency_ms, frames10, frame ? 10 * RATE / frame : 0, aec_us, io_us,
                      frame ? frame * 1000000 / RATE : 0,
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
@@ -751,6 +744,12 @@ esp_err_t talk_post(httpd_req_t *req)
         if (httpd_query_key_value(query, "delay", value, sizeof(value)) == ESP_OK) {
             const int d = atoi(value);
             ref_delay = d >= 0 && d < MAX_DELAY ? d : ref_delay;
+        }
+        if (httpd_query_key_value(query, "nlp", value, sizeof(value)) == ESP_OK && aec) {
+            const int l = atoi(value); // 0 normal, 1 aggressive, 2 very aggressive
+            if (l >= 0 && l <= 2) {
+                aec_set_nlp_level(aec, (aec_nlp_level_t)l);
+            }
         }
         if (httpd_query_key_value(query, "send", value, sizeof(value)) == ESP_OK) {
             send_raw = strcmp(value, "mic") == 0;
