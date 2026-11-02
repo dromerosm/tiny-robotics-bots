@@ -13,4 +13,3 @@ bool tr_sleep_touch(int source, bool down);
 // The sleep steps of tr_sensors and tr_cam. Called from the sleep task.
 void tr_sensors_sleep(bool asleep, bool camera, bool motion);
 esp_err_t tr_cam_power_off(void);
-bool tr_cam_started(void);

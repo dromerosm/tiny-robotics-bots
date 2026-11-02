@@ -116,6 +116,16 @@ esp_err_t tr_web_head_power(void)
     return ESP_OK;
 }
 
+void tr_web_head_off(void)
+{
+    if (powered) {
+        tr_servo_torque(TR_SERVO_YAW, false);
+        tr_servo_torque(TR_SERVO_PITCH, false);
+        tr_servo_power(false);
+        powered = false;
+    }
+}
+
 // POST /head?yaw=..&pitch=..&ms=..&hold=1
 static esp_err_t head_post(httpd_req_t *req)
 {
@@ -162,12 +172,7 @@ static esp_err_t head_off(httpd_req_t *req)
     if (!tr_ota_token_ok(req)) {
         return ESP_OK;
     }
-    if (powered) {
-        tr_servo_torque(TR_SERVO_YAW, false);
-        tr_servo_torque(TR_SERVO_PITCH, false);
-        tr_servo_power(false);
-        powered = false;
-    }
+    tr_web_head_off();
     return httpd_resp_sendstr(req, "servo power: off\n");
 }
 

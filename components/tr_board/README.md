@@ -62,7 +62,7 @@ Drawing goes through two DMA buffers of 16 rows (10 KB each): one band goes out 
 
 ```c
 ESP_ERROR_CHECK(tr_servo_init());            // finds the PY32; nothing moves
-ESP_ERROR_CHECK(tr_servo_power(true));       // VM_EN on, then waits 500 ms
+ESP_ERROR_CHECK(tr_servo_power(true));       // VM_EN on, then waits for the servos
 tr_servo_move(TR_SERVO_PITCH, 45, 1000);     // degrees from zero, in 1000 ms
 tr_servo_state_t s;
 tr_servo_read(TR_SERVO_PITCH, &s);           // s.degrees, s.raw, s.volts_x10, s.celsius...
@@ -105,7 +105,7 @@ if (tr_power_read(&p) == ESP_OK) { ... } // the power chip as numbers: %, USB, v
 | Part | How | Power | Source |
 | --- | --- | --- | --- |
 | Microphones | ES7210 (`0x40`) on I2S0: MCLK G0, BCLK G34, WS G33, data G14. `esp_codec_dev` 1.5, 16 bits, gain 30 dB. `tr_mic_start(rate, channels)`: 1 gives MIC1, 2 gives MIC1 and MIC2 interleaved. Then `tr_mic_read()`. Both holes are on the front, side by side, about 30 mm apart | AW9523 P0_2 | Espressif CoreS3 BSP |
-| Camera | GC0308 (`0x21`) on the DVP port: D0-D7 G39 G40 G41 G42 G15 G16 G48 G47, VSYNC G46, HREF G38, PCLK G45, no XCLK pin. `esp32-camera`, 320 x 240 RGB565, 3 frames in PSRAM (so a new one is ready when a slow reader asks, see 10-track). `tr_cam_start()`, then `esp_camera_fb_get()` | AXP2101 ALDO3 (3.3 V), BLDO1, BLDO2, AW9523 P1_0 | Espressif CoreS3 BSP |
+| Camera | GC0308 (`0x21`) on the DVP port: D0-D7 G39 G40 G41 G42 G15 G16 G48 G47, VSYNC G46, HREF G38, PCLK G45, no XCLK pin. `esp32-camera`, 320 x 240 RGB565, 3 frames in PSRAM (so a new one is ready when a slow reader asks, see 10-track). `tr_cam_start()`, then `esp_camera_fb_get()`. `tr_cam_stop()` stops it, so the sleep step can cut its power (see 11-track) | AXP2101 ALDO3 (3.3 V), BLDO1, BLDO2, AW9523 P1_0 | Espressif CoreS3 BSP |
 | Side LEDs | 12 WS2812 on PY32 pin 13 (output, pull-up, push-pull). LED count in `0x24`, then 200 ms before the first show. Colors from `0x30` (RGB565, low byte first), all 12 in one I2C write; bit 6 of `0x24` shows them, written every time. LEDs 0-5 left, 6-11 right | The body's 5 V: AW9523 BUS_OUT_EN (P0_1), then BOOST_EN (P1_7), with P1_2 and P1_3 as inputs | StackChan factory firmware |
 
 - The camera driver shares our I2C bus (`sccb_i2c_port`), so the bus is fixed on port 0 (`TR_I2C_PORT`).
@@ -131,7 +131,7 @@ What goes off, in this order (wake does the opposite):
 | --- | --- | --- |
 | Hooks | `0x02` | `tr_web`: torque and servo power off (PY32 VM_EN), side LEDs off, and so the body's 5 V boost too. They come back as they were. An example can add its own hook (`tr_sleep_add_hook()`) |
 | Screen | `0x01` | Display Off (`0x28`) and Sleep In (`0x10`) to the panel, then the backlight off (DLDO1). Drawing does nothing while it is off. On wake: Sleep Out (`0x11`), 120 ms, Display On (`0x29`), then the backlight |
-| Camera | `0x04` | The camera's power off: AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0. Not while the camera runs. The light sensor shares it, so wake sets the light sensor up again |
+| Camera | `0x04` | The camera's power off: AXP2101 ALDO3, BLDO1, BLDO2 and AW9523 P1_0. Not while the camera runs: an example that uses the camera calls `tr_cam_stop()` in a sleep hook first (11-track). The light sensor shares it, so wake sets the light sensor up again |
 | Motion | `0x08` | The BMI270 suspended (PWR_CTRL `0x7D` = 0, then PWR_CONF `0x7C` = 1) |
 | CPU | `0x10` | The task gives back two power locks, so the CPU drops to 80 MHz and sleeps between ticks (automatic light sleep, `CONFIG_PM_ENABLE` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE`). Wi-Fi stays connected in modem sleep. Only on the robot: without the power chip (as in the emulator) there is no light sleep |
 

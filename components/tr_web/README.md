@@ -52,7 +52,7 @@ When a request fails, tr_web answers with the error and writes one line to `/log
 
 ## For an example that moves the head too
 
-- `tr_web_head_power()` turns on servo power once. The page and the example share that state.
+- `tr_web_head_power()` turns on servo power once. The page and the example share that state. `tr_web_head_off()` turns the torque and the servo power off, as `POST /head/off` does.
 - `tr_web_last_move_us()` gives the time of the last move from the page or `curl`. Wait a while after it, so you don't move the head away from where someone just put it.
 - `tr_web_servos()` is false without the body, as in the emulator.
 

@@ -109,3 +109,13 @@ esp_err_t tr_cam_start(void)
     started = true;
     return ESP_OK;
 }
+
+esp_err_t tr_cam_stop(void)
+{
+    if (!started) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(esp_camera_deinit(), TAG, "camera");
+    started = false;
+    return ESP_OK;
+}

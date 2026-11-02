@@ -81,13 +81,35 @@ static esp_err_t py32_bit(uint8_t reg, uint8_t bit, bool on)
     return i2c_master_transmit(py32, data, 2, 50);
 }
 
+static esp_err_t scs_read(uint8_t id, uint8_t reg, uint8_t *data, int n);
+
+#define POWER_WAIT_MS 2000 // the longest wait for the servos after power on
+
 esp_err_t tr_servo_power(bool on)
 {
     ESP_RETURN_ON_FALSE(py32, ESP_ERR_INVALID_STATE, TAG, "not started");
     ESP_RETURN_ON_ERROR(py32_bit(PY32_OUT_L, VM_EN, on), TAG, "VM_EN");
-    if (on) {
-        vTaskDelay(pdMS_TO_TICKS(500)); // 200 ms (the BSP) was not enough on our unit
+    if (!on || !ready) {
+        return ESP_OK;
     }
+    // Wait until both servos answer. A fixed 500 ms was not always enough:
+    // on battery a move right after power on got no answer and was lost.
+    // (The BSP waits 200 ms.)
+    const int64_t t0 = esp_timer_get_time();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    for (;;) {
+        uint8_t v;
+        if (scs_read(TR_SERVO_YAW, REG_TORQUE, &v, 1) == ESP_OK &&
+            scs_read(TR_SERVO_PITCH, REG_TORQUE, &v, 1) == ESP_OK) {
+            break;
+        }
+        if (esp_timer_get_time() - t0 > POWER_WAIT_MS * 1000) {
+            ESP_LOGW(TAG, "servos do not answer %d ms after power on", POWER_WAIT_MS);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    ESP_LOGI(TAG, "servos answer %lld ms after power on", (esp_timer_get_time() - t0) / 1000);
     return ESP_OK;
 }
 
