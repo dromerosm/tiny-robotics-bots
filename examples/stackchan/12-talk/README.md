@@ -98,11 +98,11 @@ On 2026-11-02, on USB power:
 - While the robot spoke, the cleaned sound stayed at the level of a quiet room. It never cut itself off.
 - Cutting the robot off works. The person found it a bit slow before we sent every 40 ms (it was 100 ms) and moved to the normal non-linear stage.
 - Internal RAM during a talk: about 18 KB free, lowest 13 KB.
+- Volume 60 with speech: the robot never cut itself off, although the noise test says 60 is too loud for the echo canceller. Speech is quieter than the test noise.
+- A touch ends the talk with no restart.
+- The robot's voice comes at the real rate: 26.0 s received in 27.3 s, with a fixed delay of about 1.2 s at the start. The play buffer still runs empty now and then (25 times in 100 s, `gaps` in `GET /talk`), nearly always in silence. The person heard no cuts. A bigger buffer would make cutting the robot off slower.
 
 Not checked yet:
 
-- Volume 60 with speech: the noise test says it is too loud for the echo canceller, but speech is quieter than the test noise.
-- The lock that should stop the restart at the end of a talk.
-- Gaps in the robot's voice with the 200 ms buffer (the 120 ms one had 14 in 73 s).
 - About 45 frames (1.5 s) are lost while the session opens, never after. The TLS handshake likely takes the time.
 - Battery current, and the cost of a 5-minute talk.
