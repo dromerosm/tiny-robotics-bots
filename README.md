@@ -50,6 +50,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 11 | [track](examples/stackchan/11-track) | 10 on less battery: fewer finds and no servo power while it searches, the camera off while it sleeps (32 mA asleep, 136 mA searching) | ✅ (no screen, camera or servos in esp-emu) |
 | 12 | [talk](examples/stackchan/12-talk) | Talk with the robot through OpenAI's GPT-Live, full duplex: speaker and both microphones at once, and esp-sr's echo canceller on both microphones (40 to 58 dB of echo removed). It hands searches to `gpt-6-luna`. The API key stays in a Cloudflare Worker | ✅ (no screen or audio in esp-emu) |
 | 13 | [home](examples/stackchan/13-home) | 12's talk plus the plugs on the home network (Tuya 3.3 and 3.4, no cloud): a Home screen on the left eye, switch them by voice, and `/home` on the web | ✅ (no screen or audio; it reads the real plugs through the emulator's network) |
+| 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
 
 ### BALA2 Fire
 
@@ -71,6 +72,15 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | [tr_ota](components/tr_ota) | Home Wi-Fi, updates over Wi-Fi and rollback for StackChan. Every example that runs on the robot calls `tr_ota_start()`. |
 | [tr_board](components/tr_board) | StackChan board parts: screen, touch, head servos, side LEDs, microphones, camera, battery and the other sensors. Also sleep: after a minute with no touch, on battery, it turns off what nobody uses, and a touch wakes it. |
 | [tr_web](components/tr_web) | The robot's web page (`http://stackchan.local/app`), the head and sleep endpoints, and the status screen on the robot. Every example that runs on the robot uses it. |
+
+### Workers and Mac tools
+
+| Folder | What it is |
+| --- | --- |
+| [workers/talk-key](workers/talk-key) | The robot's bridge to GPT-Live, for 12-talk and 13-home. The OpenAI key stays in the Worker. |
+| [workers/rec](workers/rec) | The robot's recordings (14-record) in R2, in the EU, deleted after 30 days. |
+| [tools/transcribe](tools/transcribe) | Speech to text and who spoke when on a Mac, in Python (mlx-whisper, pyannote), with benchmarks on public Spanish data. |
+| [tools/scribe](tools/scribe) | A native Mac app for the same job, in Swift (WhisperKit, FluidAudio). It lists the robot's recordings in R2. |
 
 ## Quick start
 

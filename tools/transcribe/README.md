@@ -40,6 +40,13 @@ uv run bench.py der --n 10    # who spoke when
 
 The data (about 1 GB) and the results go to `.work/`, which is not in git.
 
+To score another engine on the same data with the same code (the Swift app in [tools/scribe](../scribe) does this):
+
+```bash
+uv run bench.py export        # the audio and the labels as files, in .work/export/
+uv run bench.py score swift   # scores .work/export/*/hyp-swift*
+```
+
 - **WER** (word error rate) on [Google FLEURS](https://huggingface.co/datasets/google/fleurs), Latin American Spanish, test split. This is read speech at 16 kHz, CC BY 4.0. We use lower case and no punctuation on both sides before scoring.
 - **DER** (diarization error rate) on [TalkBank CallHome](https://huggingface.co/datasets/talkbank/callhome) Spanish, shard 0. These are phone calls, CC BY-NC-SA 4.0. We report the full DER: no collar, and overlapping speech counts. It is the strict version, the same one pyannote uses in its own benchmarks.
 
