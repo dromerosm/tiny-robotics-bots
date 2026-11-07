@@ -13,6 +13,10 @@ void rec_stop(void);
 bool rec_active(void);
 // True while it still takes sound (false once stopped, while it uploads).
 bool rec_listening(void);
+// True while it records but the uploads are not keeping up: the last request
+// failed, no id from the Worker after 5 s, or 2 pieces or more waiting. The
+// face turns orange, and red again once it catches up.
+bool rec_behind(void);
 // GET /rec and POST /rec?start=1|stop=1|src=clean|mic (see rec.c).
 esp_err_t rec_get(httpd_req_t *req);
 esp_err_t rec_post(httpd_req_t *req);
