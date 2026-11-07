@@ -2,6 +2,9 @@
 
     uv run bench.py wer [--n 200]   # speech to text on FLEURS es_419 (test)
     uv run bench.py der [--n 5]     # who spoke when on CallHome Spanish
+    uv run bench.py export          # the same audio and labels, as files, for
+                                    # other engines (tools/scribe, in Swift)
+    uv run bench.py score swift     # score their output with the same code
 
 WER: Google FLEURS, Latin American Spanish, read speech at 16 kHz, CC BY 4.0.
      Both sides are lower case, without punctuation, before scoring.
@@ -154,11 +157,111 @@ def der(n: int) -> dict:
     return out
 
 
+EXPORT = WORK / "export"
+
+
+def export(n_wer: int, n_der: int) -> dict:
+    """FLEURS clips + refs.tsv, and CallHome calls + RTTM labels, as files."""
+    import pyarrow.parquet as pq
+    import soundfile as sf
+    fl = EXPORT / "fleurs"
+    fl.mkdir(parents=True, exist_ok=True)
+    rows = {}
+    with open(fetch(f"{FLEURS}/test.tsv", WORK / "fleurs" / "test.tsv"), newline="") as f:
+        for r in csv.reader(f, delimiter="\t", quoting=csv.QUOTE_NONE):
+            rows.setdefault(r[1], r[3])
+    refs = []
+    with tarfile.open(fetch(f"{FLEURS}/audio/test.tar.gz", WORK / "fleurs" / "test.tar.gz"), "r|gz") as tar:
+        for m in tar:
+            name = Path(m.name).name
+            if m.isfile() and name in rows:
+                (fl / f"{len(refs):03d}.wav").write_bytes(tar.extractfile(m).read())
+                refs.append(f"{len(refs):03d}\t{norm(rows[name])}\n")
+                if len(refs) >= n_wer:
+                    break
+    (fl / "refs.tsv").write_text("".join(refs))
+    ch = EXPORT / "callhome"
+    ch.mkdir(parents=True, exist_ok=True)
+    pf = pq.ParquetFile(fetch(CALLHOME, WORK / "callhome" / "spa-0.parquet", token=True))
+    calls = 0
+    for i, batch in enumerate(pf.iter_batches(batch_size=1)):
+        if i >= n_der:
+            break
+        r = batch.to_pylist()[0]
+        wav, sr = sf.read(io.BytesIO(r["audio"]["bytes"]), dtype="float32")
+        if max(r["timestamps_end"]) > 1.05 * len(wav) / sr:
+            continue  # broken: labels past the end of the audio
+        sf.write(ch / f"{i:02d}.wav", wav if wav.ndim == 1 else wav.mean(axis=1), sr)
+        (ch / f"{i:02d}.rttm").write_text("".join(
+            f"SPEAKER {i:02d} 1 {s:.3f} {e - s:.3f} <NA> <NA> {spk} <NA> <NA>\n"
+            for s, e, spk in zip(r["timestamps_start"], r["timestamps_end"], r["speakers"])))
+        calls += 1
+    return {"fleurs_clips": len(refs), "callhome_calls": calls, "dir": str(EXPORT)}
+
+
+def read_rttm(path: Path):
+    from pyannote.core import Annotation, Segment
+    a = Annotation()
+    for line in path.read_text().splitlines():
+        f = line.split()
+        if f and f[0] == "SPEAKER":
+            a[Segment(float(f[3]), float(f[3]) + float(f[4]))] = f[7]
+    return a
+
+
+def score(tag: str) -> dict:
+    """Score another engine's output (hyp-<tag>) with the code used above."""
+    import jiwer
+    from pyannote.metrics.diarization import DiarizationErrorRate
+    out: dict = {"engine": tag}
+    fl = EXPORT / "fleurs"
+    hyp_file = fl / f"hyp-{tag}.tsv"
+    if hyp_file.exists():
+        refs = dict(l.split("\t", 1) for l in (fl / "refs.tsv").read_text().splitlines())
+        hyps = dict(l.split("\t", 1) if "\t" in l else (l, "") for l in hyp_file.read_text().splitlines())
+        keys = [k for k in refs if k in hyps]
+        r, h = [refs[k] for k in keys], [norm(hyps[k]) for k in keys]
+        out["wer"] = {"clips": len(keys), "wer": round(jiwer.wer(r, h), 4), "cer": round(jiwer.cer(r, h), 4)}
+    ch = EXPORT / "callhome"
+    hyp_dir = ch / f"hyp-{tag}"
+    if hyp_dir.exists():
+        metrics = {m: DiarizationErrorRate(collar=0.0, skip_overlap=False) for m in ("auto", "oracle")}
+        calls, skipped = [], []
+        for ref_file in sorted(ch.glob("*.rttm")):
+            name = ref_file.stem
+            hyp = {m: hyp_dir / f"{name}.{m}.rttm" for m in metrics}
+            if not all(p.exists() for p in hyp.values()):
+                continue
+            hyps = {m: read_rttm(p) for m, p in hyp.items()}
+            ref = read_rttm(ref_file)
+            if not hyps["oracle"].labels():
+                skipped.append(name)  # no speech found: the same rule as der()
+                continue
+            row = {"call": name, "speakers": len(ref.labels()), "found": len(hyps["auto"].labels())}
+            for m in metrics:
+                row[f"der_{m}"] = round(metrics[m](ref, hyps[m]), 4)
+            calls.append(row)
+        out["der"] = {"calls": len(calls), "der_auto": round(abs(metrics["auto"]), 4),
+                      "der_oracle": round(abs(metrics["oracle"]), 4), "skipped": skipped, "per_call": calls}
+    timing = EXPORT / f"timing-{tag}.json"
+    if timing.exists():
+        out["timing"] = json.loads(timing.read_text())
+    (WORK / f"score-{tag}.json").write_text(json.dumps(out, indent=1))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("task", choices=["wer", "der"])
+    ap.add_argument("task", choices=["wer", "der", "export", "score"])
+    ap.add_argument("tag", nargs="?", default="swift", help="for score: the engine's name")
     ap.add_argument("--n", type=int)
     a = ap.parse_args()
+    if a.task == "export":
+        print(json.dumps(export(200, 10), indent=1))
+        return
+    if a.task == "score":
+        print(json.dumps(score(a.tag), indent=1))
+        return
     out = wer(a.n or 200) if a.task == "wer" else der(a.n or 5)
     print(json.dumps({k: v for k, v in out.items() if k != "per_call"}, indent=1))
 
