@@ -45,7 +45,9 @@ The face, the audio, the echo canceller and the talk are 12-talk's as of commit 
 | Wi-Fi power save off (`POST /rec?ps=0`) | No change: 101 KB/s on average both ways, three times what the sound needs (32 KB/s) |
 | **All three fixes, 120 s on home-wifi-2** | **0 retries, 0 failures, always on time.** 40 waits for the TCP buffer, the longest 53 ms |
 | `esp-aes: Failed to allocate memory` in the log | Hardware AES copies each TLS record from PSRAM into a DMA buffer in internal RAM (up to 8 KB). While it records, the biggest free block is about 7 KB, so the copy often failed. Most of the "waits for the TCP buffer" above were these failures, not WANT_WRITE: the retry after 20 ms caught them the same way |
-| **Software AES** (`CONFIG_MBEDTLS_HARDWARE_AES=n`), 2 min at about -75 dBm | Errors 24 → **0**, waits 307 (longest 847 ms) → **0**, uploads 59 → **77 KB/s**. The upload task takes 17 % of the CPU instead of 1 %. Real time kept (312 of 312 frames), lowest internal RAM the same (7 KB) |
+| Software AES (`CONFIG_MBEDTLS_HARDWARE_AES=n`) | Recording: errors 24 → 0, uploads 59 → 77 KB/s. **But it broke talks**: the echo canceller took 15 ms per frame instead of 10, real time fell to 274 of 312 frames, internal RAM to 1 KB, and the robot said "me he perdido". Undone |
+| Outgoing TLS records of 2 KB instead of 4 KB | Still about 24 errors in 2 min. Undone |
+| **Now** | TLS as in 12-talk. The AES errors stay while it records, but the write retry catches them: 0 failed pieces, about 90 KB/s near the router |
 
 ## Build
 

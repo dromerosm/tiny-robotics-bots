@@ -40,9 +40,9 @@ CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 # lwIP buffers): with the default 5.7 KB it was full all the time on a slower
 # network, and each piece went up in many small waits.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
-# AES in software. With hardware AES, each TLS record from PSRAM is copied
-# to a DMA buffer in internal RAM (up to 8 KB). While it records, the echo
-# canceller leaves at most a 7 KB block free, so the copy often failed
-# ("esp-aes: Failed to allocate memory", 24 times in 2 min). Software AES
-# needs no such buffer. At about 100 KB/s of uploads it costs little CPU.
-CONFIG_MBEDTLS_HARDWARE_AES=n
+# TLS stays as in 12-talk (hardware AES, 4 KB records). While it records,
+# hardware AES often fails to get its DMA buffer in internal RAM
+# ("esp-aes: Failed to allocate memory", about 24 times in 2 min). The
+# write retry in rec.c catches it, and no piece is lost. Two fixes we tried:
+# software AES (0 errors, but talks lost real time: 274 of 312 frames, and
+# internal RAM fell to 1 KB) and 2 KB records (still 24 errors).
