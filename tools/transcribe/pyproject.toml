@@ -1,0 +1,17 @@
+[project]
+name = "stackchan-transcribe"
+version = "0.1.0"
+description = "Transcribe and diarize StackChan recordings on a Mac (Apple Silicon)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "mlx-whisper>=0.4.3",
+  "pyannote.audio>=4.0.7",
+  "pyannote.metrics>=4.2.0",
+  "jiwer>=4.0.0",
+  "pyarrow",
+  "soundfile",
+  "numpy",
+]
+
+[tool.uv]
+package = false
