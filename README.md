@@ -50,7 +50,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 11 | [track](examples/stackchan/11-track) | 10 on less battery: fewer finds and no servo power while it searches, the camera off while it sleeps (32 mA asleep, 136 mA searching) | ✅ (no screen, camera or servos in esp-emu) |
 | 12 | [talk](examples/stackchan/12-talk) | Talk with the robot through OpenAI's GPT-Live, full duplex: speaker and both microphones at once, and esp-sr's echo canceller on both microphones (40 to 58 dB of echo removed). It hands searches to `gpt-6-luna`. The API key stays in a Cloudflare Worker | ✅ (no screen or audio in esp-emu) |
 | 13 | [home](examples/stackchan/13-home) | 12's talk plus the plugs on the home network (Tuya 3.3 and 3.4, no cloud): a Home screen on the left eye, switch them by voice, and `/home` on the web | ✅ (no screen or audio; it reads the real plugs through the emulator's network) |
-| 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
+| 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room (36 dB gain, 90 Hz high-pass) and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The face turns orange if the uploads fall behind. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
 
 ### BALA2 Fire
 
