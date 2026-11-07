@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import CryptoKit
 import Foundation
@@ -46,9 +47,11 @@ final class AppModel {
     var work: [String: Work] = [:]              // by Item.key
     var recError: String?
     var loadingRecordings = false
-    var recURL = Settings.get("url") ?? ""
-    var recToken = Settings.get("token") ?? ""
+    var recURL = ""
+    var recToken = ""
+    private var settingsLoaded = false
 
+    let player = Player()
     private let pipeline = Pipeline()
     private let folder: URL = {
         let f = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -87,6 +90,16 @@ final class AppModel {
     }
 
     // MARK: recordings in R2
+
+    /// Reads the Worker URL and token from the keychain, away from the main
+    /// thread: macOS may ask you first, and the window must not hang meanwhile.
+    func loadSettings() async {
+        guard !settingsLoaded else { return }
+        let (u, t) = await Task.detached { (Settings.get("url") ?? "", Settings.get("token") ?? "") }.value
+        recURL = u
+        recToken = t
+        settingsLoaded = true
+    }
 
     var client: RecClient? {
         guard let u = URL(string: recURL), !recToken.isEmpty else { return nil }
@@ -130,6 +143,9 @@ final class AppModel {
         do {
             try await client.delete(r.id)
             recordings.removeAll { $0.id == item.id }
+            if selection == item.id { selection = nil }
+            if player.item == item.id { player.stop() }
+            try? FileManager.default.removeItem(at: folder.appending(path: "audio/stackchan-\(r.id).wav"))
         } catch {
             recError = "Could not delete: \(error.localizedDescription)"
         }
@@ -156,17 +172,26 @@ final class AppModel {
         save(item)
     }
 
+    /// The audio on this Mac: the file itself, or the recording downloaded
+    /// once from R2 and kept in Application Support. A recording that was
+    /// still uploading is downloaded again.
+    func audioFile(_ item: Item) async throws -> URL {
+        switch item.kind {
+        case .file(let u): return u
+        case .recording(let r):
+            let cached = folder.appending(path: "audio/stackchan-\(r.id).wav")
+            if r.ended, FileManager.default.fileExists(atPath: cached.path) { return cached }
+            guard let client else { throw URLError(.userAuthenticationRequired) }
+            work[item.key] = .downloading
+            defer { if work[item.key] == .downloading { work[item.key] = .idle } }
+            return try await client.download(r.id, to: folder.appending(path: "audio"))
+        }
+    }
+
     func transcribe(_ item: Item, speakers: Int?) async {
         let key = item.key
         do {
-            var url: URL
-            switch item.kind {
-            case .file(let u): url = u
-            case .recording(let r):
-                guard let client else { return }
-                work[key] = .downloading
-                url = try await client.download(r.id, to: folder.appending(path: "audio"))
-            }
+            let url = try await audioFile(item)
             work[key] = .running("Reading the audio")
             let audio = try await Task.detached { try Pipeline.load(url) }.value
             let names = transcripts[key]?.names ?? [:]
@@ -188,6 +213,19 @@ final class AppModel {
         }
     }
 
+    func play(_ item: Item, at time: Double? = nil) async {
+        do {
+            if player.item != item.id {
+                let url = try await audioFile(item)
+                player.load(url, item: item.id)
+            }
+            if let time { player.seek(time) }
+            player.play()
+        } catch {
+            work[item.key] = .failed("Could not play: \(error.localizedDescription)")
+        }
+    }
+
     func exportMarkdown(_ item: Item) {
         guard let t = transcripts[item.key] else { return }
         let panel = NSSavePanel()
@@ -202,5 +240,60 @@ final class AppModel {
         guard let t = transcripts[item.key] else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(Export.markdown(t, title: item.title), forType: .string)
+    }
+}
+
+/// Plays one recording at a time, from a file on this Mac.
+@MainActor @Observable
+final class Player {
+    private(set) var item: Item.ID?
+    private(set) var playing = false
+    private(set) var time: Double = 0
+    private(set) var duration: Double = 0
+    private var av: AVPlayer?
+    private var observer: Any?
+    private var endObserver: NSObjectProtocol?
+
+    func load(_ url: URL, item: Item.ID) {
+        stop()
+        let p = AVPlayer(url: url)
+        av = p
+        self.item = item
+        Task {
+            if let d = try? await p.currentItem?.asset.load(.duration) { duration = d.seconds.isFinite ? d.seconds : 0 }
+        }
+        observer = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
+            MainActor.assumeIsolated { self?.time = t.seconds }
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: p.currentItem, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.playing = false
+                self?.seek(0)
+            }
+        }
+    }
+
+    func play() { av?.play(); playing = av != nil }
+    func pause() { av?.pause(); playing = false }
+    func toggle() { playing ? pause() : play() }
+
+    func seek(_ seconds: Double) {
+        time = seconds
+        av?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    func stop() {
+        av?.pause()
+        if let observer { av?.removeTimeObserver(observer) }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        observer = nil
+        endObserver = nil
+        av = nil
+        item = nil
+        playing = false
+        time = 0
+        duration = 0
     }
 }

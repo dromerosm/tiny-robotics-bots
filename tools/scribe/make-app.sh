@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build Scribe.app (release) into .work/, signed ad hoc for this Mac.
+# Build Scribe.app (release) into .work/, signed for this Mac.
 #   ./make-app.sh && open .work/Scribe.app
 set -eu
 cd "$(dirname "$0")"
@@ -34,5 +34,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+# Sign with your Apple Development certificate if there is one: the app then
+# keeps the same identity across builds, and the keychain does not ask again
+# for the token after you choose "Always Allow". If not, ad hoc.
+IDENTITY="${SIGN_ID:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: .*\)"/\1/p' | head -1)}"
+codesign --force --sign "${IDENTITY:--}" "$APP"
+echo "signed with: ${IDENTITY:-ad hoc}"
 echo "built $APP"

@@ -11,7 +11,9 @@ A small native macOS app (SwiftUI) that turns a recording into text and says who
 ## What it does
 
 - Drop audio files on the window, or open them with ⌘O.
-- Lists the StackChan recordings in R2, through the Worker in [workers/rec](../../workers/rec). It downloads one when you transcribe it, and can delete it from R2.
+- Lists the StackChan recordings in R2, through the Worker in [workers/rec](../../workers/rec). It downloads one the first time you play or transcribe it, and keeps it on the Mac.
+- Plays the audio: play and pause, a bar to move through it, and the time of each turn is a button that plays from there. The turn you hear is marked.
+- Deletes a recording from R2, from the trash button or with a right click on it in the list. It asks first. The transcript stays on the Mac.
 - Finds the speakers by itself, or you tell it how many there are.
 - Give each speaker a name (`S1` → "Diego"). The names stay when you transcribe again.
 - Copy or save the result as Markdown, one line per turn.
@@ -25,7 +27,9 @@ Transcripts and downloaded audio stay in `~/Library/Application Support/Scribe/`
 open .work/Scribe.app
 ```
 
-`make-app.sh` builds in release mode and puts `Scribe.app` in `.work/` (not in git), signed ad hoc for this Mac. It also draws the icon with `make-icon.swift` (a speech bubble with a sound wave, one color per speaker) and turns it into `AppIcon.icns`.
+`make-app.sh` builds in release mode and puts `Scribe.app` in `.work/` (not in git). It signs the app with your Apple Development certificate if you have one, or ad hoc if not. It also draws the icon with `make-icon.swift` (a speech bubble with a sound wave, one color per speaker) and turns it into `AppIcon.icns`.
+
+The first time the app reads its token, macOS asks if Scribe may use it. Choose **Always Allow**. With the Apple Development signature it does not ask again after a new build. With an ad hoc signature it asks after every build, because each build looks like a new app.
 
 The first time, open **Scribe → Settings…** and press **Import from ~/.secrets/stackchan-rec.env**, or type the Worker URL (`https://…/rec`) and the read token.
 
