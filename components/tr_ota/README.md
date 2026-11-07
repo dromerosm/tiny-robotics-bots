@@ -35,14 +35,18 @@ Every example that runs on the robot needs it. An app sent over Wi-Fi boots "on 
 
 ## Wi-Fi networks
 
-Two networks are set at build time from a file outside the repo:
+Up to three networks are set at build time from a file outside the repo. The third one is optional:
 
 ```sh
 SSID_01=first-network
 PWD_SSID_01=its-password
 SSID_02=second-network
 PWD_SSID_02=its-password
+SSID_03=My iPhone
+PWD_SSID_03=its-password
 ```
+
+Write the names with no quotes, exactly as the network shows them (spaces too). The Docker build reads the file as it is.
 
 ```bash
 WIFI_ENV=path/to/wifi.env scripts/build.sh examples/stackchan/<example>
@@ -50,7 +54,13 @@ WIFI_ENV=path/to/wifi.env scripts/build.sh examples/stackchan/<example>
 
 `scripts/build.sh` passes the file's lines to the build as environment variables, and the component's `Kconfig` reads them. The passwords end up in `sdkconfig`, `build/` and `out/`, which git ignores. Without `WIFI_ENV` (as in CI), the robot joins esp-emu's built-in network, `myssid`.
 
-At boot the robot scans and joins the known network with the strongest signal. When the link drops, it scans again.
+At boot the robot scans and joins the known network with the strongest signal. When the link drops, it scans again. While it has a network it does not scan, so it does not move to a stronger one.
+
+The third network is a fallback, for a phone's hotspot. The robot joins it only when neither of the first two is in range, so at home it never uses the phone's data. For an iPhone hotspot:
+
+- Turn on **Maximize Compatibility** (Settings → Personal Hotspot). Without it, an iPhone 12 or later may use only 5 GHz, and the ESP32-S3 only sees 2.4 GHz.
+- iOS shows the network only while the Personal Hotspot screen is open, or while something is connected. Open that screen until the robot joins. With no network it scans about every 7.5 s.
+- Your Mac must join the same hotspot to reach `stackchan.local`.
 
 ## On the network
 

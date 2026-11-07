@@ -14,4 +14,12 @@ menu "tr_ota home Wi-Fi"
     config TR_WIFI_PASSWORD_02
         string "Second network password"
         default "$(PWD_SSID_02)"
+    # A fallback, such as a phone's hotspot: used only when neither network
+    # above is in range, so at home the robot never takes the phone's data.
+    config TR_WIFI_SSID_03
+        string "Fallback network (SSID), only when 01 and 02 are not in range"
+        default "$(SSID_03)"
+    config TR_WIFI_PASSWORD_03
+        string "Fallback network password"
+        default "$(PWD_SSID_03)"
 endmenu

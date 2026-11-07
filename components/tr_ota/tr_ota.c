@@ -35,11 +35,14 @@ typedef struct {
 } network_t;
 
 // Empty SSIDs (no wifi.env at build time) fall back to esp-emu's built-in
-// network, so the examples also run in the emulator.
+// network, so the examples also run in the emulator. The third one is a
+// fallback (a phone's hotspot): it is joined only when neither of the first
+// two is in range.
 static const network_t home[] = {
     {CONFIG_TR_WIFI_SSID_01, CONFIG_TR_WIFI_PASSWORD_01},
     {CONFIG_TR_WIFI_SSID_02, CONFIG_TR_WIFI_PASSWORD_02},
 };
+static const network_t fallback = {CONFIG_TR_WIFI_SSID_03, CONFIG_TR_WIFI_PASSWORD_03};
 static const network_t emulator = {"myssid", "mypassword"};
 
 #define GOT_IP BIT0
@@ -255,12 +258,13 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
-// Scan, and pick the known network with the strongest signal. NULL if none is in range.
+// Scan, and pick the known network with the strongest signal, or the
+// fallback if none of them is in range. NULL if no network is in range.
 static const network_t *strongest_network(int *rssi)
 {
     const network_t *list = home;
     size_t count = sizeof(home) / sizeof(home[0]);
-    if (!home[0].ssid[0] && !home[1].ssid[0]) {
+    if (!home[0].ssid[0] && !home[1].ssid[0] && !fallback.ssid[0]) {
         list = &emulator;
         count = 1;
     }
@@ -273,6 +277,8 @@ static const network_t *strongest_network(int *rssi)
     esp_wifi_scan_get_ap_records(&found, aps);
 
     const network_t *best = NULL;
+    int fallback_rssi = 0;
+    bool fallback_seen = false;
     for (uint16_t i = 0; i < found; i++) {
         for (size_t n = 0; n < count; n++) {
             if (list[n].ssid[0] && strcmp((const char *)aps[i].ssid, list[n].ssid) == 0 &&
@@ -281,6 +287,14 @@ static const network_t *strongest_network(int *rssi)
                 *rssi = aps[i].rssi;
             }
         }
+        if (fallback.ssid[0] && strcmp((const char *)aps[i].ssid, fallback.ssid) == 0) {
+            fallback_seen = true;
+            fallback_rssi = aps[i].rssi;
+        }
+    }
+    if (!best && fallback_seen) {
+        best = &fallback;
+        *rssi = fallback_rssi;
     }
     return best;
 }
