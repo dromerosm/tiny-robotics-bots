@@ -60,7 +60,8 @@ static volatile bool listening, active;
 static volatile int source = 1; // 1 the cleaned sound, 2 microphone a
 static char id[32];
 static volatile int sent, retries, dropped_s, next_seq;
-static int lost; // samples dropped since the last skipped piece number
+static int lost;              // samples dropped since the last skipped piece number
+static volatile bool failing; // the last request to the Worker failed
 static volatile int64_t since, last_ok;
 static char last_error[96];
 
@@ -147,16 +148,19 @@ static int request(esp_http_client_handle_t c, const char *url, esp_http_client_
     esp_http_client_set_method(c, method);
     if (esp_http_client_open(c, len) != ESP_OK) {
         snprintf(last_error, sizeof(last_error), "connect failed");
+        failing = true;
         return -1;
     }
     if (len > 0 && esp_http_client_write(c, body, len) != len) {
         snprintf(last_error, sizeof(last_error), "write failed");
         esp_http_client_close(c);
+        failing = true;
         return -1;
     }
     if (esp_http_client_fetch_headers(c) < 0) {
         snprintf(last_error, sizeof(last_error), "no answer");
         esp_http_client_close(c);
+        failing = true;
         return -1;
     }
     const int status = esp_http_client_get_status_code(c);
@@ -170,6 +174,7 @@ static int request(esp_http_client_handle_t c, const char *url, esp_http_client_
     if (status >= 300) {
         snprintf(last_error, sizeof(last_error), "HTTP %d at %s", status, url + strlen(url) - 12);
     }
+    failing = status >= 300;
     return status;
 }
 
@@ -260,6 +265,8 @@ esp_err_t rec_start(void)
         return err;
     }
     sent = retries = dropped_s = next_seq = lost = 0;
+    failing = false;
+    id[0] = 0;
     last_error[0] = 0;
     since = esp_timer_get_time();
     active = listening = true;
@@ -288,17 +295,30 @@ bool rec_listening(void)
     return listening;
 }
 
+bool rec_behind(void)
+{
+    if (!listening) {
+        return false;
+    }
+    const bool no_id = !id[0] && esp_timer_get_time() - since > 5000000LL; // the id takes 1 to 2 s
+    const bool queued = full_q && uxQueueMessagesWaiting(full_q) >= 2;     // 20 s or more behind
+    return failing || no_id || queued; // dropping also means 2 or more waiting
+}
+
 esp_err_t rec_get(httpd_req_t *req)
 {
     static char text[512];
     const int secs = active ? (int)((esp_timer_get_time() - since) / 1000000) : 0;
     snprintf(text, sizeof(text),
-             "recording: %s\nid: %s\nsource: %s\nseconds: %d\npieces sent: %d\n"
+             "recording: %s\nuploads: %s\nid: %s\nsource: %s\nseconds: %d\npieces sent: %d\n"
              "waiting to upload: %d\nretries: %d\nseconds dropped: %d\n"
              "last upload: %lld s ago\nlast error: %s\n",
              listening ? "on"
              : active  ? "stopped, still uploading"
                        : "off",
+             !listening     ? "-"
+             : rec_behind() ? "behind (orange face)"
+                            : "on time",
              id[0] ? id : "-", source == 2 ? "microphone a as it is" : "the cleaned sound", secs,
              sent, full_q ? (int)uxQueueMessagesWaiting(full_q) : 0, retries, dropped_s,
              last_ok ? (esp_timer_get_time() - last_ok) / 1000000 : -1LL,

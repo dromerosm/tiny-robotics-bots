@@ -1,8 +1,10 @@
 // 14-record: 12-talk, plus a recording mode (rec.c). Tap the right eye to
 // record the room: the face turns red, and the sound goes to our Worker
 // (workers/rec) in pieces of 10 s. Tap it again to stop. No talk while it
-// records. The rest is 12-talk: a spoken conversation with GPT-Live, full
-// duplex, with echo cancelling on both microphones (talk.c). The face is 09-wifi's,
+// records. The face turns orange while the uploads fall behind (no network,
+// or the Worker fails), and red again once they catch up. The rest is
+// 12-talk: a spoken conversation with GPT-Live, full duplex, with echo
+// cancelling on both microphones (talk.c). The face is 09-wifi's,
 // without the Wi-Fi list, and the head never moves: no motor noise in the
 // microphones, and no camera, no face model, so the echo canceller has core 1
 // and the RAM. The mouth opens with the robot's voice.
@@ -47,6 +49,7 @@
 #define CONNECTING   TR_LCD_RGB(255, 200, 0)
 #define LISTENING    TR_LCD_RGB(80, 200, 255)
 #define RECORDING    TR_LCD_RGB(255, 40, 40)   // red while it records
+#define BEHIND       TR_LCD_RGB(255, 120, 0)   // orange: it records, but the uploads fall behind
 #define UPLOADING    TR_LCD_RGB(255, 140, 140) // pale red: stopped, still uploading
 #define BRIGHTNESS   20                        // screen backlight, in %
 #define TOUCH_GAP_US (3 * 1000 * 1000)
@@ -187,11 +190,12 @@ static void face_task(void *arg)
         mouth += (talk_level() * 30.0f - mouth) * 0.5f;
         const face_t f = {
             .closed = now < blink_end,
-            .color = rec_listening() ? RECORDING
-                     : rec_active()  ? UPLOADING
-                     : talk_live()   ? LISTENING
-                     : talk_active() ? CONNECTING
-                                     : FG,
+            .color = rec_behind()      ? BEHIND
+                     : rec_listening() ? RECORDING
+                     : rec_active()    ? UPLOADING
+                     : talk_live()     ? LISTENING
+                     : talk_active()   ? CONNECTING
+                                       : FG,
             .mouth = (int)lroundf(mouth) & ~1,
         };
         if (screen &&
