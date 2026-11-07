@@ -23,10 +23,14 @@
 //   POST /rec?src=clean|mic           the cleaned sound (default), or
 //                                     microphone a as it is, to compare
 //   POST /rec?ps=0|1                  Wi-Fi power save off, or min (default)
+//   POST /rec?gain=36&hpf=1           microphone gain while it records (dB,
+//                                     30 in talks) and the 90 Hz high-pass
 #include "rec.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -40,6 +44,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include "talk.h"
+#include "tr_board.h"
 #include "tr_ota.h"
 
 static const char *TAG = "rec";
@@ -51,6 +56,8 @@ static const char *TAG = "rec";
 #define MAX_REC_US   (3 * 3600 * 1000000LL) // a recording stops after 3 hours
 #define MAX_WAIT_S   30
 #define STALL_MAX_MS 10000 // a write with no progress for this long fails
+#define TALK_GAIN_DB 30    // the microphones' gain in talks (tr_audio's default)
+#define HPF_HZ       90    // the high-pass filter's corner
 
 typedef struct {
     int16_t *s;
@@ -62,6 +69,44 @@ static piece_t pool[POOL];
 static QueueHandle_t free_q, full_q; // indices into pool[]
 static volatile bool listening, active;
 static volatile int source = 1; // 1 the cleaned sound, 2 microphone a
+// While it records the speaker is silent, so there is no echo to leave room
+// for: the microphones get 6 dB more than in talks.
+static volatile int rec_gain_db = 36;
+static volatile bool hpf_on = true;
+
+// A 2nd-order Butterworth high-pass at HPF_HZ: it takes out hum, desk knocks
+// and the DC offset, which carry no speech. Coefficients in Q28, state in
+// int64: no float in the sample loop.
+static int64_t hb0, hb1, hb2, ha1, ha2; // Q28
+static int64_t hx1, hx2, hy1, hy2;      // hy in Q12: products stay below 2^58
+
+static void hpf_init(void)
+{
+    const float w = 2.0f * 3.14159265f * HPF_HZ / RATE, c = cosf(w),
+                al = sinf(w) / (2.0f * 0.7071f);
+    const float a0 = 1.0f + al, q = (float)(1 << 28);
+    hb0 = (int64_t)((1.0f + c) / 2.0f / a0 * q);
+    hb1 = -2 * hb0;
+    hb2 = hb0;
+    ha1 = (int64_t)(-2.0f * c / a0 * q);
+    ha2 = (int64_t)((1.0f - al) / a0 * q);
+    hx1 = hx2 = hy1 = hy2 = 0;
+}
+
+static void hpf(int16_t *s, int n)
+{
+    for (int i = 0; i < n; i++) {
+        const int64_t x = s[i];
+        const int64_t y =
+            ((hb0 * x + hb1 * hx1 + hb2 * hx2) >> 16) - ((ha1 * hy1 + ha2 * hy2) >> 28);
+        hx2 = hx1;
+        hx1 = x;
+        hy2 = hy1;
+        hy1 = y;
+        const int64_t o = y >> 12;
+        s[i] = o > 32767 ? 32767 : o < -32768 ? -32768 : (int16_t)o;
+    }
+}
 static char id[32];
 static volatile int sent, retries, dropped_s, next_seq;
 static int lost;              // samples dropped since the last skipped piece number
@@ -118,6 +163,8 @@ static esp_err_t pool_init(void)
 
 static void take_task(void *arg)
 {
+    tr_audio_gain(rec_gain_db);
+    hpf_init();
     talk_tap(source);
     int cur = -1;
     static int16_t scrap[RATE / 10 * 2]; // sound with no piece to go to
@@ -145,6 +192,9 @@ static void take_task(void *arg)
             }
             piece_t *p = &pool[cur];
             const int got = talk_tap_read(p->s + p->n, PIECE - p->n);
+            if (hpf_on) {
+                hpf(p->s + p->n, got);
+            }
             p->n += got;
             if (p->n == PIECE) {
                 xQueueSend(full_q, &cur, portMAX_DELAY);
@@ -155,6 +205,7 @@ static void take_task(void *arg)
         }
     }
     talk_tap(0);
+    tr_audio_gain(TALK_GAIN_DB); // back to the talks' gain
     if (cur >= 0 && pool[cur].n > 0) {
         xQueueSend(full_q, &cur, portMAX_DELAY);
     } else if (cur >= 0) {
@@ -443,10 +494,11 @@ esp_err_t rec_get(httpd_req_t *req)
     int n = strlen(text);
     n += snprintf(
         text + n, sizeof(text) - n,
-        "Wi-Fi: %d dBm, power save %s\nupload speed: last %d KB/s, slowest %d KB/s, "
+        "microphones: %d dB gain, high-pass %s\nWi-Fi: %d dBm, power save %s\nupload speed: last "
+        "%d KB/s, slowest %d KB/s, "
         "average %d KB/s (the sound needs 32)\nwaits for the TCP buffer: %d, longest %d ms\n"
         "failures: %d\n",
-        wifi_rssi(),
+        rec_gain_db, hpf_on ? "90 Hz" : "off", wifi_rssi(),
         ps == WIFI_PS_NONE        ? "off"
         : ps == WIFI_PS_MIN_MODEM ? "min"
                                   : "max",
@@ -475,6 +527,13 @@ esp_err_t rec_post(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         if (httpd_query_key_value(query, "src", value, sizeof(value)) == ESP_OK && !active) {
             source = strcmp(value, "mic") == 0 ? 2 : 1;
+        }
+        if (httpd_query_key_value(query, "gain", value, sizeof(value)) == ESP_OK && !active) {
+            const int g = atoi(value);
+            rec_gain_db = g >= 0 && g <= 37 ? g : rec_gain_db; // the ES7210 goes to 37.5 dB
+        }
+        if (httpd_query_key_value(query, "hpf", value, sizeof(value)) == ESP_OK && !active) {
+            hpf_on = strcmp(value, "0") != 0;
         }
         if (httpd_query_key_value(query, "ps", value, sizeof(value)) == ESP_OK) {
             esp_wifi_set_ps(strcmp(value, "0") == 0 ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);

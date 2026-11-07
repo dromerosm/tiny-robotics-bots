@@ -26,6 +26,7 @@ The face, the audio, the echo canceller and the talk are 12-talk's as of commit 
                          upload task: HTTPS PUT /rec/<id>/<n> -> Worker -> R2 (EU)
 ```
 
+- **Gain and high-pass.** While it records, the speaker is silent, so the microphones get 36 dB instead of 30 (the ES7210 goes to 37.5). A 2nd-order Butterworth high-pass at 90 Hz, in integer math, takes out hum, desk knocks and the DC offset. Both go back to normal when the recording ends.
 - **The sound.** talk.c already runs the microphones and the echo canceller all the time. With no talk, the speaker plays silence, so the cleaned sound is simply the average of both microphones, at 16 kHz. The recorder reads it through `talk_tap()`, a small addition to 12-talk's talk.c. `POST /rec?src=mic` records microphone a as it is, to compare.
 - **Upload.** The Worker gives each recording an id from its own clock, so the robot does not need the time. Each piece is one HTTPS PUT on a new connection. When the TCP send buffer (16 KB) is full, the write waits and tries again; it fails only after 10 s with no progress. A piece that fails is tried again, with a longer wait each time, up to 30 s.
 - **Orange face.** `rec_behind()` is true while it records and the last request failed, or there is no id from the Worker after 5 s, or 2 pieces or more wait (20 s behind). It does not stay orange once it catches up: the seconds dropped are in `GET /rec`.
@@ -69,6 +70,7 @@ curl -X POST -H "X-Token: <token>" "http://stackchan.local/rec?stop=1"
 | --- | --- |
 | `GET /rec` | State, uploads on time or behind, id, seconds, pieces sent, pieces waiting, retries, seconds dropped, the last error. Then Wi-Fi signal and power save, upload speed (last, slowest, average), waits for the TCP buffer, and the last 12 failures with their step, bytes sent, errno, time, idle time and signal |
 | `POST /rec?start=1`, `?stop=1` | Start or stop a recording |
+| `POST /rec?gain=36&hpf=1` | Microphone gain while it records (dB, 30 in talks) and the 90 Hz high-pass. Only while it does not record |
 | `POST /rec?ps=0\|1` | Wi-Fi power save off, or min (the default). It made no difference to uploads |
 | `POST /rec?src=clean\|mic` | Record the cleaned sound (default) or microphone a as it is. Only while it does not record |
 | `GET /talk`, `POST /talk`, `GET /face`, `POST /face` | As in 12-talk |
@@ -84,8 +86,20 @@ On 2026-11-07, on USB power, with the Mac's speaker nearby playing 4 clips from 
 
 The orange face, on 2026-11-07: while it recorded, we changed the Worker's `REC_TOKEN` for 25 s, so the Worker refused the robot (403). `GET /rec` said "behind" within 25 s, with 2 pieces waiting. After we put the right token back, it was "on time" again in 20 s. All 7 pieces (66 s) reached R2, with no gaps and 0 s dropped.
 
+Gain and high-pass, on 2026-11-07: a person talked near the robot for 80 s, recorded as A (30 dB, no filter) and then B (36 dB, high-pass):
+
+| | A: 30 dB, no filter | B: 36 dB, high-pass |
+| --- | --- | --- |
+| Speech (90th percentile) | -49.8 dBFS | -44.1 dBFS |
+| Noise floor (10th percentile) | -62.2 dBFS | -64.0 dBFS |
+| **Signal to noise** | 12.4 dB | **19.9 dB** |
+| Peak | -32.6 dBFS | -24.3 dBFS, nothing clipped |
+| Energy below 90 Hz | -4.3 dB (37 % of it all) | -19.5 dB |
+
+The filter was checked first in an exact simulation of its integer code: -26 dB at 20 Hz, -10.6 dB at 50 Hz, -3 dB at 90 Hz, 0 dB at 1 kHz, no DC, no overflow.
+
 Not checked yet:
 
 - A person talking in the room, and more than one person.
 - A long recording (an hour), and battery use.
-- `src=mic` against the cleaned sound.
+- `src=mic` against the cleaned sound, and recording with no echo canceller at all (for later).
