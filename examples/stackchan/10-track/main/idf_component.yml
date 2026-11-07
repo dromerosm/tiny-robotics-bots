@@ -1,2 +1,4 @@
 dependencies:
   espressif/human_face_detect: "~0.5.2"
+  # esp-dl 3.3.15 hangs at boot in esp-emu (CI red since 2026-11-07): keep 3.3.14.
+  espressif/esp-dl: "==3.3.14"
