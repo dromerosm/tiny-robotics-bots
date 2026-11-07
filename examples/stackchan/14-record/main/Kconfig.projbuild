@@ -1,0 +1,16 @@
+menu "14-record Workers"
+    # From environment variables, as the Wi-Fi settings: scripts/build.sh
+    # passes them from the file in WIFI_ENV. Never in git.
+    config TALK_URL
+        string "Talk Worker WebSocket URL (wss://.../live)"
+        default "$(TALK_URL)"
+    config TALK_TOKEN
+        string "Robot token for the talk Worker"
+        default "$(TALK_TOKEN)"
+    config REC_URL
+        string "Recordings Worker URL (https://.../rec)"
+        default "$(REC_URL)"
+    config REC_TOKEN
+        string "Robot token for the recordings Worker"
+        default "$(REC_TOKEN)"
+endmenu
