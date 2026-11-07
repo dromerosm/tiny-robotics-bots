@@ -1,0 +1,13 @@
+// The robot's recordings for 14-record: it uploads the sound, the Mac app
+// lists it and downloads it as WAV. See README.md.
+{
+  "name": "stackchan-rec",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-25",
+  // The robot reaches it at <name>.<account>.workers.dev. No preview URLs.
+  "workers_dev": true,
+  "preview_urls": false,
+  // In the EU. Objects go after 30 days (lifecycle rule, see README.md).
+  "r2_buckets": [{ "binding": "REC", "bucket_name": "stackchan-rec", "jurisdiction": "eu" }],
+  // Secrets (wrangler secret put): REC_TOKEN (robot), READ_TOKEN (Mac app).
+}
