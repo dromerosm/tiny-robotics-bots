@@ -1,0 +1,38 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_LOG_COLORS=y
+# 16 MB flash and two app slots, for updates over Wi-Fi.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../components/tr_ota/partitions.csv"
+# A new app must mark itself valid, or the bootloader goes back to the old one.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# No camera: no /camera.jpg.
+CONFIG_TR_WEB_CAMERA=n
+# 8 MB PSRAM on the CoreS3, for the echo canceller and the audio buffers.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_SPEED_80M=y
+# Speed for the echo canceller: code built for speed, and the CPU at 240 MHz.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# An IPv6 link-local address (tr_ota), so stackchan.local resolves at once on
+# macOS. Skip the duplicate check: with it the address never became valid.
+CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0
+# TLS for api.openai.com and our key Worker: the certificate bundle, and the
+# TLS, Wi-Fi and lwIP buffers in PSRAM, to keep internal RAM free.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# Our Worker's chain (workers.dev) ends in GTS Root R4 cross-signed by
+# GlobalSign Root CA, which is not in the bundle: check GTS Root R4 too.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Most allocations above 2 KB in PSRAM too (WebSocket and HTTP buffers):
+# the echo canceller needs about 90 KB of internal RAM, and TLS needs some.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+# CPU use per task in GET /talk (to check the echo canceller keeps up).
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
