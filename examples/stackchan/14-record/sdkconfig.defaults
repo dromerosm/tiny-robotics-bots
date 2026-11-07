@@ -36,3 +36,7 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+# A bigger TCP send buffer for the recordings (16 KB, in PSRAM with the
+# lwIP buffers): with the default 5.7 KB it was full all the time on a slower
+# network, and each piece went up in many small waits.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384

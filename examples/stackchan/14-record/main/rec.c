@@ -22,8 +22,10 @@
 //   POST /rec?start=1|stop=1          start or stop (token needed)
 //   POST /rec?src=clean|mic           the cleaned sound (default), or
 //                                     microphone a as it is, to compare
+//   POST /rec?ps=0|1                  Wi-Fi power save off, or min (default)
 #include "rec.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_crt_bundle.h"
@@ -31,6 +33,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/queue.h"
@@ -41,12 +44,13 @@
 
 static const char *TAG = "rec";
 
-#define RATE       16000
-#define PIECE      (RATE * 10) // samples per piece: 10 s, 320 KB
-#define POOL       6           // pieces that can wait for the network: 60 s
-#define TAKE_MS    100
-#define MAX_REC_US (3 * 3600 * 1000000LL) // a recording stops after 3 hours
-#define MAX_WAIT_S 30
+#define RATE         16000
+#define PIECE        (RATE * 10) // samples per piece: 10 s, 320 KB
+#define POOL         6           // pieces that can wait for the network: 60 s
+#define TAKE_MS      100
+#define MAX_REC_US   (3 * 3600 * 1000000LL) // a recording stops after 3 hours
+#define MAX_WAIT_S   30
+#define STALL_MAX_MS 10000 // a write with no progress for this long fails
 
 typedef struct {
     int16_t *s;
@@ -62,6 +66,27 @@ static char id[32];
 static volatile int sent, retries, dropped_s, next_seq;
 static int lost;              // samples dropped since the last skipped piece number
 static volatile bool failing; // the last request to the Worker failed
+
+// Telemetry for GET /rec: how fast each piece went up, and the last
+// failures, to see why uploads fall behind.
+typedef struct {
+    int t_s;       // seconds since the recording started
+    char phase;    // 'o' open, 'w' write, 'h' headers, 's' HTTP status
+    int done, len; // bytes written before it failed, of len
+    int err;       // errno from the transport, or the HTTP status
+    int ms;        // how long the request took
+    int idle_ms;   // how long the connection waited since the last request
+    bool reused;   // the connection was already open
+    int rssi;      // Wi-Fi signal then
+} fail_t;
+#define FAILS 12
+static fail_t fails[FAILS];
+static int fail_n;                           // total failures this recording
+static volatile int up_last_kbs, up_min_kbs; // KB/s of the last and the slowest piece
+static int64_t up_bytes, up_ms;              // for the average
+static int64_t last_req_end;
+static bool conn_open;
+static int stalls, stall_max_ms; // writes that had to wait for room in the TCP buffer
 static volatile int64_t since, last_ok;
 static char last_error[96];
 
@@ -140,30 +165,98 @@ static void take_task(void *arg)
     vTaskDelete(NULL);
 }
 
-// One request to the Worker. Returns the HTTP status, or -1.
+static int wifi_rssi(void)
+{
+    wifi_ap_record_t ap;
+    return esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
+}
+
+static void note_fail(esp_http_client_handle_t c, char phase, int done, int len, int err,
+                      int64_t t0, int idle_ms, bool reused)
+{
+    fail_t *f = &fails[fail_n++ % FAILS];
+    *f = (fail_t){
+        .t_s = (int)((esp_timer_get_time() - since) / 1000000),
+        .phase = phase,
+        .done = done,
+        .len = len,
+        .err = err,
+        .ms = (int)((esp_timer_get_time() - t0) / 1000),
+        .idle_ms = idle_ms,
+        .reused = reused,
+        .rssi = wifi_rssi(),
+    };
+    ESP_LOGW(TAG, "fail %c at %d s: %d/%d bytes, err %d, %d ms, idle %d ms, %s, %d dBm", f->phase,
+             f->t_s, f->done, f->len, f->err, f->ms, f->idle_ms, f->reused ? "reused" : "new",
+             f->rssi);
+    failing = true;
+}
+
+// One request to the Worker. Returns the HTTP status, or -1. The body goes
+// in 8 KB writes, so a failure says how far it got.
 static int request(esp_http_client_handle_t c, const char *url, esp_http_client_method_t method,
                    const void *body, int len, char *out, int out_size)
 {
+    const int64_t t0 = esp_timer_get_time();
+    const int idle_ms = last_req_end ? (int)((t0 - last_req_end) / 1000) : -1;
+    const bool reused = conn_open;
     esp_http_client_set_url(c, url);
     esp_http_client_set_method(c, method);
     if (esp_http_client_open(c, len) != ESP_OK) {
         snprintf(last_error, sizeof(last_error), "connect failed");
-        failing = true;
+        note_fail(c, 'o', 0, len, esp_http_client_get_errno(c), t0, idle_ms, reused);
+        conn_open = false;
         return -1;
     }
-    if (len > 0 && esp_http_client_write(c, body, len) != len) {
-        snprintf(last_error, sizeof(last_error), "write failed");
-        esp_http_client_close(c);
-        failing = true;
-        return -1;
+    conn_open = true;
+    // When the TCP send buffer is full, mbedtls answers WANT_WRITE: esp-tls
+    // gives up with nothing written, and esp_http_client_write returns <= 0.
+    // That is not an error. Wait a little and write the same bytes again (as
+    // mbedtls asks). Fail only after STALL_MAX_MS with no progress, or a real
+    // socket error. Before this, nearly every piece failed once on a slower
+    // network, and the face turned orange.
+    int done = 0;
+    int64_t stuck_since = 0;
+    while (done < len) {
+        const int chunk = len - done < 8192 ? len - done : 8192;
+        const int w = esp_http_client_write(c, (const char *)body + done, chunk);
+        if (w > 0) {
+            if (stuck_since) {
+                const int ms = (int)((esp_timer_get_time() - stuck_since) / 1000);
+                stall_max_ms = ms > stall_max_ms ? ms : stall_max_ms;
+                stuck_since = 0;
+            }
+            done += w;
+            continue;
+        }
+        const int err = esp_http_client_get_errno(c);
+        const int64_t now = esp_timer_get_time();
+        if (!stuck_since) {
+            stuck_since = now;
+            stalls++;
+        }
+        if ((err != 0 && err != EAGAIN) || now - stuck_since > STALL_MAX_MS * 1000LL) {
+            snprintf(last_error, sizeof(last_error), "write failed (%d, errno %d)", w, err);
+            note_fail(c, 'w', done, len, err ? err : w, t0, idle_ms, reused);
+            esp_http_client_close(c);
+            conn_open = false;
+            return -1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
     if (esp_http_client_fetch_headers(c) < 0) {
         snprintf(last_error, sizeof(last_error), "no answer");
+        note_fail(c, 'h', done, len, esp_http_client_get_errno(c), t0, idle_ms, reused);
         esp_http_client_close(c);
-        failing = true;
+        conn_open = false;
         return -1;
     }
     const int status = esp_http_client_get_status_code(c);
+    static char why[48];
+    if (!out && status >= 300) { // keep the Worker's answer, to see why
+        out = why;
+        out_size = sizeof(why);
+    }
     int got = 0;
     if (out) {
         got = esp_http_client_read_response(c, out, out_size - 1);
@@ -171,10 +264,26 @@ static int request(esp_http_client_handle_t c, const char *url, esp_http_client_
     } else {
         esp_http_client_flush_response(c, NULL);
     }
+    // A new connection for each request. The server closes an idle one after
+    // about 6.5 s, and a piece comes every 10 s, so a kept one was nearly
+    // always dead (ECONNRESET at the first write). A TLS handshake per piece
+    // costs much less than that.
+    esp_http_client_close(c);
+    conn_open = false;
+    last_req_end = esp_timer_get_time();
     if (status >= 300) {
-        snprintf(last_error, sizeof(last_error), "HTTP %d at %s", status, url + strlen(url) - 12);
+        snprintf(last_error, sizeof(last_error), "HTTP %d: %.40s", status, out ? out : "");
+        note_fail(c, 's', done, len, status, t0, idle_ms, reused);
+        return status;
     }
-    failing = status >= 300;
+    failing = false;
+    const int ms = (int)((last_req_end - t0) / 1000);
+    if (len > 0 && ms > 0) {
+        up_last_kbs = len / ms; // bytes per ms = KB/s
+        up_min_kbs = up_min_kbs && up_min_kbs < up_last_kbs ? up_min_kbs : up_last_kbs;
+        up_bytes += len;
+        up_ms += ms;
+    }
     return status;
 }
 
@@ -194,7 +303,7 @@ static void upload_one(void)
         .url = CONFIG_REC_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
-        .keep_alive_enable = true,
+        .keep_alive_enable = false,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     esp_http_client_set_header(c, "X-Robot-Token", CONFIG_REC_TOKEN);
@@ -244,6 +353,8 @@ static void upload_one(void)
         request(c, url, HTTP_METHOD_POST, NULL, 0, NULL, 0);
     }
     esp_http_client_cleanup(c);
+    conn_open = false;
+    last_req_end = 0;
     ESP_LOGI(TAG, "done: %d pieces sent, %d retries, %d s dropped", sent, retries, dropped_s);
 }
 
@@ -267,6 +378,10 @@ esp_err_t rec_start(void)
     sent = retries = dropped_s = next_seq = lost = 0;
     failing = false;
     id[0] = 0;
+    fail_n = 0;
+    up_last_kbs = up_min_kbs = 0;
+    up_bytes = up_ms = 0;
+    stalls = stall_max_ms = 0;
     last_error[0] = 0;
     since = esp_timer_get_time();
     active = listening = true;
@@ -307,7 +422,7 @@ bool rec_behind(void)
 
 esp_err_t rec_get(httpd_req_t *req)
 {
-    static char text[512];
+    static char text[1800];
     const int secs = active ? (int)((esp_timer_get_time() - since) / 1000000) : 0;
     snprintf(text, sizeof(text),
              "recording: %s\nuploads: %s\nid: %s\nsource: %s\nseconds: %d\npieces sent: %d\n"
@@ -323,6 +438,31 @@ esp_err_t rec_get(httpd_req_t *req)
              sent, full_q ? (int)uxQueueMessagesWaiting(full_q) : 0, retries, dropped_s,
              last_ok ? (esp_timer_get_time() - last_ok) / 1000000 : -1LL,
              last_error[0] ? last_error : "-");
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    esp_wifi_get_ps(&ps);
+    int n = strlen(text);
+    n += snprintf(
+        text + n, sizeof(text) - n,
+        "Wi-Fi: %d dBm, power save %s\nupload speed: last %d KB/s, slowest %d KB/s, "
+        "average %d KB/s (the sound needs 32)\nwaits for the TCP buffer: %d, longest %d ms\n"
+        "failures: %d\n",
+        wifi_rssi(),
+        ps == WIFI_PS_NONE        ? "off"
+        : ps == WIFI_PS_MIN_MODEM ? "min"
+                                  : "max",
+        up_last_kbs, up_min_kbs, up_ms ? (int)(up_bytes / up_ms) : 0, stalls, stall_max_ms, fail_n);
+    for (int i = fail_n > FAILS ? fail_n - FAILS : 0; i < fail_n && n < (int)sizeof(text) - 120;
+         i++) {
+        const fail_t *f = &fails[i % FAILS];
+        n += snprintf(
+            text + n, sizeof(text) - n,
+            "  at %d s: %s, %d of %d bytes, err %d, %d ms, idle %d ms, %s, %d dBm\n", f->t_s,
+            f->phase == 'o'   ? "connect"
+            : f->phase == 'w' ? "write"
+            : f->phase == 'h' ? "no answer"
+                              : "HTTP",
+            f->done, f->len, f->err, f->ms, f->idle_ms, f->reused ? "reused" : "new", f->rssi);
+    }
     return httpd_resp_sendstr(req, text);
 }
 
@@ -335,6 +475,9 @@ esp_err_t rec_post(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         if (httpd_query_key_value(query, "src", value, sizeof(value)) == ESP_OK && !active) {
             source = strcmp(value, "mic") == 0 ? 2 : 1;
+        }
+        if (httpd_query_key_value(query, "ps", value, sizeof(value)) == ESP_OK) {
+            esp_wifi_set_ps(strcmp(value, "0") == 0 ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM);
         }
         if (httpd_query_key_value(query, "start", value, sizeof(value)) == ESP_OK) {
             rec_start();
