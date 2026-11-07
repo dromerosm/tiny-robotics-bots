@@ -47,6 +47,7 @@ The face, the audio, the echo canceller and the talk are 12-talk's as of commit 
 | `esp-aes: Failed to allocate memory` in the log | Hardware AES copies each TLS record from PSRAM into a DMA buffer in internal RAM (up to 8 KB). While it records, the biggest free block is about 7 KB, so the copy often failed. Most of the "waits for the TCP buffer" above were these failures, not WANT_WRITE: the retry after 20 ms caught them the same way |
 | Software AES (`CONFIG_MBEDTLS_HARDWARE_AES=n`) | Recording: errors 24 → 0, uploads 59 → 77 KB/s. **But it broke talks**: the echo canceller took 15 ms per frame instead of 10, real time fell to 274 of 312 frames, internal RAM to 1 KB, and the robot said "me he perdido". Undone |
 | Outgoing TLS records of 2 KB instead of 4 KB | Still about 24 errors in 2 min. Undone |
+| TCP send buffer back to the default (5760) | Uploads 91 → 78 KB/s. Lowest internal RAM in a talk: 1 KB (3 KB with 16 KB), so the buffer is not what fills internal RAM in talks. Kept at 16 KB |
 | **Now** | TLS as in 12-talk. The AES errors stay while it records, but the write retry catches them: 0 failed pieces, about 90 KB/s near the router |
 
 ## Build
@@ -86,6 +87,7 @@ On 2026-11-07, on USB power, with the Mac's speaker nearby playing 4 clips from 
 - 63 s recorded, 7 pieces uploaded, 0 s dropped, 1 retry (the dead connection in the table above, fixed since).
 - The WAV from the Worker went through the Python pipeline in [tools/transcribe](../../../tools/transcribe). WER 1.7 % on 117 words. The only errors were "del clima" for "de clima" and "Horavec" for "Oravec".
 - Internal RAM while it records: about 12 KB free, lowest 7 KB (13 KB in 12-talk's talks). It is tight: watch it if you add features.
+- Internal RAM in a talk fell to 1 to 3 KB at some point (lowest seen). Talks still keep real time. The likely moment is the TLS handshake when a talk opens, which also loses about 50 frames of the echo canceller, as in 12-talk. Not measured yet.
 - Real time kept: 312 of 312 frames every 10 s.
 
 The orange face, on 2026-11-07: while it recorded, we changed the Worker's `REC_TOKEN` for 25 s, so the Worker refused the robot (403). `GET /rec` said "behind" within 25 s, with 2 pieces waiting. After we put the right token back, it was "on time" again in 20 s. All 7 pieces (66 s) reached R2, with no gaps and 0 s dropped.

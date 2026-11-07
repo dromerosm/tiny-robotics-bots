@@ -62,6 +62,19 @@ uv run bench.py score swift   # scores .work/export/*/hyp-swift*
 - One hour of audio takes about 17 minutes in all.
 - These data sets are read speech and phone calls. StackChan hears a room from a distance, with echo and motor noise, so its real numbers will come from our own recordings. Use these numbers as a baseline: if a change makes them worse, you will see it.
 
+### Cleaning the audio first
+
+`--af` passes an ffmpeg filter that runs when the audio is loaded. We tried EBU R128 loudness (`loudnorm`), ffmpeg's FFT denoiser (`afftdn`) and both, on the same data (2026-11-07): the robot recording of 4 FLEURS clips, 50 FLEURS clips and 10 good CallHome calls.
+
+| Filter | WER, robot recording | WER, FLEURS | DER, CallHome |
+| --- | --- | --- | --- |
+| **None** | **1.7 %** | **2.5 %** | **27.7 %** |
+| loudnorm | 1.7 % | 2.6 % | 27.9 % |
+| afftdn | 1.7 % | 2.5 % | 27.8 % |
+| afftdn,loudnorm | 1.7 % | 2.5 % | 36.1 % |
+
+None of them helps, and both together make who-spoke-when much worse. Whisper and pyannote were trained on noisy audio and do best with the sound as it is. So the pipeline does not clean the audio. Loudness only helps people listen: the robot recording goes from -49 to -26 dBFS.
+
 ### Broken calls in CallHome
 
 Some calls in the Hugging Face copy of CallHome are broken. In shard 0, 4 of the 28 calls (1, 8, 17, 27) have audio 37 to 67 % shorter than their labels. Call 2 has the right length but no speech you can understand: Whisper only makes up a line, and pyannote finds no speech. The first run scored them anyway and gave a DER of 51.7 %.

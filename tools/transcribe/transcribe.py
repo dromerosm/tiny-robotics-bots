@@ -25,10 +25,12 @@ DIA_MODEL = "pyannote/speaker-diarization-community-1"
 _dia = None
 
 
-def load_audio(path: str | Path) -> np.ndarray:
-    """Any audio file -> 16 kHz mono float32, decoded by ffmpeg."""
+def load_audio(path: str | Path, af: str | None = None) -> np.ndarray:
+    """Any audio file -> 16 kHz mono float32, decoded by ffmpeg. af: an
+    optional ffmpeg audio filter chain (for example "loudnorm" or "afftdn")."""
     raw = subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+         *(["-af", af] if af else []),
          "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
         check=True, capture_output=True).stdout
     return np.frombuffer(raw, np.float32).copy()

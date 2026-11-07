@@ -5,6 +5,9 @@
     uv run bench.py export          # the same audio and labels, as files, for
                                     # other engines (tools/scribe, in Swift)
     uv run bench.py score swift     # score their output with the same code
+    uv run bench.py file rec.wav ref.txt   # WER of one recording (a robot test)
+Add --af "<ffmpeg filter>" to any of them to clean the audio first, for
+example --af loudnorm (EBU R128 loudness) or --af afftdn (FFT denoiser).
 
 WER: Google FLEURS, Latin American Spanish, read speech at 16 kHz, CC BY 4.0.
      Both sides are lower case, without punctuation, before scoring.
@@ -35,6 +38,7 @@ import numpy as np
 import transcribe as tr
 
 WORK = Path(".work")
+AF: str | None = None  # --af: an ffmpeg filter applied when the audio is loaded
 HF = "https://huggingface.co/datasets"
 FLEURS = f"{HF}/google/fleurs/resolve/main/data/es_419"
 CALLHOME = f"{HF}/talkbank/callhome/resolve/main/spa/data-00000-of-00005.parquet"
@@ -55,6 +59,22 @@ def fetch(url: str, dest: Path, token: bool = False) -> Path:
             f.write(chunk)
     tmp.rename(dest)
     return dest
+
+
+def suffix() -> str:
+    """wer.json for no filter, wer-<filter>.json with one."""
+    return "" if not AF else "-" + re.sub(r"[^a-z0-9]+", "_", AF.lower()).strip("_")
+
+
+def one_file(path: str, ref_path: str) -> dict:
+    """WER of one recording against a reference text (a robot test)."""
+    import jiwer
+    audio = tr.load_audio(path, AF)
+    hyp = norm(tr.asr(audio)["text"])
+    ref = norm(Path(ref_path).read_text())
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    return {"file": path, "af": AF, "words": len(ref.split()), "wer": round(jiwer.wer(ref, hyp), 4),
+            "rms_dbfs": round(20 * np.log10(rms + 1e-12), 1)}
 
 
 def norm(s: str) -> str:
@@ -81,7 +101,7 @@ def wer(n: int) -> dict:
             raw = tar.extractfile(m).read()
             tmp = d / "cur.wav"
             tmp.write_bytes(raw)
-            audio = tr.load_audio(tmp)
+            audio = tr.load_audio(tmp, AF)
             t0 = time.perf_counter()
             hyp = tr.asr(audio)["text"]
             asr_s += time.perf_counter() - t0
@@ -92,10 +112,10 @@ def wer(n: int) -> dict:
                 print(f"{len(refs)}/{n}  WER so far {jiwer.wer(refs, hyps):.3f}")
             if len(refs) >= n:
                 break
-    out = {"dataset": "FLEURS es_419 test", "utterances": len(refs),
+    out = {"dataset": "FLEURS es_419 test", "af": AF, "utterances": len(refs),
            "audio_min": round(audio_s / 60, 1), "wer": round(jiwer.wer(refs, hyps), 4),
            "cer": round(jiwer.cer(refs, hyps), 4), "asr_rtf": round(asr_s / audio_s, 3)}
-    (WORK / "wer.json").write_text(json.dumps(out, indent=1))
+    (WORK / f"wer{suffix()}.json").write_text(json.dumps(out, indent=1))
     with open(WORK / "wer-pairs.tsv", "w") as f:
         f.writelines(f"{r}\t{h}\n" for r, h in zip(refs, hyps))
     return out
@@ -121,7 +141,7 @@ def der(n: int) -> dict:
             wav = wav.mean(axis=1)
         tmp = WORK / "callhome" / "cur.wav"
         sf.write(tmp, wav, sr)
-        audio = tr.load_audio(tmp)
+        audio = tr.load_audio(tmp, AF)
         k = len(set(r["speakers"]))
         idx = len(calls) + len(skipped)
         row = {"call": idx, "minutes": round(len(audio) / tr.SR / 60, 1), "speakers": k}
@@ -147,13 +167,13 @@ def der(n: int) -> dict:
         print(row)
         if len(calls) >= n:
             break
-    out = {"dataset": "CallHome Spanish (shard 0)", "calls": len(calls),
+    out = {"dataset": "CallHome Spanish (shard 0)", "af": AF, "calls": len(calls),
            "audio_min": round(audio_s / 60, 1),
            "der_auto": round(abs(metrics["auto"]), 4),
            "der_oracle": round(abs(metrics["oracle"]), 4),
            "diarization_rtf": round(dia_s / audio_s, 3), "per_call": calls,
            "skipped": skipped}
-    (WORK / "der.json").write_text(json.dumps(out, indent=1))
+    (WORK / f"der{suffix()}.json").write_text(json.dumps(out, indent=1))
     return out
 
 
@@ -252,15 +272,22 @@ def score(tag: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("task", choices=["wer", "der", "export", "score"])
-    ap.add_argument("tag", nargs="?", default="swift", help="for score: the engine's name")
+    ap.add_argument("task", choices=["wer", "der", "export", "score", "file"])
+    ap.add_argument("tag", nargs="*", default=["swift"],
+                    help="score: the engine's name; file: <recording.wav> <reference.txt>")
     ap.add_argument("--n", type=int)
+    ap.add_argument("--af", help='ffmpeg audio filter applied at load, e.g. "loudnorm" or "afftdn"')
     a = ap.parse_args()
+    global AF
+    AF = a.af
+    if a.task == "file":
+        print(json.dumps(one_file(*a.tag), indent=1))
+        return
     if a.task == "export":
         print(json.dumps(export(200, 10), indent=1))
         return
     if a.task == "score":
-        print(json.dumps(score(a.tag), indent=1))
+        print(json.dumps(score(a.tag[0]), indent=1))
         return
     out = wer(a.n or 200) if a.task == "wer" else der(a.n or 5)
     print(json.dumps({k: v for k, v in out.items() if k != "per_call"}, indent=1))
