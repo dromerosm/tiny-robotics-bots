@@ -36,6 +36,7 @@ struct ScribeApp: App {
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @State private var dropping = false
+    @State private var toDelete: Item?
 
     var body: some View {
         @Bindable var model = model
@@ -55,7 +56,13 @@ struct ContentView: View {
                     if let e = model.recError {
                         Text(e).font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach(model.recordings) { Row(item: $0) }
+                    ForEach(model.recordings) { item in
+                        Row(item: item).contextMenu {
+                            Button("Play") { Task { await model.play(item) } }
+                            Divider()
+                            Button("Delete from R2…", role: .destructive) { toDelete = item }
+                        }
+                    }
                 } header: {
                     HStack {
                         Text("StackChan (R2)")
@@ -91,7 +98,20 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 12).stroke(.tint, lineWidth: 3).padding(4).allowsHitTesting(false)
             }
         }
-        .task { if model.client != nil { await model.refresh() } }
+        .task {
+            await model.loadSettings()
+            if model.client != nil { await model.refresh() }
+        }
+        .confirmationDialog("Delete \(toDelete?.title ?? "") from R2?", isPresented: Binding(
+            get: { toDelete != nil }, set: { if !$0 { toDelete = nil } })
+        ) {
+            Button("Delete", role: .destructive) {
+                if let item = toDelete { Task { await model.delete(item) } }
+                toDelete = nil
+            }
+        } message: {
+            Text("It can't be undone. A transcript you made stays on this Mac.")
+        }
     }
 }
 
@@ -154,6 +174,7 @@ struct DetailView: View {
                 .keyboardShortcut(.return, modifiers: .command)
             }
             .padding()
+            PlayerBar(item: item)
             Divider()
             if let t = transcript {
                 TranscriptView(item: item, transcript: t, palette: palette)
@@ -216,14 +237,19 @@ struct TranscriptView: View {
             }
             Divider()
             List(transcript.turns) { turn in
+                let now = model.player.item == item.id && model.player.time >= turn.start && model.player.time < turn.end + 0.3
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(Export.clock(turn.start)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Button(Export.clock(turn.start)) { Task { await model.play(item, at: turn.start) } }
+                        .buttonStyle(.borderless).font(.caption.monospacedDigit())
+                        .foregroundStyle(now ? Color.accentColor : .secondary)
+                        .help("Play from here")
                         .frame(width: 52, alignment: .trailing)
                     Text(transcript.name(turn.speaker)).bold().foregroundStyle(color(turn.speaker))
                         .frame(width: 110, alignment: .leading).lineLimit(1)
                     Text(turn.text).textSelection(.enabled)
                 }
                 .padding(.vertical, 2)
+                .listRowBackground(now ? Color.accentColor.opacity(0.12) : Color.clear)
             }
         }
     }
@@ -279,5 +305,44 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .padding()
+        .task { await model.loadSettings() }
+    }
+}
+
+/// Play, pause and move through the recording. A StackChan recording is
+/// downloaded once, the first time you play or transcribe it.
+struct PlayerBar: View {
+    @Environment(AppModel.self) private var model
+    let item: Item
+    @State private var scrub: Double?
+
+    var body: some View {
+        let p = model.player
+        let mine = p.item == item.id
+        let downloading = model.work[item.key] == .downloading
+        HStack(spacing: 10) {
+            Button {
+                if mine { p.toggle() } else { Task { await model.play(item) } }
+            } label: {
+                Image(systemName: mine && p.playing ? "pause.fill" : "play.fill").frame(width: 16)
+            }
+            .buttonStyle(.borderless)
+            .disabled(downloading)
+            .help(mine && p.playing ? "Pause" : "Play")
+            if downloading {
+                ProgressView().controlSize(.small)
+                Text("Downloading").font(.caption).foregroundStyle(.secondary)
+            }
+            Text(Export.clock(mine ? (scrub ?? p.time) : 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Slider(value: Binding(
+                get: { mine ? (scrub ?? p.time) : 0 },
+                set: { scrub = $0 }
+            ), in: 0...max(mine ? p.duration : 1, 1)) { editing in
+                if !editing, let s = scrub { p.seek(s); scrub = nil }
+            }
+            .disabled(!mine)
+            Text(Export.clock(mine ? p.duration : 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal).padding(.bottom, 10)
     }
 }
