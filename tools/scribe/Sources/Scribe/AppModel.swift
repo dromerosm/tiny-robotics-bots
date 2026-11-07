@@ -140,6 +140,8 @@ final class AppModel {
 
     func delete(_ item: Item) async {
         guard case .recording(let r) = item.kind, let client else { return }
+        work[item.key] = .running("Deleting")
+        defer { if work[item.key] == .running("Deleting") { work[item.key] = .idle } }
         do {
             try await client.delete(r.id)
             recordings.removeAll { $0.id == item.id }
