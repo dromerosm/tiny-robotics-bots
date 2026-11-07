@@ -1,0 +1,137 @@
+--- a/workers/talk-key/src/index.js	2026-11-02 20:52:28
++++ b/workers/talk-key/src/index.js	2026-11-02 20:52:28
+@@ -15,6 +15,13 @@
+ // session.close. To the robot it passes everything except the delegated
+ // model's own events (response.event): they are big, and the robot does not
+ // need them.
++//
++// GET /live?profile=home (13-home): the same session, plus two function
++// tools for gpt-6-luna that the robot itself runs, because the plugs are on
++// the home network: get_home_status and set_switch. Then the Worker also
++// passes luna's finished function calls to the robot (only those
++// response.event), and the robot's answers to them (response.item.create
++// with a function_call_output, and response.create).
+ const SESSION = {
+   model: "gpt-live-1",
+   // In Spanish, so the model stays in Spanish.
+@@ -39,6 +46,73 @@
+   },
+ };
+ 
++const HOME_TOOLS = [
++  {
++    type: "function",
++    name: "get_home_status",
++    description:
++      "Lee los enchufes de casa: qué toma está encendida en cada dispositivo y cuánto consume ahora (W).",
++    parameters: { type: "object", properties: {}, additionalProperties: false },
++  },
++  {
++    type: "function",
++    name: "set_switch",
++    description:
++      "Enciende o apaga una toma. Dispositivos: Salon y Trabajo (tomas main y usb), " +
++      "Personal (tomas Access Point, TV, MacBook Air y usb).",
++    parameters: {
++      type: "object",
++      properties: {
++        device: { type: "string", description: "Salon, Trabajo o Personal" },
++        switch: { type: "string", description: "main, usb, Access Point, TV o MacBook Air" },
++        on: { type: "boolean", description: "true para encender, false para apagar" },
++        confirmed: {
++          type: "boolean",
++          description: "true solo si la persona ya ha dicho que sí después de needs_confirmation",
++        },
++      },
++      required: ["device", "switch", "on"],
++      additionalProperties: false,
++    },
++  },
++];
++
++// The session for this talk: SESSION, plus the plug tools for profile=home.
++function sessionFor(home) {
++  if (!home) {
++    return SESSION;
++  }
++  const responses = SESSION.delegation.responses;
++  return {
++    ...SESSION,
++    instructions:
++      SESSION.instructions +
++      " Si te piden encender o apagar algo de casa, o cuánto consume, delega la tarea.",
++    delegation: {
++      ...SESSION.delegation,
++      responses: {
++        ...responses,
++        instructions:
++          responses.instructions +
++          " Controlas los enchufes de casa con get_home_status y set_switch. Si set_switch " +
++          "responde needs_confirmation, no lo hagas: di que eso deja al robot sin wifi y pregunta " +
++          "si está seguro. Solo con un sí claro vuelve a llamar con confirmed=true.",
++        tools: [...responses.tools, ...HOME_TOOLS],
++      },
++    },
++  };
++}
++
++// A response.event with a finished function call, for the robot (profile=home).
++function functionCall(data) {
++  try {
++    const m = JSON.parse(data);
++    return m.event?.type === "response.output_item.done" && m.event.item?.type === "function_call";
++  } catch {
++    return false;
++  }
++}
++
+ function same(a, b) {
+   const x = new TextEncoder().encode(a);
+   const y = new TextEncoder().encode(b);
+@@ -65,7 +139,8 @@
+       return new Response(`OpenAI said ${r.status}\n`, { status: 502 });
+     }
+     openai.accept();
+-    openai.send(JSON.stringify({ type: "session.start", session: SESSION }));
++    const home = url.searchParams.get("profile") === "home";
++    openai.send(JSON.stringify({ type: "session.start", session: sessionFor(home) }));
+ 
+     const [client, robot] = Object.values(new WebSocketPair());
+     robot.accept();
+@@ -74,21 +149,32 @@
+       if (typeof e.data !== "string") {
+         return;
+       }
+-      let type;
++      let m;
+       try {
+-        type = JSON.parse(e.data).type;
++        m = JSON.parse(e.data);
+       } catch {
+         return;
+       }
++      const type = m.type;
+       if (type === "session.input_audio.append" || type === "session.close") {
+         openai.send(e.data);
++      } else if (
++        home &&
++        (type === "response.create" ||
++          (type === "response.item.create" && m.item?.type === "function_call_output"))
++      ) {
++        openai.send(e.data);
+       }
+     });
+     openai.addEventListener("message", (e) => {
+-      if (typeof e.data !== "string" || e.data.includes('"type": "response.event"') ||
+-          e.data.includes('"type":"response.event"')) {
++      if (typeof e.data !== "string") {
+         return;
+       }
++      if (e.data.includes('"type": "response.event"') || e.data.includes('"type":"response.event"')) {
++        if (!home || !functionCall(e.data)) {
++          return;
++        }
++      }
+       try {
+         robot.send(e.data);
+       } catch {

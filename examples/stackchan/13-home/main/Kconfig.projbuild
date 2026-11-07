@@ -1,0 +1,16 @@
+menu "13-home"
+    # From environment variables, as the Wi-Fi settings: scripts/build.sh
+    # passes them from the file in WIFI_ENV. Never in git.
+    config TALK_URL
+        string "Talk Worker WebSocket URL (wss://.../live); 13-home adds ?profile=home"
+        default "$(TALK_URL)"
+    config TALK_TOKEN
+        string "Robot token for the talk Worker"
+        default "$(TALK_TOKEN)"
+    config HOME_DEVICES
+        string "The plugs: name,version,ip,id,key-hex,dp:label:name[:ap],... separated by ;"
+        default "$(TUYA_DEVICES)"
+    config HOME_AP_SSID
+        string "Wi-Fi network fed by the :ap outlet (switching it off asks first)"
+        default "home-ap"
+endmenu
