@@ -25,7 +25,7 @@ Transcripts and downloaded audio stay in `~/Library/Application Support/Scribe/`
 open .work/Scribe.app
 ```
 
-`make-app.sh` builds in release mode and puts `Scribe.app` in `.work/` (not in git), signed ad hoc for this Mac.
+`make-app.sh` builds in release mode and puts `Scribe.app` in `.work/` (not in git), signed ad hoc for this Mac. It also draws the icon with `make-icon.swift` (a speech bubble with a sound wave, one color per speaker) and turns it into `AppIcon.icns`.
 
 The first time, open **Scribe → Settings…** and press **Import from ~/.secrets/stackchan-rec.env**, or type the Worker URL (`https://…/rec`) and the read token.
 
