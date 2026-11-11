@@ -70,6 +70,8 @@ static SemaphoreHandle_t head_lock; // the servos: track_step() or track_quiet()
 static volatile bool want;          // the finder should run
 static volatile bool loaded;        // the camera and the model are up
 static volatile bool failed;        // no camera or no memory: don't try again
+static volatile bool idle;          // the finder waits, with the camera and the model off
+static bool ever_loaded;            // only the finder uses it
 static volatile int64_t hold_until;
 static volatile int faces, find_ms, fps10;
 static volatile float err_x, err_y;
@@ -103,25 +105,29 @@ static void finder_task(void *arg)
                 loaded = false;
                 log_memory("camera and model off", t0);
             }
+            idle = true;
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            idle = false;
             continue;
         }
         if (!loaded) {
             const int64_t t0 = esp_timer_get_time();
-            if (tr_cam_start() != ESP_OK) {
-                ESP_LOGW(TAG, "no camera: the head does not follow");
-                failed = true;
+            // A camera that never started (as in the emulator) is not tried
+            // again. One that worked before gets another try in 10 s.
+            const bool cam = tr_cam_start() == ESP_OK;
+            if (!cam || face_start() != ESP_OK) {
+                ESP_LOGW(TAG, "%s: the head does not follow%s",
+                         cam ? "no memory for the face model" : "no camera",
+                         ever_loaded ? " for 10 s" : "");
+                if (cam) {
+                    tr_cam_stop();
+                }
+                failed = !ever_loaded;
+                hold_until = esp_timer_get_time() + 10 * 1000 * 1000;
                 want = false;
                 continue;
             }
-            if (face_start() != ESP_OK) {
-                ESP_LOGW(TAG, "no memory for the face model: the head does not follow");
-                tr_cam_stop();
-                failed = true;
-                want = false;
-                continue;
-            }
-            loaded = true;
+            loaded = ever_loaded = true;
             finds = ms_sum = 0;
             window = esp_timer_get_time();
             face_at = -1;
@@ -191,10 +197,11 @@ void track_quiet(void)
     hold_until = esp_timer_get_time() + HOLD_US;
     want = false;
     xTaskNotifyGive(finder);
-    for (int i = 0; i < 300 && loaded; i++) { // the finder ends its frame first
+    // The finder ends its frame first, or its start of the camera.
+    for (int i = 0; i < 300 && !(idle && !loaded); i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    if (loaded) {
+    if (loaded || !idle) {
         ESP_LOGW(TAG, "the camera did not stop in 3 s");
     }
     if (tr_web_servos()) {
@@ -339,6 +346,13 @@ void track_step(int64_t now, bool quiet)
     }
     if (xSemaphoreTake(head_lock, 0) != pdTRUE) {
         return; // track_quiet() is at work
+    }
+    // track_quiet() may have run since the check above: look again, now
+    // with the lock. Without this the camera started just as sleep cut its
+    // power.
+    if (esp_timer_get_time() < hold_until || tr_sleep_asleep()) {
+        xSemaphoreGive(head_lock);
+        return;
     }
     if (!want) { // start, or start again after a talk
         want = true;

@@ -41,6 +41,7 @@ a talk:    talk.c calls the quiet hook -> track_quiet(): finder stops, camera an
 - **The echo canceller** takes its memory once, at boot, and keeps it. It works only during a talk. With no talk, the "cleaned" sound is the average of both microphones as they are, and the recorder gets that.
 - **One microphone.** The echo canceller works on microphone a only. On both microphones it takes 136 KB of internal RAM, and on one 92 KB. Those 44 KB are what the camera and the model need.
 - **`POST /face?follow=0`** stops following and frees the camera and the model. `follow=1` starts it again.
+- **Sleep.** The robot does not sleep by itself, but "Sleep now" on the page (`POST /sleep?now=1`) works. The finder, the camera, the servos and the screen stop, as in 11-track. The speaker, the microphones and I2S stop too (`tr_audio_pause()`), so the CPU can use light sleep. A touch wakes the robot. So does a talk or a recording started from the page.
 
 ## What we found on the way
 
@@ -56,7 +57,20 @@ The problem was internal RAM. This is what we tried, in order:
 | **The echo canceller on one microphone** | **92 KB instead of 136 KB. Now it all fits** |
 | The camera's buffer in internal RAM, 8 KB instead of 32 KB | No timeouts, and the finder is as fast as in 11-track. Kept |
 
-One more thing broke. esp-sr 2.6.1 gives esp-dl a list of the operations its own models need, and then esp-dl builds only what is on a list. The face model needs others, so it failed to load: `Do not support Concat, please implement and register it first`. `main/face-req.yml` adds the face model's list.
+### Sleep
+
+At first, "asleep" used more power than 14-record awake: 146 mA. Only the screen and the servos were off. The camera, the finder and the audio kept running, and the finder turned the servos on again for each look.
+
+| Try | Result |
+| --- | --- |
+| A sleep hook stops the finder, the audio task stops the audio, light sleep on (`CONFIG_PM_ENABLE`) | 45 to 55 mA asleep |
+| Light sleep with the CPU powered down (the default) | It takes about 18 KB of internal RAM to save the CPU's state: 19 KB free while following, not 35 KB. Off (`CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP=n`). The current asleep stayed in the same range |
+| The face task started the camera at the moment sleep cut its power | The camera failed, and following stayed off. `track_step()` now checks again after it takes the lock, and a camera that worked before gets another try after 10 s |
+| The reference delay of the echo canceller (79 samples in 12-talk) | After each wake the time from the speaker to the microphones is different: 13 to 140 samples. With 79 and a real delay of 13, only 8 dB of echo went away. Now the delay is 0, so the reference always comes first: 53 to 72 dB once the filter has learned again |
+
+### The face model did not load
+
+esp-sr 2.6.1 gives esp-dl a list of the operations its own models need, and then esp-dl builds only what is on a list. The face model needs others, so it failed to load: `Do not support Concat, please implement and register it first`. `main/face-req.yml` adds the face model's list.
 
 ### The speaker and the microphones
 
@@ -97,6 +111,7 @@ Stand in front of the robot: the head turns to you. Touch the head to talk, and 
 | `POST /talk?volume=75` | Speaker volume, 0 to 100 |
 | `POST /talk?gain=21` | Microphone gain in dB, to try. A recording sets it back to 21 when it ends |
 | `GET /talk` | As in 12-talk, plus "echo canceller: at work" or "resting" |
+| `POST /sleep?now=1`, `?wake=1` | Sleep now, or wake (tr_web). The page has buttons for both |
 | The rest of `/talk`, `/rec` and `/face` | As in 14-record |
 
 ## Checked on the robot
@@ -105,14 +120,17 @@ On 2026-11-11, on battery:
 
 | | Internal RAM free | Notes |
 | --- | --- | --- |
-| Following, no face | 39 KB (biggest block 15 to 18 KB) | 2.0 finds per second, 81 ms per find, no camera timeouts |
-| In a talk | 58 KB (biggest block 31 KB) | 14-record had 18 KB here |
-| Lowest since boot | 23 KB | 14-record: 1 to 5 KB |
+| Following, no face | 34 KB (biggest block 13 KB) | 2.0 finds per second, 82 to 88 ms per find, no camera timeouts |
+| In a talk | 54 KB (biggest block 31 KB) | 14-record had 18 KB here |
+| Lowest since boot | 19 KB | 14-record: 1 to 5 KB |
 
 - A talk of 17 s from `POST /talk?start=1`: the session opened in 3.7 s, 312 of 312 frames every 10 s, 0 frames lost by the echo canceller, 6.5 ms per frame (10.5 ms on two microphones).
 - The camera and the model stop in 7 ms and start again in 0.6 s. Three stops and starts in a row gave the same free memory each time.
 - After the talk, the finder was back by itself.
-- Echo removed at the new volume and gain, three runs: 73, 55 and 47 dB.
+- Echo removed at the new volume and gain, three runs after boot: 55, 47 and 33 dB. After a sleep and a wake: 9 dB in the first run, while the filter learns again, then 56 and 62 dB.
+- Battery current, the robot's own 20 s average, at 3.6 to 3.7 V: 191 mA awake and following with no face in sight, 45 to 55 mA asleep (three sleeps of 130 to 150 s).
+- Awake again in about 0.2 s. Four sleeps and wakes in a row, each just after an echo test: the finder came back every time.
+- A talk started from the page while the robot slept: it woke, and the talk kept real time (312 of 312 frames).
 
 Not checked yet:
 
@@ -120,7 +138,8 @@ Not checked yet:
 - A real talk at the new gain. The microphones give 9 dB less, so check that the robot still understands you from where you sit.
 - The sound of the robot's own voice at volume 75, by ear, and 85 with 18 dB.
 - A recording in this example. The recorder now gets both microphones with no echo canceller in between.
-- Battery use, and a long run.
+- A long run, and battery use in a talk. Awake it uses more than 14-record (191 mA against about 130 mA): the camera, the face model and the head moves.
+- Why asleep is 45 to 55 mA and not 11-track's 32 mA. The amplifier and the ES7210 only go to standby.
 
 ## Try next
 

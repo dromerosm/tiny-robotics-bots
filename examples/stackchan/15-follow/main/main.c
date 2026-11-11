@@ -32,8 +32,10 @@
 // page: battery, robot, network (with the update token), touch and motion,
 // and the room. PREV and NEXT change the section, X closes it.
 //
-// The audio runs all the time, so the robot does not sleep (light sleep with
-// I2S running is not tested yet).
+// The robot does not sleep by itself (tr_sleep_set_after(0)), but "Sleep
+// now" on the page, or POST /sleep?now=1, works: the finder, the camera, the
+// servos, the screen, the speaker and the microphones stop, and the CPU uses
+// light sleep. A touch wakes it. A talk or a recording wakes it too.
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,6 +133,17 @@ static void face_task(void *arg)
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
+        // Asleep: nothing to draw and nobody to follow. Wait, then draw the
+        // face again. The touch that wakes the robot does nothing else.
+        if (tr_sleep_asleep()) {
+            tr_sleep_wait_awake();
+            open = VIEW_FACE;
+            was_down = false;
+            drawn.mouth = -1;
+            touch_ok_at = esp_timer_get_time() + 500000;
+            wake = xTaskGetTickCount();
+            continue;
+        }
         const int64_t now = esp_timer_get_time();
 
         // A touch on the head starts or ends a talk. One stroke gives many
@@ -235,6 +248,16 @@ static void face_task(void *arg)
     }
 }
 
+// Before sleep, in the sleep task: the finder stops the camera, so the sleep
+// step can cut its power, and the servos stay off. track_step() starts it
+// all again after the robot wakes.
+static void on_sleep(bool going_to_sleep)
+{
+    if (going_to_sleep) {
+        track_quiet();
+    }
+}
+
 static esp_err_t face_get(httpd_req_t *req)
 {
     static char text[224];
@@ -292,6 +315,7 @@ void app_main(void)
     ESP_ERROR_CHECK(tr_ota_add_uri(&rec_p));
     if (track_init() == ESP_OK) {
         talk_set_quiet_hook(track_quiet);
+        tr_sleep_add_hook(on_sleep);
     } else {
         ESP_LOGW("track", "no memory for the finder task: the head does not follow");
     }

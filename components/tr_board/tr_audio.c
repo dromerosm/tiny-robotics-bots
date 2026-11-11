@@ -27,6 +27,25 @@ static const char *TAG = "tr_audio";
 
 static esp_codec_dev_handle_t speaker, mics;
 static int32_t *out; // CHUNK stereo 32-bit frames
+static uint32_t rate;
+static int volume = 70;
+static float gain = 30.0f;
+static bool paused;
+
+// Open both directions and set the volume and the gain again.
+static esp_err_t open_both(void)
+{
+    esp_codec_dev_sample_info_t fs = {.bits_per_sample = 32, .channel = 2, .sample_rate = rate};
+    ESP_RETURN_ON_FALSE(esp_codec_dev_open(speaker, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
+                        "open speaker");
+    fs = (esp_codec_dev_sample_info_t){
+        .bits_per_sample = 16, .channel = TR_AUDIO_INPUTS, .sample_rate = rate};
+    ESP_RETURN_ON_FALSE(esp_codec_dev_open(mics, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
+                        "open microphones");
+    esp_codec_dev_set_out_vol(speaker, volume);
+    esp_codec_dev_set_in_gain(mics, gain);
+    return ESP_OK;
+}
 
 esp_err_t tr_audio_start(uint32_t sample_rate)
 {
@@ -104,16 +123,22 @@ esp_err_t tr_audio_start(uint32_t sample_rate)
     mics = esp_codec_dev_new(&dev);
     ESP_RETURN_ON_FALSE(mics, ESP_FAIL, TAG, "microphones");
 
-    esp_codec_dev_sample_info_t fs = {
-        .bits_per_sample = 32, .channel = 2, .sample_rate = sample_rate};
-    ESP_RETURN_ON_FALSE(esp_codec_dev_open(speaker, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
-                        "open speaker");
-    fs = (esp_codec_dev_sample_info_t){
-        .bits_per_sample = 16, .channel = TR_AUDIO_INPUTS, .sample_rate = sample_rate};
-    ESP_RETURN_ON_FALSE(esp_codec_dev_open(mics, &fs) == ESP_CODEC_DEV_OK, ESP_FAIL, TAG,
-                        "open microphones");
-    esp_codec_dev_set_out_vol(speaker, 70);
-    esp_codec_dev_set_in_gain(mics, 30.0f);
+    rate = sample_rate;
+    return open_both();
+}
+
+esp_err_t tr_audio_pause(bool pause)
+{
+    ESP_RETURN_ON_FALSE(speaker && mics, ESP_ERR_INVALID_STATE, TAG, "not started");
+    if (pause == paused) {
+        return ESP_OK;
+    }
+    paused = pause;
+    if (!pause) {
+        return open_both();
+    }
+    esp_codec_dev_close(speaker);
+    esp_codec_dev_close(mics);
     return ESP_OK;
 }
 
@@ -146,11 +171,13 @@ esp_err_t tr_audio_write(const int16_t *samples, int count)
 esp_err_t tr_audio_volume(int percent)
 {
     ESP_RETURN_ON_FALSE(speaker, ESP_ERR_INVALID_STATE, TAG, "not started");
+    volume = percent;
     return esp_codec_dev_set_out_vol(speaker, percent) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t tr_audio_gain(float db)
 {
     ESP_RETURN_ON_FALSE(mics, ESP_ERR_INVALID_STATE, TAG, "not started");
+    gain = db;
     return esp_codec_dev_set_in_gain(mics, db) == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
 }

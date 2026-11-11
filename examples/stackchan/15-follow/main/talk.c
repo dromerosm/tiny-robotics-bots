@@ -40,8 +40,8 @@
 //   POST /talk?start=1|stop=1  open or end a talk (token needed)
 //   POST /talk?test=lanes      a 1 kHz tone: the level and delay on each input
 //   POST /talk?test=aec        6 s of noise bursts: how much echo is left
-//   POST /talk?delay=N         reference delay in samples (the tone test
-//                              sets it from what it measures)
+//   POST /talk?delay=N         reference delay in samples, to try (0 by
+//                              default; the tone test only measures)
 //   POST /talk?send=aec|mic    send the cleaned sound, or microphone a as it is
 //   POST /talk?volume=40       speaker volume, 0 to 100
 //   POST /talk?gain=21         microphone gain in dB, to try (a recording
@@ -103,8 +103,14 @@ static const char *TAG = "talk";
 // microphones, a bit less so the reference comes first.
 #define MIC_A    0
 #define MIC_B    2
-#define MIC_SLOT 0                  // the AEC works on the first block of a slot: microphone a
-static volatile int ref_delay = 79; // measured by the tone test
+#define MIC_SLOT 0 // the AEC works on the first block of a slot: microphone a
+// 0 here, not 79 as in 12-talk. The time from our write to the microphones
+// changes each time the audio stops for sleep and starts again: the tone
+// test gave 13 to 140 samples. A reference that comes after the echo is
+// useless (8 dB removed), and one that comes up to 140 samples early is
+// fine: 53 to 72 dB at delay 0, once the filter has learned again (the first
+// seconds of the robot's voice after a wake).
+static volatile int ref_delay = 0;
 
 static aec_handle_t *aec;      // made once, in talk_start()
 static volatile bool aec_want; // a talk or a test needs it: the aec task runs it
@@ -196,6 +202,20 @@ static void audio_task(void *arg)
     int slot = 0, n_sum = 0, count = 0;
     int64_t sum[4] = {0}, sum_play = 0, t_io = 0, window = esp_timer_get_time();
     for (;;) {
+        // Asleep with nothing to hear or say: stop the speaker, the
+        // microphones and I2S until the robot wakes, so the CPU can sleep too.
+        if (tr_sleep_asleep() && state == T_OFF && !busy && !tap && test == TEST_NONE) {
+            tr_audio_pause(true);
+            ESP_LOGI(TAG, "asleep: audio stopped");
+            tr_sleep_wait_awake();
+            tr_audio_pause(false);
+            ESP_LOGI(TAG, "awake: audio on again");
+            ring_flush(&raw);
+            window = esp_timer_get_time();
+            count = 0;
+            t_io = 0;
+            continue;
+        }
         // What to play: a test signal, the robot's voice, or silence.
         int got;
         if (test == TEST_TONE) { // 1 s quiet, then 1 s of 1 kHz
@@ -288,14 +308,8 @@ static void audio_task(void *arg)
             test_pos += frame;
             const int len = test == TEST_TONE ? 2 * RATE : 6 * RATE;
             if (test_pos >= len) {
-                // The tone sets the reference delay: where microphone a
-                // heard it start, 16 samples early.
-                if (test == TEST_TONE && t_onset[MIC_A] > 0 && t_play_onset > 0) {
-                    const int d = t_onset[MIC_A] - t_play_onset - 16;
-                    if (d > 0 && d < MAX_DELAY) {
-                        ref_delay = d;
-                    }
-                }
+                // The tone only reports the delay (GET /talk). It does not
+                // set ref_delay any more: see ref_delay.
                 test = TEST_NONE;
             }
         }
@@ -353,6 +367,7 @@ static aec_handle_t *aec_new(void)
 static void aec_get(void)
 {
     busy = true;
+    tr_sleep_wake(); // the audio task starts the speaker and the microphones again
     if (quiet_hook) {
         quiet_hook();
     }
@@ -631,6 +646,10 @@ static void send_task(void *arg)
     char *msg = heap_caps_malloc(b64_size + 64, MALLOC_CAP_SPIRAM);
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
+        if (tr_sleep_asleep() && state == T_OFF) { // nothing to send: no wake every 40 ms
+            tr_sleep_wait_awake();
+            wake = xTaskGetTickCount();
+        }
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(SEND_MS));
         ring_t *from = send_raw ? &raw : &clean;
         xSemaphoreTake(ws_lock, portMAX_DELAY);
@@ -766,6 +785,9 @@ void talk_tap(int source)
     ring_flush(&clean);
     ring_flush(&raw);
     tap = source;
+    if (source) {
+        tr_sleep_wake();
+    }
     if (source && quiet_hook) {
         quiet_hook(); // no motor noise in the recording
     }

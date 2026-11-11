@@ -181,6 +181,10 @@ esp_err_t tr_audio_read(int16_t *frames, int count);
 esp_err_t tr_audio_write(const int16_t *samples, int count);
 esp_err_t tr_audio_volume(int percent);
 esp_err_t tr_audio_gain(float db);
+// Stop the speaker and the microphones (the amplifier and the ES7210 go to
+// standby, and I2S stops, so the CPU can use light sleep), or start them
+// again with the same rate, volume and gain. No read or write while paused.
+esp_err_t tr_audio_pause(bool pause);
 
 // The camera (GC0308 on the DVP port), 320 x 240 RGB565, frames in PSRAM
 // when there is PSRAM. Powers it on the first call. Then take frames with
