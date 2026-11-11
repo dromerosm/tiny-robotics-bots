@@ -36,11 +36,13 @@ a talk:    talk.c calls the quiet hook -> track_quiet(): finder stops, camera an
            model freed, servo power off -> the echo canceller works on core 1
 ```
 
-- **track.c** is 11-track's finder and head moves, without the camera view, the record of finds and the glances. One task owns the camera and the model. It starts them when the face task wants to follow, and stops and frees them when `track_quiet()` asks.
+- **track.c** is 11-track's finder and head moves, without the record of finds and the glances. One task owns the camera and the model. It starts them when the face task wants to follow, and stops and frees them when `track_quiet()` asks.
 - **talk.c** calls a hook before each talk, test or recording. The hook is `track_quiet()`. It returns only when the camera is off and the servos have no power, so no motor is heard in the talk.
 - **The echo canceller** takes its memory once, at boot, and keeps it. It works only during a talk. With no talk, the "cleaned" sound is the average of both microphones as they are, and the recorder gets that.
 - **One microphone.** The echo canceller works on microphone a only. On both microphones it takes 136 KB of internal RAM, and on one 92 KB. Those 44 KB are what the camera and the model need.
-- **`POST /face?follow=0`** stops following and frees the camera and the model. `follow=1` starts it again.
+- **The camera view.** Tap the left eye: the screen shows the camera, 320 x 240, with a box on each face the finder sees (green for the one the head follows) and the center of the frame. It is there to check that following works. With it open the finder works at full speed. It also works with following off: the camera runs, and the head stays still. A tap closes it. A talk, a recording or sleep closes it too, because the camera stops.
+- **The page** at `http://stackchan.local/app` makes its Face buttons from the lines of `GET /face`: **Start a talk**, **End the talk**, **Record**, **Stop recording**, **Follow faces**, **Don't follow**, **Blink**, and the views **Face**, **Status** and **Faces** (the camera view).
+- **`POST /face?follow=0`** stops following. The camera and the model give their memory back, unless the camera view is open. `follow=1` starts it again.
 - **Sleep.** The robot does not sleep by itself, but "Sleep now" on the page (`POST /sleep?now=1`) works. The finder, the camera, the servos and the screen stop, as in 11-track. The speaker, the microphones and I2S stop too (`tr_audio_pause()`), so the CPU can use light sleep. A touch wakes the robot. So does a talk or a recording started from the page.
 
 ## What we found on the way
@@ -102,11 +104,12 @@ Output: `out/stackchan-15-follow-esp32s3.bin` (merged image) and `examples/stack
 curl -H "X-Token: <token>" --data-binary @examples/stackchan/15-follow/build/follow.bin http://stackchan.local/update
 ```
 
-Stand in front of the robot: the head turns to you. Touch the head to talk, and touch it again to end the talk. Tap the right eye to record.
+Stand in front of the robot: the head turns to you. Tap the left eye to see what the camera and the finder see. Touch the head to talk, and touch it again to end the talk. Tap the right eye to record. The page has a button for each of these.
 
 | Endpoint | What |
 | --- | --- |
-| `GET /face` | The screen, the talk, and the finder: faces, time per find, finds per second |
+| `GET /face` | The view on the screen, the talk, the recording, following on or off, and the finder: faces, time per find, finds per second, and frames per second on the screen while the camera view is open |
+| `POST /face?view=face\|status\|track` | Change the screen. `track` is the camera view |
 | `POST /face?follow=0\|1` | Stop or start following faces |
 | `POST /talk?volume=75` | Speaker volume, 0 to 100 |
 | `POST /talk?gain=21` | Microphone gain in dB, to try. A recording sets it back to 21 when it ends |
@@ -131,13 +134,16 @@ On 2026-11-11, on battery:
 - Battery current, the robot's own 20 s average, at 3.6 to 3.7 V: 191 mA awake and following with no face in sight, 45 to 55 mA asleep (three sleeps of 130 to 150 s).
 - Awake again in about 0.2 s. Four sleeps and wakes in a row, each just after an echo test: the finder came back every time.
 - A talk started from the page while the robot slept: it woke, and the talk kept real time (312 of 312 frames).
+- Every request the page's buttons send answered 200 with the token, and 403 without it. A recording of 14 s: 2 pieces uploaded, 0 retries, 0 s dropped.
+- The camera view from the page: 7 to 10 finds per second with it open, about 100 ms per find, and 6 to 10 frames per second on the screen (`GET /face` says both). 33 to 35 KB of internal RAM free. A talk and a sleep closed it. With following off it opened too, and the servos stayed without power.
 
 Not checked yet:
 
 - A person in front of the camera: that the head follows, and that it stays on the person during the talk.
 - A real talk at the new gain. The microphones give 9 dB less, so check that the robot still understands you from where you sit.
 - The sound of the robot's own voice at volume 75, by ear, and 85 with 18 dB.
-- A recording in this example. The recorder now gets both microphones with no echo canceller in between.
+- How a recording sounds, and its text. The recorder now gets both microphones with no echo canceller in between.
+- The camera view by eye, and the boxes on a real face. The numbers say frames reach the screen, but nobody looked at it yet.
 - A long run, and battery use in a talk. Awake it uses more than 14-record (191 mA against about 130 mA): the camera, the face model and the head moves.
 - Why asleep is 45 to 55 mA and not 11-track's 32 mA. The amplifier and the ES7210 only go to standby.
 

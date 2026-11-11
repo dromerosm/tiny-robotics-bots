@@ -92,11 +92,17 @@
     <h2>Face</h2>
     <table id="facestate"></table>
     <div class="row">
-      <button id="idleon">Look around</button>
+      <button id="idleon" class="plain">Look around</button>
       <button id="idleoff" class="plain">Stay still</button>
       <button id="blink" class="plain">Blink</button>
       <button id="followon" class="plain" hidden>Follow faces</button>
       <button id="followoff" class="plain" hidden>Don't follow</button>
+    </div>
+    <div class="row">
+      <button id="talkon" class="plain" hidden>Start a talk</button>
+      <button id="talkoff" class="plain" hidden>End the talk</button>
+      <button id="recon" class="plain" hidden>Record</button>
+      <button id="recoff" class="plain" hidden>Stop recording</button>
     </div>
     <div class="row">
       <button class="plain" data-view="face">Face</button>
@@ -366,18 +372,36 @@ async function refresh() {
 }
 
 // The face card shows only when the example has a face (GET /face). Its
-// "views:" line says which view buttons to show. A "battery:" line goes to the
+// "views:" line says which view buttons to show, and its "looking around:",
+// "following:", "talk:" and "recording:" lines which other buttons. A "battery:" line goes to the
 // battery card, and a Wi-Fi scan (lines that start with two spaces) to its own card.
 function showFace(t) {
   last.face = t;
   const f = lines(t);
   const rows = [];
-  for (const [k, label] of [["following", "Following"], ["looking around", "Looking around"], ["head", "Head"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"], ["track", "Faces"]]) {
+  for (const [k, label] of [["talk", "Talk"], ["recording", "Recording"], ["following", "Following"], ["looking around", "Looking around"], ["head", "Head"], ["view", "Screen"], ["last view asked", "Last view asked"], ["sound", "Sound"], ["mic offset", "Mic offset"], ["calibrating", "Calibrating"], ["track", "Faces"]]) {
     if (f.has(k)) rows.push([label, f.get(k)]);
   }
   kv($("facestate"), rows);
   const views = (f.get("views") || "").split(" ");
+  // Each pair of buttons shows only when the example has that line in GET /face.
+  $("idleon").hidden = $("idleoff").hidden = !f.has("looking around");
   $("followon").hidden = $("followoff").hidden = !f.has("following");
+  $("talkon").hidden = $("talkoff").hidden = !f.has("talk");
+  $("recon").hidden = $("recoff").hidden = !f.has("recording");
+  // The filled button is the mode the robot is in now. A pair with two
+  // modes (follow or not) always has one filled. A talk and a recording
+  // fill their start button only while they are on.
+  const is = (k) => (f.get(k) || "").match(/^(on|yes)\b/) !== null;
+  const fill = (id, active) => { $(id).className = active ? "" : "plain"; };
+  fill("idleon", is("looking around"));
+  fill("idleoff", f.has("looking around") && !is("looking around"));
+  fill("followon", is("following"));
+  fill("followoff", f.has("following") && !is("following"));
+  fill("talkon", f.has("talk") && f.get("talk") !== "off");
+  fill("recon", is("recording"));
+  const view = f.get("view") || f.get("last view asked") || "";
+  for (const b of document.querySelectorAll("button[data-view]")) b.className = b.dataset.view === view ? "" : "plain";
   for (const b of document.querySelectorAll("button[data-view]")) b.hidden = !views.includes(b.dataset.view);
   $("calib").hidden = !views.includes("audio");
   $("face").hidden = false;
@@ -409,6 +433,22 @@ $("blink").onclick = () => face("/face?blink=1");
 $("followon").onclick = () => face("/face?follow=1");
 $("followoff").onclick = () => face("/face?follow=0");
 $("calib").onclick = () => face("/face?calibrate=1");
+// Talks and recordings have their own endpoints (/talk, /rec), which answer
+// with their own text: send the request, then read /face again.
+async function act(path) {
+  $("msg").textContent = "Working…";
+  try {
+    await text(path, auth());
+    $("msg").textContent = "Done.";
+  } catch (e) {
+    $("msg").textContent = "Error: " + e.message;
+  }
+  face("/face");
+}
+$("talkon").onclick = () => act("/talk?start=1");
+$("talkoff").onclick = () => act("/talk?stop=1");
+$("recon").onclick = () => act("/rec?start=1");
+$("recoff").onclick = () => act("/rec?stop=1");
 setInterval(() => { if (!$("face").hidden) face("/face"); }, 2000);
 for (const b of document.querySelectorAll("button[data-view]")) {
   b.onclick = () => face("/face?view=" + b.dataset.view);

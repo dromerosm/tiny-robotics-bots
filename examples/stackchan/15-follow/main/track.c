@@ -7,11 +7,14 @@
 //
 // The face task calls track_step() every frame. It reads what the finder
 // found and moves the head: toward the face, or to a new spot when there
-// has been no face for a while. The rules and numbers are 11-track's.
+// has been no face for a while. The rules and numbers are 11-track's. With
+// the camera view open (track_show), it also shows each frame with a box on
+// each face (track_frame).
 #include "track.h"
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -20,9 +23,11 @@
 #include "face.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tr_board.h"
+#include "tr_screen.h"
 #include "tr_web.h"
 
 static const char *TAG = "track";
@@ -52,6 +57,7 @@ static const char *TAG = "track";
 #define HOME_YAW          0.0f
 #define HOME_PITCH        5.0f
 #define HOME_MS           1000
+#define CENTER_FG         TR_LCD_RGB(90, 160, 255) // the center and dead zone in the camera view
 // After track_quiet(), track_step() waits this long before it may start
 // again: by then the face task has seen that a talk or a recording is on.
 #define HOLD_US (500 * 1000)
@@ -64,6 +70,23 @@ typedef struct {
 } target_t;
 static portMUX_TYPE target_lock = portMUX_INITIALIZER_UNLOCKED;
 static target_t target;
+
+// The camera view: with it open, the finder hands each frame and its boxes
+// to the face task, which shows them and gives the frame back to the
+// camera. When the face task is busy, the finder gives the frame back
+// itself, so the screen never slows the finder.
+typedef struct {
+    camera_fb_t *fb;
+    int n;
+    face_box_t boxes[FACE_MAX];
+} found_frame_t;
+static QueueHandle_t to_show; // one frame for the screen
+static volatile bool show;    // the camera view is open
+// showing: the face task has a frame. stopping: the finder is about to stop
+// the camera, so the face task takes no new frame.
+static portMUX_TYPE show_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool showing, stopping;
+static volatile int show_fps10; // frames drawn on the screen per second, x 10
 
 static TaskHandle_t finder;
 static SemaphoreHandle_t head_lock; // the servos: track_step() or track_quiet()
@@ -99,8 +122,29 @@ static void finder_task(void *arg)
         if (!want) {
             if (loaded) {
                 const int64_t t0 = esp_timer_get_time();
+                // No frame may be out when the camera stops: wait for the
+                // one on the screen, and take back the one in the queue.
+                taskENTER_CRITICAL(&show_lock);
+                stopping = true;
+                taskEXIT_CRITICAL(&show_lock);
+                for (;;) {
+                    taskENTER_CRITICAL(&show_lock);
+                    const bool out = showing;
+                    taskEXIT_CRITICAL(&show_lock);
+                    if (!out) {
+                        break;
+                    }
+                    vTaskDelay(1);
+                }
+                found_frame_t f;
+                if (xQueueReceive(to_show, &f, 0) == pdTRUE) {
+                    esp_camera_fb_return(f.fb);
+                }
                 face_stop();
                 tr_cam_stop();
+                taskENTER_CRITICAL(&show_lock);
+                stopping = false;
+                taskEXIT_CRITICAL(&show_lock);
                 faces = 0;
                 loaded = false;
                 log_memory("camera and model off", t0);
@@ -137,9 +181,10 @@ static void finder_task(void *arg)
         if (!fb) {
             continue; // the camera timed out; try again
         }
-        face_box_t boxes[FACE_MAX];
+        found_frame_t f = {.fb = fb};
+        face_box_t *boxes = f.boxes;
         const int64_t t0 = esp_timer_get_time();
-        const int n = face_find(fb->buf, fb->width, fb->height, boxes, FACE_MAX);
+        const int n = f.n = face_find(fb->buf, fb->width, fb->height, boxes, FACE_MAX);
         const int ms = (esp_timer_get_time() - t0) / 1000;
         taskENTER_CRITICAL(&target_lock);
         target.seq++;
@@ -151,7 +196,10 @@ static void finder_task(void *arg)
             target.cy = (boxes[0].y0 + boxes[0].y1) / 2;
         }
         taskEXIT_CRITICAL(&target_lock);
-        esp_camera_fb_return(fb);
+        // To the screen if the view is open and free; if not, back to the camera.
+        if (!show || xQueueSend(to_show, &f, 0) != pdTRUE) {
+            esp_camera_fb_return(fb);
+        }
         faces = n;
         finds++;
         ms_sum += ms;
@@ -167,8 +215,9 @@ static void finder_task(void *arg)
             finds = ms_sum = 0;
             window = now;
         }
-        // No face for a while: a break. A notify ends it at once.
-        if (face_at < 0 || now - face_at > LOST_US) {
+        // No face for a while and the camera view closed: a break. A notify
+        // ends it at once.
+        if (!show && (face_at < 0 || now - face_at > LOST_US)) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(SLOW_FIND_MS));
         }
     }
@@ -177,7 +226,8 @@ static void finder_task(void *arg)
 esp_err_t track_init(void)
 {
     head_lock = xSemaphoreCreateMutex();
-    if (!head_lock ||
+    to_show = xQueueCreate(1, sizeof(found_frame_t));
+    if (!head_lock || !to_show ||
         // Its stack in PSRAM: the model's data is there too, and internal
         // RAM is short (the echo canceller keeps 136 KB of it).
         xTaskCreatePinnedToCoreWithCaps(finder_task, "finder", 6144, NULL, 4, &finder, 1,
@@ -249,8 +299,9 @@ static int move_ms(float degrees)
     return ms < MOVE_MIN_MS ? MOVE_MIN_MS : ms > MOVE_MAX_MS ? MOVE_MAX_MS : ms;
 }
 
-// Turn toward the face. True if the head moved.
-static bool follow_step(int64_t now)
+// Turn toward the face. True if the head moved. With move false it only
+// keeps track of the face (for the eyes), and the head stays still.
+static bool follow_step(int64_t now, bool move)
 {
     taskENTER_CRITICAL(&target_lock);
     const target_t t = target;
@@ -265,7 +316,7 @@ static bool follow_step(int64_t now)
             const float ey = (t.cy - t.h / 2.0f) / (t.h / 2.0f);
             err_x = ex;
             err_y = ey;
-            if (!page_moved(now) && tr_web_servos() && power_for_moves(now) &&
+            if (move && !page_moved(now) && tr_web_servos() && power_for_moves(now) &&
                 (fabsf(ex) > FOLLOW_DEAD || fabsf(ey) > FOLLOW_DEAD) &&
                 tr_web_head_power() == ESP_OK) {
                 tr_servo_state_t st;
@@ -339,7 +390,7 @@ static int search_step(int64_t now)
     return ms;
 }
 
-void track_step(int64_t now, bool quiet)
+void track_step(int64_t now, bool quiet, bool move)
 {
     if (!finder || failed || quiet || now < hold_until) {
         return;
@@ -372,10 +423,10 @@ void track_step(int64_t now, bool quiet)
         homed = true;
     }
     if (loaded) {
-        if (follow_step(now)) {
+        if (follow_step(now, move)) {
             release_at = now + RELEASE_US; // torque off when it stops moving
         }
-        const int look_ms = search_step(now);
+        const int look_ms = move ? search_step(now) : 0;
         if (look_ms) {
             release_at = now + (look_ms + 300) * 1000LL; // still once it gets there
         }
@@ -395,6 +446,101 @@ void track_step(int64_t now, bool quiet)
     xSemaphoreGive(head_lock);
 }
 
+// A box of 2-pixel lines on an RGB565 frame (high byte first).
+static void draw_box(camera_fb_t *fb, const face_box_t *b, uint16_t color)
+{
+    const int w = fb->width, h = fb->height;
+    for (int y = b->y0; y <= b->y1; y++) {
+        for (int x = b->x0; x <= b->x1; x++) {
+            const bool edge = x - b->x0 < 2 || b->x1 - x < 2 || y - b->y0 < 2 || b->y1 - y < 2;
+            if (edge && x >= 0 && x < w && y >= 0 && y < h) {
+                uint8_t *p = fb->buf + ((size_t)y * w + x) * 2;
+                p[0] = color >> 8;
+                p[1] = color & 0xFF;
+            }
+        }
+    }
+}
+
+// A red box with an X at the top right of the frame, so it is clear how to
+// leave. (As in 08-face.)
+static void draw_exit_mark(camera_fb_t *fb)
+{
+    const uint16_t red = TR_LCD_RGB(200, 40, 40), white = TR_LCD_WHITE;
+    for (int y = 0; y < 32 && y < (int)fb->height; y++) {
+        for (int x = fb->width - 40; x < (int)fb->width; x++) {
+            const int dx = x - (fb->width - 40), d1 = dx - y - 4, d2 = dx + y - 36;
+            const bool cross =
+                dx > 8 && dx < 32 && y > 4 && y < 28 && (abs(d1) <= 1 || abs(d2) <= 1);
+            const uint16_t c = cross ? white : red;
+            uint8_t *p = fb->buf + ((size_t)y * fb->width + x) * 2;
+            p[0] = c >> 8;
+            p[1] = c & 0xFF;
+        }
+    }
+}
+
+void track_show(bool on)
+{
+    if (!finder || on == show) {
+        return;
+    }
+    show = on;
+    if (on) {
+        xTaskNotifyGive(finder); // no break before the first frame
+    } else {
+        found_frame_t f;
+        if (xQueueReceive(to_show, &f, 0) == pdTRUE) {
+            esp_camera_fb_return(f.fb);
+        }
+    }
+}
+
+void track_frame(void)
+{
+    if (!finder) {
+        return;
+    }
+    taskENTER_CRITICAL(&show_lock);
+    const bool no = stopping;
+    showing = !no;
+    taskEXIT_CRITICAL(&show_lock);
+    if (no) {
+        return;
+    }
+    found_frame_t f;
+    if (xQueueReceive(to_show, &f, 1) == pdTRUE) {
+        for (int i = 0; i < f.n; i++) { // green: the biggest, the one the head follows
+            draw_box(f.fb, &f.boxes[i], i == 0 ? TR_SCREEN_GREEN : TR_SCREEN_YELLOW);
+        }
+        // The center and the dead zone, to check that the head centers the face.
+        const int cx = f.fb->width / 2, cy = f.fb->height / 2;
+        const int dx = (int)(FOLLOW_DEAD * cx), dy = (int)(FOLLOW_DEAD * cy);
+        const face_box_t dead = {cx - dx, cy - dy, cx + dx, cy + dy, 0};
+        const face_box_t cross_h = {cx - 8, cy, cx + 8, cy + 1, 0},
+                         cross_v = {cx, cy - 8, cx + 1, cy + 8, 0};
+        draw_box(f.fb, &dead, CENTER_FG);
+        draw_box(f.fb, &cross_h, CENTER_FG);
+        draw_box(f.fb, &cross_v, CENTER_FG);
+        draw_exit_mark(f.fb);
+        tr_lcd_blit(0, 0, f.fb->width, f.fb->height, f.fb->buf);
+        esp_camera_fb_return(f.fb);
+        // How many frames reach the screen, over 2 s, for GET /face.
+        static int shows;
+        static int64_t window;
+        const int64_t now = esp_timer_get_time();
+        shows++;
+        if (now - window >= 2000000) {
+            show_fps10 = window ? (int)(shows * 10000000LL / (now - window)) : 0;
+            shows = 0;
+            window = now;
+        }
+    }
+    taskENTER_CRITICAL(&show_lock);
+    showing = false;
+    taskEXIT_CRITICAL(&show_lock);
+}
+
 void track_eyes(float *x, float *y)
 {
     *x = err_x;
@@ -408,7 +554,13 @@ int track_status(char *text, size_t size)
     }
     if (!loaded) {
         return snprintf(text, size, "track: %s\n",
-                        want ? "starting" : "stopped (talk or recording)");
+                        want ? "starting" : "stopped, the camera is off");
+    }
+    if (show) {
+        return snprintf(
+            text, size,
+            "track: %d face(s), find %d ms, %d.%d finds/s, %d.%d frames/s on the screen\n", faces,
+            find_ms, fps10 / 10, fps10 % 10, show_fps10 / 10, show_fps10 % 10);
     }
     return snprintf(text, size, "track: %d face(s), find %d ms, %d.%d finds/s\n", faces, find_ms,
                     fps10 / 10, fps10 % 10);

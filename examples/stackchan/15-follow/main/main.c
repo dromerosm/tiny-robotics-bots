@@ -21,12 +21,19 @@
 // robot listens, red while it records, orange if the uploads fall behind,
 // pale red while the last pieces go up.
 //
-//   GET  /face                  the screen, the talk and the finder, in short
+//   GET  /face                  the screen, the talk, the recording and the
+//                               finder, in short. The page at /app makes
+//                               its Face buttons from these lines
 //   POST /face?blink=1          blink once (token needed)
 //   POST /face?follow=0|1       stop or start following faces (token needed)
-//   POST /face?view=face|status change the screen (token needed)
+//   POST /face?view=face|status|track   change the screen (token needed)
 //   GET  /talk, POST /talk      see talk.c
 //   GET  /rec, POST /rec        see rec.c
+//
+// Tap the left eye: the camera on the screen, 320 x 240, with a box on each
+// face the finder sees, green for the one the head follows, and the center
+// of the frame. It shows that following works. A tap closes it, and so does
+// a talk or a recording, because the camera stops then.
 //
 // Tap the mouth on the screen: the status screen (tr_screen), one section per
 // page: battery, robot, network (with the update token), touch and motion,
@@ -70,10 +77,11 @@
 #define EYE_FOLLOW_X 40.0f // pixels the eyes and mouth move with the face at the frame's edge
 #define EYE_FOLLOW_Y 25.0f
 
-typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_COUNT } view_t;
-static const char *view_names[] = {"face", "status"};
+typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_TRACK, VIEW_COUNT } view_t;
+static const char *view_names[] = {"face", "status", "track"};
 static volatile view_t want_view = VIEW_FACE; // set by POST /face?view=..
 static volatile bool view_request;
+static volatile view_t shown = VIEW_FACE; // the view on the screen now, for GET /face
 static volatile bool blink_now;
 static volatile bool follow = true; // POST /face?follow=0 stops the finder
 
@@ -105,6 +113,12 @@ static uint16_t face_pixel(int x, int y, void *ctx)
     return BG;
 }
 
+// The left eye, with room for a finger.
+static bool on_left_eye(int x, int y)
+{
+    return x >= 40 && x < 160 && y >= 45 && y < 135;
+}
+
 // The right eye (on the screen's right), with room for a finger.
 static bool on_right_eye(int x, int y)
 {
@@ -133,9 +147,11 @@ static void face_task(void *arg)
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
+        shown = open;
         // Asleep: nothing to draw and nobody to follow. Wait, then draw the
         // face again. The touch that wakes the robot does nothing else.
         if (tr_sleep_asleep()) {
+            track_show(false); // the camera view closes too
             tr_sleep_wait_awake();
             open = VIEW_FACE;
             was_down = false;
@@ -165,7 +181,17 @@ static void face_task(void *arg)
         }
 
         // The head follows a face, but not during a talk or a recording.
-        track_step(now, !follow || talk_quiet() || rec_active());
+        // The camera runs while the head follows, or the camera view is
+        // open. When neither wants it any more, it stops and gives its
+        // memory back.
+        const bool quiet = talk_quiet() || rec_active();
+        const bool camera = follow || open == VIEW_TRACK;
+        static bool camera_was;
+        if (camera_was && !camera && !quiet) {
+            track_quiet();
+        }
+        camera_was = camera;
+        track_step(now, quiet || !camera, follow);
 
         // A tap is a touch that ends: act on where the finger was last.
         int x, y;
@@ -176,14 +202,43 @@ static void face_task(void *arg)
         }
         const bool tap = was_down && !down;
         was_down = down;
+        // The camera view: every frame the finder took, with a box on each
+        // face. A tap closes it. So does a talk or a recording, because the
+        // camera stops then.
+        if (open == VIEW_TRACK && !view_request) {
+            if (tap || quiet) {
+                ESP_LOGI("face", "camera view closed");
+                track_show(false);
+                open = VIEW_FACE;
+                drawn.mouth = -1; // draw the face again
+            } else {
+                track_frame();
+                vTaskDelay(1); // one tick for the tasks below ours
+            }
+            wake = xTaskGetTickCount();
+            continue;
+        }
         if (view_request) {
             view_request = false;
+            track_show(false);
             open = want_view;
             drawn.mouth = -1;
             if (open == VIEW_STATUS) {
                 tr_status_open();
                 next_update = now + 1000000;
             }
+        }
+        if (open == VIEW_FACE && tap && on_left_eye(tap_x, tap_y) && !quiet) {
+            open = VIEW_TRACK;
+        }
+        if (open == VIEW_TRACK) { // from the tap, or from the page
+            if (quiet) {
+                open = VIEW_FACE; // no camera now
+            } else {
+                ESP_LOGI("face", "camera view open");
+                track_show(true);
+            }
+            continue;
         }
         if (tap && open == VIEW_FACE && on_right_eye(tap_x, tap_y)) {
             if (rec_listening()) {
@@ -260,10 +315,22 @@ static void on_sleep(bool going_to_sleep)
 
 static esp_err_t face_get(httpd_req_t *req)
 {
-    static char text[224];
-    const int n =
-        snprintf(text, sizeof(text), "views: face status\nlast view asked: %s\ntalk: %s\n",
-                 view_names[want_view], talk_active() ? "on" : "off");
+    // The page (tr_web) shows a pair of buttons for each of the lines
+    // "talk:", "recording:" and "following:", and fills the button of the
+    // mode the robot is in. "view:" is the screen now, also after a tap.
+    static char text[320];
+    const int n = snprintf(text, sizeof(text),
+                           "views: face status track\nview: %s\ntalk: %s\nrecording: %s\n"
+                           "following: %s\n",
+                           view_names[shown],
+                           talk_live()     ? "on, the robot listens"
+                           : talk_active() ? "connecting"
+                                           : "off",
+                           rec_behind()      ? "on, the uploads are behind"
+                           : rec_listening() ? "on"
+                           : rec_active()    ? "stopped, the last pieces go up"
+                                             : "off",
+                           follow ? "on" : "off");
     track_status(text + n, sizeof(text) - n);
     return httpd_resp_sendstr(req, text);
 }
@@ -279,10 +346,7 @@ static esp_err_t face_post(httpd_req_t *req)
             blink_now = true;
         }
         if (httpd_query_key_value(query, "follow", value, sizeof(value)) == ESP_OK) {
-            follow = value[0] != '0';
-            if (!follow) {
-                track_quiet(); // the camera and the model give their memory back
-            }
+            follow = value[0] != '0'; // the face task stops the camera if nobody needs it
         }
         if (httpd_query_key_value(query, "view", value, sizeof(value)) == ESP_OK) {
             for (int v = 0; v < VIEW_COUNT; v++) {
