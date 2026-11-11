@@ -1,0 +1,54 @@
+# The esp-dl operations and Conv kernels the face model needs (MSR + MNP,
+# int8). esp-sr gives esp-dl its own list, and then esp-dl builds only what
+# is on a list. human_face_detect gives none, so without this file the model
+# fails to load: "Do not support Concat, please implement and register it
+# first". main/CMakeLists.txt adds this file with esp_dl_compile_add_yml().
+#
+# ops: the operation names found in the two model files. kernels: every int8
+# Conv kernel for the ESP32-S3 and its C fallbacks. If the model changes,
+# check both lists again.
+kernel_abi: 1
+
+ops:
+  - Concat
+  - Conv
+  - PRelu
+  - Relu
+
+kernels:
+  - dl_c_s8_conv2d_11cn
+  - dl_c_s8_conv2d_33cn
+  - dl_c_s8_conv2d_hwcn
+  - dl_c_s8_depthwise_conv2d_33c1
+  - dl_c_s8_depthwise_conv2d_hwc1
+  - dl_c_s8_dw_tail_bias_per_ch_prelu
+  - dl_c_s8_tail_bias_linear
+  - dl_c_s8_tail_bias_per_ch_leakyrelu
+  - dl_c_s8_tail_bias_per_ch_linear
+  - dl_c_s8_tail_bias_per_ch_prelu
+  - dl_c_s8_tail_bias_per_ch_relu
+  - dl_c_s8_tail_bias_relu
+  - dl_c_s8_tail_leakyrelu
+  - dl_c_s8_tail_linear
+  - dl_c_s8_tail_prelu
+  - dl_c_s8_tail_relu
+  - dl_tie728_s8_conv2d_11cn
+  - dl_tie728_s8_conv2d_11cn_prelu
+  - dl_tie728_s8_conv2d_11cn_relu
+  - dl_tie728_s8_conv2d_33cn
+  - dl_tie728_s8_conv2d_33cn_prelu
+  - dl_tie728_s8_conv2d_33cn_relu
+  - dl_tie728_s8_conv2d_hwcn
+  - dl_tie728_s8_conv2d_hwcn_prelu
+  - dl_tie728_s8_conv2d_hwcn_relu
+  - dl_tie728_s8_depthwise_conv2d_33c1
+  - dl_tie728_s8_depthwise_conv2d_33c1_prelu
+  - dl_tie728_s8_depthwise_conv2d_33c1_relu
+  - dl_tie728_s8_depthwise_conv2d_hwc1
+  - dl_tie728_s8_depthwise_conv2d_hwc1_prelu
+  - dl_tie728_s8_depthwise_conv2d_hwc1_relu
+  - dl_tie728_s8_unaligned_conv2d_11cn
+  - dl_tie728_s8_unaligned_conv2d_33cn
+  - dl_tie728_s8_unaligned_conv2d_hwcn
+  - dl_tie728_s8_unaligned_depthwise_conv2d_33c1
+  - dl_tie728_s8_unaligned_depthwise_conv2d_hwc1

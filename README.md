@@ -51,6 +51,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 12 | [talk](examples/stackchan/12-talk) | Talk with the robot through OpenAI's GPT-Live, full duplex: speaker and both microphones at once, and esp-sr's echo canceller on both microphones (40 to 58 dB of echo removed). It hands searches to `gpt-6-luna`. The API key stays in a Cloudflare Worker | ✅ (no screen or audio in esp-emu) |
 | 13 | [home](examples/stackchan/13-home) | 12's talk plus the plugs on the home network (Tuya 3.3 and 3.4, no cloud): a Home screen on the left eye, switch them by voice, and `/home` on the web | ✅ (no screen or audio; it reads the real plugs through the emulator's network) |
 | 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room (36 dB gain, 90 Hz high-pass) and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The face turns orange if the uploads fall behind. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
+| 15 | [follow](examples/stackchan/15-follow) | 14 plus 11's face tracking, by turns: the head follows your face while nobody talks, and for a talk or a recording the camera, the face model and the servos stop. The echo canceller works on one microphone, so it all fits in internal RAM. The speaker is louder, with less microphone gain | ✅ (no screen, camera, servos or audio in esp-emu) |
 
 ### BALA2 Fire
 
@@ -77,7 +78,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 
 | Folder | What it is |
 | --- | --- |
-| [workers/talk-key](workers/talk-key) | The robot's bridge to GPT-Live, for 12-talk and 13-home. The OpenAI key stays in the Worker. |
+| [workers/talk-key](workers/talk-key) | The robot's bridge to GPT-Live, for 12-talk to 15-follow. The OpenAI key stays in the Worker. |
 | [workers/rec](workers/rec) | The robot's recordings (14-record) in R2, in the EU, deleted after 30 days. |
 | [tools/transcribe](tools/transcribe) | Speech to text and who spoke when on a Mac, in Python (mlx-whisper, pyannote), with benchmarks on public Spanish data. |
 | [tools/scribe](tools/scribe) | A native Mac app for the same job, in Swift (WhisperKit, FluidAudio). It lists the robot's recordings in R2. |
