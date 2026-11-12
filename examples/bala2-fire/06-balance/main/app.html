@@ -38,13 +38,20 @@ button:active { filter:brightness(.85); }
        font-variant-numeric:tabular-nums; }
 input[type=range] { width:100%; height:44px; margin:6px 0 10px; }
 .hint { font-size:13px; color:var(--dim); margin:8px 0 0; }
-dl { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; margin:0; }
+dl { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:6px 14px; margin:0; }
 dt { color:var(--dim); }
-dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+dt { min-width:0; }
+dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+dd.long { white-space:normal; overflow-wrap:anywhere; max-width:55vw; }
 .keys { display:flex; gap:10px; }
 .keys span { flex:1; text-align:center; padding:10px 0; border:1px solid var(--line);
              border-radius:10px; font-weight:600; color:var(--dim); }
 .keys span.on { background:var(--ok); border-color:var(--ok); color:#fff; }
+.vars { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 12px; }
+.vars label { display:flex; align-items:center; gap:8px; color:var(--dim); min-width:0; }
+.vars input { flex:1; min-width:0; width:0; font:inherit; font-variant-numeric:tabular-nums; text-align:right;
+              color:var(--text); background:var(--key); border:1px solid var(--line);
+              border-radius:8px; padding:8px; }
 ul { margin:0; padding-left:20px; color:var(--dim); }
 </style>
 
@@ -81,6 +88,19 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 </section>
 
 <section>
+  <h2>Screen</h2>
+  <div class="val" id="bl">–</div>
+  <input id="light" type="range" min="0" max="100" step="5" value="20">
+  <p class="hint">A dim screen saves battery. It goes back to 20% at each start.</p>
+</section>
+
+<section>
+  <h2>Tuning</h2>
+  <div id="vars" class="vars"></div>
+  <p class="hint">Every number the firmware lets you change. Type a value and press Enter. The robot keeps it inside its range, and it is back to the start value after a restart.</p>
+</section>
+
+<section>
   <h2>Balance</h2>
   <dl>
     <dt>Tilt rate</dt><dd id="rate">–</dd>
@@ -96,8 +116,8 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 <section>
   <h2>Motion sensor (MPU6886)</h2>
   <dl>
-    <dt>Acceleration x, y, z</dt><dd id="acc">–</dd>
-    <dt>Rotation x, y, z</dt><dd id="gyro">–</dd>
+    <dt>Acceleration x, y, z (g)</dt><dd id="acc">–</dd>
+    <dt>Rotation x, y, z (°/s)</dt><dd id="gyro">–</dd>
     <dt>Chip temperature</dt><dd id="temp">–</dd>
   </dl>
   <p class="hint">Raw values, before the offsets the robot measures at the start.</p>
@@ -120,13 +140,14 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 <section>
   <h2>Link and system</h2>
   <dl>
-    <dt>Network</dt><dd id="net">–</dd>
+    <dt>Network</dt><dd id="net" class="long">–</dd>
     <dt>Address</dt><dd id="ip">–</dd>
     <dt>Signal</dt><dd id="rssi">–</dd>
     <dt>Firmware</dt><dd id="fw">–</dd>
     <dt>Running from</dt><dd id="slot">–</dd>
     <dt>On for</dt><dd id="up">–</dd>
     <dt>Free memory</dt><dd id="heap">–</dd>
+    <dt>Lowest free memory</dt><dd id="heapmin">–</dd>
   </dl>
 </section>
 
@@ -145,7 +166,7 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 
 <script>
 const $ = id => document.getElementById(id);
-let bp = null, dragging = false, misses = 0;
+let bp = null, dragging = false, dimming = false, misses = 0;
 
 function send(line) {
   fetch('/cmd', {method: 'POST', headers: {'X-Bala2': '1'}, body: line}).catch(() => {});
@@ -159,14 +180,33 @@ function show(s) {
   $('tilt').textContent = s.tilt.toFixed(1) + '°';
   $('speed').textContent = s.speed.toFixed(2) + ' m/s';
   $('bat').textContent = s.battery < 0 ? '?' : s.battery + '%' + (s.charging ? ' ⚡' : '');
-  bp = s.bp;
+  bp = s.vars.bp;
   $('bp').textContent = bp.toFixed(2) + '°';
-  const pct = Math.round((s.servo - 1500) / 10);
+  const pct = Math.round((s.vars.servo - 1500) / 10);
   $('servo').textContent = pct === 0 ? 'stopped' : (pct > 0 ? '+' : '') + pct + '%';
   if (!dragging) $('spin').value = pct;
+  if (!dimming) { $('bl').textContent = s.vars.bl + '%'; $('light').value = s.vars.bl; }
+
+  // One box per variable. They are made once, from the names the robot sends.
+  const box = $('vars');
+  for (const [name, value] of Object.entries(s.vars)) {
+    let input = box.querySelector('[name="' + name + '"]');
+    if (!input) {
+      const label = document.createElement('label');
+      label.textContent = name;
+      input = document.createElement('input');
+      input.name = name;
+      input.type = 'number';
+      input.step = 'any';
+      input.onchange = () => { send(name + ' ' + input.value); input.blur(); };
+      label.appendChild(input);
+      box.appendChild(label);
+    }
+    if (document.activeElement !== input) input.value = value;
+  }
 
   const set = (id, text) => { $(id).textContent = text; };
-  const three = (v, digits, unit) => v.map(n => n.toFixed(digits)).join('  ') + ' ' + unit;
+  const three = (v, digits) => v.map(n => n.toFixed(digits)).join('  ');
   set('rate', s.rate.toFixed(1) + ' °/s');
   set('setpoint', s.setpoint.toFixed(2) + '°');
   set('saved', s.saved_bp === null ? 'none yet' : s.saved_bp.toFixed(2) + '°');
@@ -174,8 +214,8 @@ function show(s) {
   set('pos', (s.pos * 100).toFixed(1) + ' cm');
   set('heading', s.heading.toFixed(1) + '°');
   set('yaw', s.yaw.toFixed(1) + ' °/s');
-  set('acc', three(s.acc, 2, 'g'));
-  set('gyro', three(s.gyro, 1, '°/s'));
+  set('acc', three(s.acc, 2));
+  set('gyro', three(s.gyro, 1));
   set('temp', s.temp.toFixed(1) + ' °C');
   set('encl', s.enc[0] + ' counts');
   set('encr', s.enc[1] + ' counts');
@@ -188,7 +228,8 @@ function show(s) {
   set('slot', s.slot);
   const h = Math.floor(s.up / 3600), m = Math.floor(s.up / 60) % 60, sec = s.up % 60;
   set('up', (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + sec + ' s');
-  set('heap', Math.round(s.heap / 1024) + ' KB (lowest ' + Math.round(s.heap_min / 1024) + ' KB)');
+  set('heap', Math.round(s.heap / 1024) + ' KB');
+  set('heapmin', Math.round(s.heap_min / 1024) + ' KB');
 }
 
 async function poll() {
@@ -207,6 +248,8 @@ $('stop').onclick = () => send('stop');
 $('bpdn').onclick = () => bp !== null && send('bp ' + (bp - 0.25).toFixed(2));
 $('bpup').onclick = () => bp !== null && send('bp ' + (bp + 0.25).toFixed(2));
 $('servostop').onclick = () => send('servo 1500');
+$('light').oninput = e => { dimming = true; $('bl').textContent = e.target.value + '%'; };
+$('light').onchange = e => { dimming = false; send('bl ' + e.target.value); };
 $('spin').oninput = e => { dragging = true; $('servo').textContent = e.target.value + '%'; };
 $('spin').onchange = e => { dragging = false; send('servo ' + (1500 + 10 * e.target.value)); };
 poll();

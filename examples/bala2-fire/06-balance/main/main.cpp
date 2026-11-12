@@ -68,8 +68,8 @@
 #include "esp_timer.h"
 #include "nvs.h"
 #include <M5GFX.h>
-#include "link.h"
-#include "rec.h"
+#include "bala2_link.h"
+#include "bala2_mon.h"
 
 static const char *TAG = "balance";
 
@@ -180,6 +180,11 @@ static struct {
     volatile int32_t enc_l, enc_r;
     volatile uint32_t i2c_errors; // failed sensor reads since boot
 } raw;
+// Screen backlight in percent. 20 is easy to read indoors, and the light is
+// one of the larger loads when the motors rest. A command stores the value
+// and the main task applies it: the display is not safe to use from two tasks.
+#define BACKLIGHT_PCT 20
+static volatile int backlight = BACKLIGHT_PCT;
 static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
 static M5GFX display;
@@ -295,8 +300,21 @@ static bool hw_init(void)
     i2c_master_bus_handle_t bus;
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &bus));
 
-    if (i2c_master_probe(bus, BASE_ADDR, 50) != ESP_OK ||
-        i2c_master_probe(bus, MPU6886_ADDR, 50) != ESP_OK) {
+    // Look for the base and the IMU up to 5 times. A restart (an update, a
+    // watchdog) can cut an I2C transfer in two. The chip that was answering
+    // then holds the data line, and the first probe fails. The bus reset
+    // clocks it free. Without this the robot once started as "sim", with no
+    // Wi-Fi, after an update (2026-11-12).
+    bool found = false;
+    for (int i = 0; i < 5 && !found; i++) {
+        if (i > 0) {
+            i2c_master_bus_reset(bus);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        found = i2c_master_probe(bus, BASE_ADDR, 50) == ESP_OK &&
+                i2c_master_probe(bus, MPU6886_ADDR, 50) == ESP_OK;
+    }
+    if (!found) {
         return false;
     }
     i2c_device_config_t dev = {};
@@ -664,7 +682,7 @@ static void control_task(void *arg)
                     if (fall_request) {
                         // Fall test: record 4 s at 200 Hz from now; let go.
                         fall_request = false;
-                        rec_start(4 * LOOP_HZ);
+                        mon_rec_start(4 * LOOP_HZ);
                         st.state = ST_FALL;
                         st.reason = "fall test: let go";
                         ESP_LOGI(TAG, "fall test");
@@ -771,7 +789,7 @@ static void control_task(void *arg)
                 const float u = clampf(pwm_for(clampf(-3.0f * x, 0.1f)), 200);
                 st.u = u;
                 set_speed((int16_t)u);
-                if (fabsf(tilt) > 40 || !rec_active() || stop_request) {
+                if (fabsf(tilt) > 40 || !mon_rec_active() || stop_request) {
                     stop("fall test done");
                 }
                 break;
@@ -788,12 +806,9 @@ static void control_task(void *arg)
             servo_sent = want;
         }
 
-        // 200 Hz recorder (rec.h): every tick while it records.
-        if (rec_active()) {
-            const rec_sample_t s = {
-                (uint32_t)(now / 1000), tilt, rate, acc, st.position, speed, st.u};
-            rec_add(&s);
-        }
+        // Fast samples for bala2_mon. It takes them only while someone asked.
+        const float sample[MON_REC_COLS] = {tilt, rate, acc, st.position, speed, st.u};
+        mon_rec_add((uint32_t)(now / 1000), sample);
     }
 }
 
@@ -838,32 +853,11 @@ static void sim_script(int64_t ms)
     }
 }
 
-// Print a line on the serial port and send it over Wi-Fi.
-static void say(const char *fmt, ...)
-{
-    char line[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(line, sizeof(line), fmt, ap);
-    va_end(ap);
-    fputs(line, stdout);
-    link_send(line);
-}
-
-static void say_gains(void)
-{
-    say("gains kp %.2f ki %.1f kd %.3f rf %.2f kpos %.1f kvel %.1f kt %.3f "
-        "off %.0f ramp %.3f kh %.2f vmax %.2f max %.0f gw %.3f kw %.1f servo %d\n",
-        gain.kp, gain.ki, gain.kd, gain.rf, gain.kpos, gain.kvel, gain.kt,
-        gain.off, gain.ramp, gain.kh, gain.vmax, gain.max, gain.gw, gain.kw, (int)servo_us);
-}
-
-// Change a gain while it runs, from the serial monitor or over Wi-Fi:
-//     kp 3.5  ki 10  kd 0.07  rf 0.45  kpos 18  kvel 8  kt -0.05  off 31
-//     ramp 0.3  kh 0.1
-//     vmax 0.4  max 500  gw 0.995  kw 0  ?  stop
-// "hb" (heartbeat) only keeps the Wi-Fi link alive. Each change is printed, so
-// the log shows which values were used.
+// Commands, from the serial monitor or over Wi-Fi. The numbers the robot
+// shows and takes ("kp 3.5", "bp 9", "servo 1700", "?" for the list) are in
+// the table app_main() gives to bala2_mon. Each change is answered with the
+// whole list, so the log shows which values were used. "hb" (heartbeat) only
+// keeps the Wi-Fi link alive.
 static void handle_command(const char *line)
 {
     char name[8];
@@ -875,56 +869,17 @@ static void handle_command(const char *line)
     if (!strcmp(name, "stop")) {
         stop_request = true;
         servo_us = SERVO_STOP_US;
-        return;
-    }
-    if (!strcmp(name, "fall")) {
+    } else if (!strcmp(name, "fall")) {
         fall_request = true;
-        say("fall test: lay it down, then hold it upright and still, and let go\n");
-        return;
+        mon_say("fall test: lay it down, then hold it upright and still, and let go\n");
+    } else if (n == 2 && !strcmp(name, "rec")) {
+        // Fast samples, sent as they come. Up to 60 s: the link must keep up.
+        const float seconds = fminf(fmaxf(v, 0), 60);
+        mon_rec_start((int)(seconds * LOOP_HZ));
+        mon_say("recording %.1f s at %d Hz\n", seconds, LOOP_HZ);
+    } else if (!mon_command(line)) {
+        mon_say("unknown command: %s\n", line);
     }
-    if (n == 2 && !strcmp(name, "rec")) {
-        rec_start((int)(v * LOOP_HZ));
-        say("recording %.1f s at %d Hz\n", v, LOOP_HZ);
-        return;
-    }
-    if (n == 2 && !strcmp(name, "kp")) {
-        gain.kp = v;
-    } else if (n == 2 && !strcmp(name, "ki")) {
-        gain.ki = v;
-    } else if (n == 2 && !strcmp(name, "kd")) {
-        gain.kd = v;
-    } else if (n == 2 && !strcmp(name, "kt")) {
-        gain.kt = v;
-    } else if (n == 2 && !strcmp(name, "kpos")) {
-        gain.kpos = v;
-    } else if (n == 2 && !strcmp(name, "kvel")) {
-        gain.kvel = v;
-    } else if (n == 2 && !strcmp(name, "off")) {
-        gain.off = fminf(fmaxf(v, 0), 60);
-    } else if (n == 2 && !strcmp(name, "kh")) {
-        gain.kh = v;
-    } else if (n == 2 && !strcmp(name, "rf")) {
-        gain.rf = fminf(fmaxf(v, 0.05f), 1);
-    } else if (n == 2 && !strcmp(name, "ramp")) {
-        gain.ramp = fminf(fmaxf(v, 0.001f), 0.5f);
-    } else if (n == 2 && !strcmp(name, "vmax")) {
-        gain.vmax = fminf(fmaxf(v, 0), HARD_MAX_V);
-    } else if (n == 2 && !strcmp(name, "gw")) {
-        gain.gw = fminf(fmaxf(v, 0.9f), 0.999f);
-    } else if (n == 2 && !strcmp(name, "servo")) {
-        servo_us = (int)fminf(fmaxf(v, SERVO_MIN_US), SERVO_MAX_US);
-    } else if (n == 2 && !strcmp(name, "bp")) {
-        // Balance point in degrees, the same value buttons A and C move.
-        setpoint_trim = clampf(v, BP_LIMIT);
-    } else if (n == 2 && !strcmp(name, "kw")) {
-        gain.kw = fminf(fmaxf(v, 0), 100);
-    } else if (n == 2 && !strcmp(name, "max")) {
-        gain.max = fminf(fmaxf(v, 0), HARD_MAX_PWM);
-    } else if (strcmp(name, "?")) {
-        say("unknown command: %s\n", line);
-        return;
-    }
-    say_gains();
 }
 
 static void read_serial(void)
@@ -968,18 +923,21 @@ static void state_json(char *buf, size_t size)
             *c = '?';
         }
     }
+    static char vars[400]; // one server task, so one call at a time
+    mon_json(vars, sizeof(vars));
     // MPU6886: 4096 counts per g at +-8 g, and 326.8 counts per degree C.
     snprintf(buf, size,
-             "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,\"bp\":%.2f,"
-             "\"battery\":%d,\"charging\":%s,\"servo\":%d,"
+             "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
+             "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
              "\"yaw\":%.1f,\"turn\":%.3f,\"saved_bp\":%s,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
              "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\"}",
-             names[st.state], st.reason, st.tilt, st.speed, setpoint_trim, st.battery,
-             st.charging ? "true" : "false", (int)servo_us, st.rate, st.position, st.u,
+             names[st.state], st.reason, st.tilt, st.speed, st.battery,
+             st.charging ? "true" : "false", vars, st.rate,
+             st.position, st.u,
              st.setpoint, st.heading, st.yaw_rate, st.turn, saved_text, raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
@@ -1021,9 +979,32 @@ static void load_balance_point(void)
 
 extern "C" void app_main(void)
 {
+    // Before anything else: a new app that keeps failing gives way to the old one.
+    link_guard();
+    // What a computer can see and change while the robot runs, with the range
+    // each value is kept in. Start values and what they do: see `gain` above.
+    mon_float("kp", &gain.kp, 0, 20);
+    mon_float("ki", &gain.ki, 0, 100);
+    mon_float("kd", &gain.kd, 0, 1);
+    mon_float("rf", &gain.rf, 0.05f, 1);
+    mon_float("kpos", &gain.kpos, 0, 100);
+    mon_float("kvel", &gain.kvel, 0, 50);
+    mon_float("kt", &gain.kt, -1, 1);
+    mon_float("off", &gain.off, 0, 60);
+    mon_float("ramp", &gain.ramp, 0.001f, 0.5f);
+    mon_float("kh", &gain.kh, 0, 5);
+    mon_float("vmax", &gain.vmax, 0, HARD_MAX_V);
+    mon_float("max", &gain.max, 0, HARD_MAX_PWM);
+    mon_float("gw", &gain.gw, 0.9f, 0.999f);
+    mon_float("kw", &gain.kw, 0, 100);
+    mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
+    mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
+    mon_int("bl", &backlight, 0, 100); // screen backlight, percent
+    mon_rec_columns("tilt,rate,acc_tilt,x,v,u");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
     display.init();
+    display.setBrightness(BACKLIGHT_PCT * 255 / 100);
     // The control loop runs alone on core 1, so the screen and Wi-Fi cannot
     // slow it down. It sets up the I2C bus and stops the motors first.
     xTaskCreatePinnedToCore(control_task, "control", 4096, NULL, 20, NULL, 1);
@@ -1043,8 +1024,13 @@ extern "C" void app_main(void)
         display.drawString("BALA2 balance (sim)", 8, 6);
     } else {
         // No Wi-Fi in the emulator.
-        const link_callbacks_t cb = {handle_command, can_update, state_json};
-        link_start(&cb);
+        extern const char page_start[] asm("_binary_app_html_start");
+        extern const char page_end[] asm("_binary_app_html_end");
+        const link_callbacks_t cb = {handle_command, can_update, state_json, page_start,
+                                     (size_t)(page_end - page_start - 1)}; // no final NUL
+        if (link_start(&cb) != ESP_OK) {
+            ESP_LOGE(TAG, "no Wi-Fi link: the robot works, but only the buttons control it");
+        }
         load_balance_point(); // after link_start: it opens the flash storage
         printf("Wi-Fi %s %s, key %s, robot at %s (%s), UDP port %d\n",
                link_on_home() ? "home network" : "own network", link_ssid(), link_password(),
@@ -1057,10 +1043,10 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(gpio_config(&cfg));
 
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
-    say_gains();
-    say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
+    mon_list();
+    mon_say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
         "battery,charging\n");
-    int last_a = 1, last_b = 1, last_c = 1;
+    int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
     for (int n = 0;; n++) {
         const int64_t ms = esp_timer_get_time() / 1000;
         read_serial();
@@ -1083,20 +1069,21 @@ extern "C" void app_main(void)
                 learned_bp = NAN;
                 setpoint_trim = clampf(found, BP_LIMIT);
                 save_balance_point(setpoint_trim);
-                say("balance point %.2f saved\n", setpoint_trim);
+                mon_say("balance point %.2f saved\n", setpoint_trim);
             }
         }
-        // Send the 200 Hz recording, a few lines at a time.
-        char rline[96];
-        for (int k = 0; k < 8 && rec_next_line(rline, sizeof(rline)); k++) {
-            say("%s", rline);
-        }
+        mon_rec_send(); // the fast samples that are waiting, in one packet
         { // 50 Hz log
-            say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d\n", ms,
+            mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d\n", ms,
                 (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
                 st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging);
         }
         if (n % 10 == 0) { // 5 Hz screen
+            const int light = backlight;
+            if (light != backlight_set) {
+                backlight_set = light;
+                display.setBrightness(light * 255 / 100);
+            }
             const uint32_t color = st.state == ST_BALANCE ? TFT_GREEN
                                    : st.state == ST_WAIT  ? TFT_YELLOW
                                                           : TFT_RED;
@@ -1106,7 +1093,7 @@ extern "C" void app_main(void)
             screen_line(80, TFT_WHITE, "tilt     %+7.2f deg", st.tilt);
             screen_line(98, TFT_WHITE, "position %+7.3f m", st.position);
             screen_line(116, TFT_WHITE, "motor    %+5.0f / %.0f", st.u, gain.max);
-            screen_line(134, TFT_DARKGREY, "balance point %+.2f deg (A -, C +)", st.setpoint);
+            screen_line(134, TFT_DARKGREY, "balance point %+.2f deg (auto)", st.setpoint);
             screen_line(152, st.battery >= 0 && st.battery < MIN_BATTERY ? TFT_RED : TFT_DARKGREY,
                         "battery %d%%%s", st.battery, st.charging ? ", charging" : "");
             screen_line(170, TFT_DARKGREY, "B: stop");

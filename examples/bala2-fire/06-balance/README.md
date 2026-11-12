@@ -34,7 +34,7 @@ SSID_02=second-network
 PWD_SSID_02=its-password
 ```
 
-`scripts/build.sh` passes these lines to the build, and `main/Kconfig.projbuild` reads them. The passwords end up in `sdkconfig`, `build/` and `out/`, which git ignores. ESP-IDF reads them only when `sdkconfig` is made, so delete `sdkconfig` after you change the file. Without `WIFI_ENV` (as in CI), the robot always makes its own network.
+`scripts/build.sh` passes these lines to the build, and the [bala2_link](../../../components/bala2_link) component reads them. The passwords end up in `sdkconfig`, `build/` and `out/`, which git ignores. ESP-IDF reads them only when `sdkconfig` is made, so delete `sdkconfig` after you change the file. Without `WIFI_ENV` (as in CI), the robot always makes its own network.
 
 Output: `out/bala2-fire-06-balance-esp32.bin` (merged image for the first flash and the emulator) and `examples/bala2-fire/06-balance/build/balance.bin` (app image for updates over Wi-Fi).
 
@@ -60,11 +60,15 @@ python3 examples/bala2-fire/06-balance/tools/bala2_link.py --log run.csv
 
 The tool finds the robot as `bala2.local`, or at 192.168.4.1 (`--host` picks another address). It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, about 40 to 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot balances and hears nothing for 1 second, it stops. So closing the tool stops the robot.
 
+Wi-Fi, the updates and the web server are not in this example. They are in the shared component [bala2_link](../../../components/bala2_link), so every BALA2 firmware can have them. The numbers you can change, and the 200 Hz samples, come from a second one, [bala2_mon](../../../components/bala2_mon). A new firmware is on trial after an update: if it fails three starts, the robot goes back to the one before (see the component's README).
+
 **From a phone.** Open `http://bala2.local/` (or the address on the robot's screen) in the phone's browser, on the same network. The page shows the state, the tilt, the speed and the battery, and it has:
 
 - a big **STOP** button (it also stops the servo),
 - **−** and **+** to move the balance point by 0.25 degrees,
-- a slider for the servo, from -100% to +100%, and a button to stop it.
+- a slider for the servo, from -100% to +100%, and a button to stop it,
+- a box for every number you can change (the Tuning card), filled from the list the robot sends,
+- a slider for the screen's backlight. It starts at 20%, which is easy to read indoors and saves battery. `bl 50` sets it over UDP. The value is not saved.
 
 Under the controls it shows what the robot reads, twice a second:
 
@@ -142,7 +146,7 @@ Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And f
 
 - `bp 9.4`: set the balance point in degrees (from -15 to 15). The telemetry shows it as the setpoint while the robot waits.
 - `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
-- `rec 3`: record 3 s (at most 5) of every control tick, at 200 Hz, then send it as `rec,...` lines. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
+- `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines. They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
 
 The gains came from a search on a simulated robot. We kept the sets that worked for many guesses of the center of mass height (5 to 16 cm), motor lag (30 to 150 ms) and extra delay (0 to 40 ms). Then we tuned them on the robot.
@@ -277,6 +281,14 @@ Test 25, the same day: Bluetooth. The ESP32 in the Fire has it, but this firmwar
 
 Test 27, the same day: start from the hand's angle. Servo on the back, cable out, no buttons. Two starts, held at 8.4 and 8.2 degrees. The mean tilt later in each run was 8.1 and 7.9, so the hand was 0.3 degrees off. The robot moved 0.5 cm and 4.3 cm in the first 3 s (8 cm in test 24, with a 4 degree error), and balanced for 177 s and 46 s. After the first run it saved 7.59 as the learned point.
 
+Test 28, the same day: the link code moved to the `bala2_link` component. Four updates over Wi-Fi with it, and the page, the UDP link and the saved balance point all worked (after a restart the robot started with the saved 7.59). Three things came up:
+
+- **A wrong key restarted the robot.** The first version left the connection open after a 401, the server read the 1 MB body as new requests, and the watchdog restarted the robot. Now the connection closes at once. A wrong key, no key and a bad image give 401, 401 and 400, with no restart.
+- **One start as "sim", with no Wi-Fi.** After one update the robot did not find the base or the IMU and started the simulated robot, which has no Wi-Fi. A reset fixed it. A restart can cut an I2C transfer in two and leave the data line held. The start now tries 5 times, with a bus reset between tries.
+- **Smaller.** The app went from 1,083,456 to 1,053,616 bytes: IPv6 is off, and only the components this firmware uses are built.
+
+Test 29, the same day: the commands and the 200 Hz samples moved to the `bala2_mon` component. A firmware now names its numbers once, and the commands, the list, the state for the page and the boxes on the page come from that. The samples no longer wait in memory to be sent later: they go out as they come. Robot lying still, home network: a command and its answer took 13 ms (median), 86 ms at worst. A 3 s take gave 600 of 600 samples, none lost, each about 18 ms behind (median), 74 ms at worst. Every number now has a range: `kp 999` gives 20.
+
 Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -339,6 +351,7 @@ sim: done, balancing
 
 ## Try next
 
+- Test a real rollback: send an app that fails on purpose and check that the third start brings the old app back. Have the USB cable at hand.
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a bad hold (2 to 5 degrees off), to see how much error the start takes.
 - Find why the robot restarts when the charging cable goes in or out.

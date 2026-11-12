@@ -1,0 +1,3 @@
+dependencies:
+  # bala2.local on the network (same version as components/tr_ota).
+  espressif/mdns: "^1.14.1"

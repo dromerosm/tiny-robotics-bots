@@ -7,4 +7,8 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=1
 # 16 MB flash and two app slots, for updates over Wi-Fi.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../components/bala2_link/partitions.csv"
+# IPv4 only: nothing here uses IPv6, and the app is about 30 KB smaller.
+CONFIG_LWIP_IPV6=n
+# mDNS without its console commands: nobody types them here.
+CONFIG_MDNS_ENABLE_CONSOLE_CLI=n

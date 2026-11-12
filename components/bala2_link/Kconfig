@@ -1,4 +1,4 @@
-menu "06-balance home Wi-Fi"
+menu "bala2_link home Wi-Fi"
     # The defaults come from environment variables, so no password is in git.
     # scripts/build.sh passes them from the file in WIFI_ENV (see README.md).
     # With no SSID set (as in CI), the robot makes its own network.
