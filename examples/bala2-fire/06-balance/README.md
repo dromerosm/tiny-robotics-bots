@@ -17,7 +17,7 @@ Keep BALA2 upright and move as little as possible. It starts from M5Stack's bala
 - A PID on the tilt, plus an outer position loop
 - How to make a motor dead band smooth, so the robot does not shake around zero
 - Safety for a robot that moves: limits, a start check, stop rules, a watchdog, and a link check
-- Wi-Fi with ESP-IDF: join the strongest home network or make its own, mDNS (`bala2.local`), a UDP link and over-the-air updates (OTA) with a token
+- Wi-Fi with ESP-IDF: join the strongest home network or make its own, mDNS (`bala2.local`), a UDP link, a page to control the robot from a phone, and over-the-air updates (OTA) with a token
 
 ## Build
 
@@ -60,6 +60,24 @@ python3 examples/bala2-fire/06-balance/tools/bala2_link.py --log run.csv
 
 The tool finds the robot as `bala2.local`, or at 192.168.4.1 (`--host` picks another address). It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, about 40 to 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot balances and hears nothing for 1 second, it stops. So closing the tool stops the robot.
 
+**From a phone.** Open `http://bala2.local/` (or the address on the robot's screen) in the phone's browser, on the same network. The page shows the state, the tilt, the speed and the battery, and it has:
+
+- a big **STOP** button (it also stops the servo),
+- **−** and **+** to move the balance point by 0.25 degrees,
+- a slider for the servo, from -100% to +100%, and a button to stop it.
+
+Under the controls it shows what the robot reads, twice a second:
+
+- **Balance:** tilt rate, asked tilt, the balance point saved in flash, motor command, position, heading and turn rate.
+- **Motion sensor (MPU6886):** acceleration and rotation on the three axes, raw, and the chip's temperature.
+- **Wheels:** both encoder counts, and how many sensor reads failed since the start.
+- **Buttons:** A, B and C light up while you press them.
+- **Link and system:** network, address, signal, firmware build, the slot it runs from, time on, and free memory.
+
+The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the LED bars, the microSD card, Bluetooth, Grove port A and the servo headers S1 to S3.
+
+The page is one file, `main/app.html`, built into the firmware. It asks the robot for its state twice a second (`GET /state`, JSON) and sends the same commands as the tool (`POST /cmd`). Unlike the tool, it has no heartbeat: if you close the page, the robot and the servo go on as they were. So stop them first. `GET /info` says which firmware is running. The page's icon is the same file as on StackChan's page (`components/tr_ota/favicon.svg`).
+
 **Updates over Wi-Fi.** With the robot lying down (it refuses while it balances), put the key from its screen in `BALA2_TOKEN`, not on the command line:
 
 ```bash
@@ -96,7 +114,7 @@ PWM      = (v_cmd -+ turn) / 0.00118 + off * min(1, |v| / ramp)   left, right
 - **Position loop (`kpos`, `kvel`, `kt`).** When the robot is ahead of where it started, or rolls forward, it is asked to lean back a little, so it comes back. The slow `kt` part removes what is left, so it returns to its start point.
 - **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (test 10).
 - **Motor line.** 0.00118 m/s per PWM unit is the slope we measured. `off` (31) jumps the motors' dead band. It grows from 0 over `ramp` m/s, so the gain near 0 stays low.
-- **Balance point.** It starts at -1.5 degrees, not 0. The factory app had -1.5 saved in our unit, and the mean tilt in our own runs was about -1.5 too (test 19). Buttons A and C move it.
+- **Balance point.** It is not 0, and it moves a lot with the load: -1.5 degrees for the bare robot, +9.4 with the servo on the back, and -3.5 to +0.7 with it on top (test 24). So the robot learns it. While it balances, it takes the mean tilt of each 10 s block. A block counts only if the robot stayed under 0.15 m/s in all of it, and the first two blocks of a run do not count. When the run ends, the last good value goes to flash, and the next start uses it. So it needs 30 s or more of calm balance to learn. On the first boot the value is -1.5. Buttons A and C move it, and so do `bp` and the phone page. These changes are not saved, only a learned value is. After you change the load, the saved value is wrong for the first start: move it by hand, let the robot balance for 30 s, and lay it down.
 - **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 in tests 20 and 21, but not in test 22.
 - **Wheel position loop (`kw`).** Off by default. It adds up the command into the place where the wheels should be, and pushes harder while they are behind. It cuts the slow sway but adds to the fast shake (tests 20 and 21).
 - The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz).
@@ -120,8 +138,9 @@ Start values, all can be changed while it runs:
 | `gw` | 0.995 | share per tick | gyro share in the tilt filter (0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s) |
 | `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And three more:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And four more:
 
+- `bp 9.4`: set the balance point in degrees (from -15 to 15). The telemetry shows it as the setpoint while the robot waits.
 - `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
 - `rec 3`: record 3 s (at most 5) of every control tick, at 200 Hz, then send it as `rec,...` lines. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
@@ -246,6 +265,16 @@ A check of the final firmware, started from lying down and left alone, six recor
 
 That run ended after 80 s with one hard push by hand. The tilt jumped 3 degrees in 0.1 s, the command stayed at the speed limit (PWM 455, 0.50 m/s) and the tilt kept growing to 10 degrees. The 0.4 m/s stop ended it 0.4 s later, 19 cm ahead. The old start values failed the same way in test 19, so one push does not tell the two apart. The battery read 25% under load.
 
+Test 24, the same day: the servo moved from the base to the body.
+
+- **Servo on the back.** The robot ran away to the servo's side and fell in 1 to 2 s, every time. We tried balance points from -1.75 to +13.5 degrees, and none helped. We do not know the cause. The battery read 0% in most of these runs, and in some the charging cable was plugged in, so it may not be the servo alone.
+- **The charging cable holds the robot up.** With the cable plugged in, the robot stood at about 6.5 degrees with the motors doing nothing. It looks like a balance, but the wheels moved less than 1 mm in a minute and the command stayed under the dead band. Do not test with the cable in.
+- **Servo on top, cable out.** The robot balanced. It started at +1.5 degrees, the trim brought it to -3.2 in about 20 s, and the mean tilt over the last minute was -3.4 to -3.5. Shake 15.6 deg/s, travel 3 cm. The battery read 0% here too, so the shake needs a new check on a full battery. In the next run, 20 minutes later, the point was +0.7. We do not know what changed (the servo was not fixed in place, or the cable still hung from the robot).
+- **Servo on the back again, cable out.** The robot balanced, with a mean tilt of 9.4 to 9.6 degrees over 50 s and shake of 12.8 to 16.9 deg/s. So the servo on the back was not the problem in the first runs. The cable and the battery were, and the start window too: the robot only starts within 3 degrees of its balance point, and that point was far off.
+- **The robot restarts when the charging cable goes in or out.** It happened every time. The balance point then went back to its start value. This is why the robot now learns the point and saves it.
+
+Test 25, the same day: Bluetooth. The ESP32 in the Fire has it, but this firmware does not use it. A test build with NimBLE (224 KB larger) scanned for 5 s with Wi-Fi on and found 33 devices (131 adverts, best signal -38 dBm), then advertised as `BALA2` with no error. Wi-Fi telemetry went on during the scan. We did not check from a phone that the advert is seen. The test code is not in the repo.
+
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
 What we learned:
@@ -306,6 +335,8 @@ sim: done, balancing
 
 ## Try next
 
+- Check that the learned balance point works: balance for 40 s, lay the robot down, restart it, and stand it up again. Not tested on the robot yet.
+- Find why the robot restarts when the charging cable goes in or out.
 - Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
 - The slow sway (about 1 degree, under 2 Hz) is most of the robot's movement, and it comes from the motors' dead band. `kw` cuts it but adds shake (tests 20 to 22). Find a way to get one without the other.

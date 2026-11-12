@@ -1,10 +1,11 @@
 // Wireless link: the robot joins the strongest home Wi-Fi network, or makes
 // its own (access point). It sends telemetry over UDP, takes commands over
-// UDP, and takes new firmware over HTTP (OTA). It is bala2.local (mDNS). See
-// link.cpp.
+// UDP, and takes new firmware over HTTP (OTA). It also serves a page to
+// control the robot from a phone. It is bala2.local (mDNS). See link.cpp.
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #define LINK_UDP_PORT 4210
 #define LINK_IP       "192.168.4.1" // on the robot's own network
@@ -15,6 +16,8 @@ typedef struct {
     void (*on_command)(const char *line);
     // Asked before an update. Return false to refuse it (the robot balances).
     bool (*can_update)(void);
+    // Write the robot's state as JSON for the phone page (GET /state).
+    void (*state_json)(char *buf, size_t size);
 } link_callbacks_t;
 
 // Join a home network or start the access point, then the UDP link and the
@@ -27,6 +30,8 @@ const char *link_ssid(void);
 const char *link_password(void);
 const char *link_ip(void);
 bool link_on_home(void);
+// Signal of the home network in dBm, or 0 on the robot's own network.
+int link_rssi(void);
 
 // Send one line to the computer that last talked to us (if any).
 void link_send(const char *line);

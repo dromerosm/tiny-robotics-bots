@@ -59,10 +59,14 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "driver/i2c_master.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include <M5GFX.h>
 #include "link.h"
 #include "rec.h"
@@ -135,9 +139,19 @@ static const char *TAG = "balance";
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
 #define LYING_DEG        45.0f
 #define MIN_BATTERY      25    // %, the IP5306 gives 0, 25, 50, 75 or 100
-// Balance point at boot. The factory app had -1.5 saved in our unit, and in
-// our own runs the mean tilt was about -1.5 too (2026-11-12).
+// Balance point at the first boot: -1.5 for the bare robot. The robot then
+// learns its own (see LEARN_ below) and keeps it in flash, because the point
+// moves a lot with the load: +9.4 with the servo on the back, and -3.5 to
+// +0.7 with it on top (2026-11-12). "bp" and buttons A and C move it too.
 #define BALANCE_POINT_DEG -1.5f
+// Learning the balance point: the mean tilt of a 10 s block, if the robot
+// stayed slow in all of it. The first two blocks of a run do not count (the
+// robot is still settling), and a block cut short by the end of the run
+// is thrown away, so a push or a hand does not spoil the value.
+#define LEARN_TICKS     (10 * LOOP_HZ)
+#define LEARN_SKIP      2
+#define LEARN_MAX_SPEED 0.15f // m/s
+#define BP_LIMIT        15.0f // degrees
 
 #define CAL_SAMPLES 1000
 
@@ -153,6 +167,15 @@ typedef struct {
     volatile bool seen_lying;
     const char *volatile reason;
 } status_t;
+
+// The last raw readings, for the phone page only. The control task writes
+// them on each tick; nothing in the control law reads them.
+static struct {
+    volatile int16_t ax, ay, az, temp, gx, gy, gz;
+    volatile int32_t enc_l, enc_r;
+    volatile uint32_t i2c_errors; // failed sensor reads since boot
+} raw;
+static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
 static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
@@ -199,6 +222,9 @@ static volatile bool stop_request;
 static volatile bool fall_request; // next start is a fall test, not a balance
 static volatile bool ready;        // set by the control task after calibration
 static volatile float setpoint_trim = BALANCE_POINT_DEG;
+// Balance point learned in this run, or NAN. The control task sets it; the
+// main task saves it after the run, because a flash write stalls both cores.
+static volatile float learned_bp = NAN;
 // Servo pulse asked for by a command. Only the control task talks to the
 // base, so it sends the value when it changes.
 static volatile int servo_us = SERVO_STOP_US;
@@ -342,6 +368,13 @@ static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
     *acc_tilt = atan2f(ay, sqrtf(ax * ax + az * az)) * RAD_TO_DEG_F;
     *gyro_raw = (int16_t)(b[8] << 8 | b[9]);
     *yaw_raw = (int16_t)(b[12] << 8 | b[13]);
+    raw.ax = ax;
+    raw.ay = ay;
+    raw.az = az;
+    raw.temp = (int16_t)(b[6] << 8 | b[7]);
+    raw.gx = *gyro_raw;
+    raw.gy = (int16_t)(b[10] << 8 | b[11]);
+    raw.gz = *yaw_raw;
     return true;
 }
 
@@ -361,6 +394,8 @@ static bool read_position(float *pos, float *right_ahead)
     }
     const int32_t l = (int32_t)((uint32_t)b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
     const int32_t r = (int32_t)((uint32_t)b[4] << 24 | b[5] << 16 | b[6] << 8 | b[7]);
+    raw.enc_l = l;
+    raw.enc_r = r;
     *pos = -(l + r) * 0.5f * M_PER_COUNT;
     *right_ahead = (l - r) * M_PER_COUNT;
     return true;
@@ -498,6 +533,9 @@ static void control_task(void *arg)
     float acc, g, yaw, pos = 0, ahead = 0;
     read_imu(&acc, &g, &yaw);
     float tilt = acc, speed = 0, last_pos = 0, start_pos = 0, integral = 0, trim = 0, rate_f = 0;
+    float learn_sum = 0;
+    int learn_n = 0, learn_blocks = 0;
+    bool learn_calm = true;
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
     float x_ref = 0;                    // m, where the wheels should be (kw)
     read_position(&last_pos, &ahead);
@@ -522,6 +560,7 @@ static void control_task(void *arg)
             read_battery();
         }
         if (!read_imu(&acc, &g, &yaw) || !read_position(&pos, &ahead)) {
+            raw.i2c_errors = raw.i2c_errors + 1;
             if (++errors >= 3 && (st.state == ST_BALANCE || st.state == ST_FALL)) {
                 stop("I2C error");
             }
@@ -533,6 +572,10 @@ static void control_task(void *arg)
         errors = 0;
         if (st.state != ST_BALANCE) {
             trim = 0; // or the last run's trim would move the start window
+            learn_sum = 0;
+            learn_n = 0;
+            learn_blocks = 0;
+            learn_calm = true;
         }
         const float rate = (g - gyro_offset) / GYRO_LSB_PER_DPS;
         const float yaw_rate = YAW_SIGN * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
@@ -644,6 +687,18 @@ static void control_task(void *arg)
 
                 // The balance point follows a slow drift (kt), up to 5 degrees.
                 trim = clampf(trim + gain.kt * x * DT * RAD_TO_DEG_F, TRIM_LIMIT);
+                learn_sum += tilt;
+                if (fabsf(speed) > LEARN_MAX_SPEED) {
+                    learn_calm = false;
+                }
+                if (++learn_n >= LEARN_TICKS) {
+                    if (learn_calm && ++learn_blocks > LEARN_SKIP) {
+                        learned_bp = learn_sum / learn_n;
+                    }
+                    learn_sum = 0;
+                    learn_n = 0;
+                    learn_calm = true;
+                }
                 // Position loop: when the robot is ahead, or rolls forward, ask
                 // it to lean back a little, so it comes back to where it started.
                 const float outer = clampf(-gain.kpos * x - gain.kvel * speed, OUTER_LIMIT);
@@ -841,6 +896,9 @@ static void handle_command(const char *line)
         gain.gw = fminf(fmaxf(v, 0.9f), 0.999f);
     } else if (n == 2 && !strcmp(name, "servo")) {
         servo_us = (int)fminf(fmaxf(v, SERVO_MIN_US), SERVO_MAX_US);
+    } else if (n == 2 && !strcmp(name, "bp")) {
+        // Balance point in degrees, the same value buttons A and C move.
+        setpoint_trim = clampf(v, BP_LIMIT);
     } else if (n == 2 && !strcmp(name, "kw")) {
         gain.kw = fminf(fmaxf(v, 0), 100);
     } else if (n == 2 && !strcmp(name, "max")) {
@@ -876,6 +934,74 @@ static bool can_update(void)
     return st.state != ST_BALANCE && st.state != ST_FALL;
 }
 
+// For the phone page. The reasons are our own texts, with no quotes in them.
+static void state_json(char *buf, size_t size)
+{
+    static const char *const names[] = {"waiting", "balancing", "stopped", "fall test"};
+    const esp_app_desc_t *app = esp_app_get_description();
+    const float saved = saved_bp;
+    char saved_text[12] = "null";
+    if (!isnan(saved)) {
+        snprintf(saved_text, sizeof(saved_text), "%.2f", saved);
+    }
+    char net[33]; // the network name, without the two characters JSON escapes
+    strlcpy(net, link_ssid(), sizeof(net));
+    for (char *c = net; *c; c++) {
+        if (*c == '"' || *c == '\\') {
+            *c = '?';
+        }
+    }
+    // MPU6886: 4096 counts per g at +-8 g, and 326.8 counts per degree C.
+    snprintf(buf, size,
+             "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,\"bp\":%.2f,"
+             "\"battery\":%d,\"charging\":%s,\"servo\":%d,"
+             "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"saved_bp\":%s,"
+             "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
+             "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
+             "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
+             "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\"}",
+             names[st.state], st.reason, st.tilt, st.speed, setpoint_trim, st.battery,
+             st.charging ? "true" : "false", (int)servo_us, st.rate, st.position, st.u,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, saved_text, raw.ax / 4096.0f,
+             raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
+             raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
+             (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
+             !gpio_get_level(BTN_C), (unsigned long)raw.i2c_errors, net,
+             link_on_home() ? "true" : "false", link_ip(), link_rssi(),
+             esp_timer_get_time() / 1000000, (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)esp_get_minimum_free_heap_size(), app->date, app->time,
+             esp_ota_get_running_partition()->label);
+}
+
+// The learned balance point lives in flash (NVS), in hundredths of a degree.
+static void save_balance_point(float deg)
+{
+    nvs_handle_t nvs;
+    if (nvs_open("balance", NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_i32(nvs, "bp_cdeg", (int32_t)lroundf(deg * 100)) == ESP_OK) {
+        nvs_commit(nvs);
+        saved_bp = deg;
+    }
+    nvs_close(nvs);
+}
+
+static void load_balance_point(void)
+{
+    nvs_handle_t nvs;
+    int32_t cdeg;
+    if (nvs_open("balance", NVS_READONLY, &nvs) != ESP_OK) {
+        return; // nothing saved yet
+    }
+    if (nvs_get_i32(nvs, "bp_cdeg", &cdeg) == ESP_OK) {
+        setpoint_trim = clampf(cdeg / 100.0f, BP_LIMIT);
+        saved_bp = setpoint_trim;
+    }
+    nvs_close(nvs);
+}
+
 extern "C" void app_main(void)
 {
     // The screen first: M5GFX looks at the I2C pins to find out which board
@@ -900,8 +1026,9 @@ extern "C" void app_main(void)
         display.drawString("BALA2 balance (sim)", 8, 6);
     } else {
         // No Wi-Fi in the emulator.
-        const link_callbacks_t cb = {handle_command, can_update};
+        const link_callbacks_t cb = {handle_command, can_update, state_json};
         link_start(&cb);
+        load_balance_point(); // after link_start: it opens the flash storage
         printf("Wi-Fi %s %s, key %s, robot at %s (%s), UDP port %d\n",
                link_on_home() ? "home network" : "own network", link_ssid(), link_password(),
                link_ip(), LINK_HOST, LINK_UDP_PORT);
@@ -932,6 +1059,14 @@ extern "C" void app_main(void)
             }
             if (pressed(BTN_C, &last_c)) {
                 setpoint_trim += 0.25f;
+            }
+            // After a run, start the next one from the point this one found.
+            const float found = learned_bp;
+            if (!isnan(found) && can_update()) {
+                learned_bp = NAN;
+                setpoint_trim = clampf(found, BP_LIMIT);
+                save_balance_point(setpoint_trim);
+                say("balance point %.2f saved\n", setpoint_trim);
             }
         }
         // Send the 200 Hz recording, a few lines at a time.

@@ -83,6 +83,12 @@ bool link_on_home(void)
     return on_home;
 }
 
+int link_rssi(void)
+{
+    wifi_ap_record_t ap;
+    return on_home && esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
+}
+
 bool link_updating(void)
 {
     return updating;
@@ -332,7 +338,56 @@ static esp_err_t update_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// GET /: which firmware is running.
+// GET /: the page to control the robot from a phone (app.html, built in).
+static esp_err_t page_handler(httpd_req_t *req)
+{
+    extern const char page_start[] asm("_binary_app_html_start");
+    extern const char page_end[] asm("_binary_app_html_end");
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, page_start, page_end - page_start - 1); // no final NUL
+}
+
+// GET /favicon.ico: the robot icon of robotics.diegoromero.es (an SVG, 0.5
+// KB), the same file StackChan's page serves.
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    extern const char icon_start[] asm("_binary_favicon_svg_start");
+    extern const char icon_end[] asm("_binary_favicon_svg_end");
+    httpd_resp_set_type(req, "image/svg+xml");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, icon_start, icon_end - icon_start - 1); // no final NUL
+}
+
+// GET /state: the robot's state as JSON. The page asks for it twice a second.
+static esp_err_t state_handler(httpd_req_t *req)
+{
+    static char json[1024]; // one server task, so one request at a time
+    cbs.state_json(json, sizeof(json));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, json);
+}
+
+// POST /cmd: one command line, the same ones as over UDP. It needs the
+// X-Bala2 header: a browser does not let a page from another site add it, so
+// a web page you happen to visit cannot drive the robot.
+static esp_err_t cmd_handler(httpd_req_t *req)
+{
+    char line[64];
+    if (httpd_req_get_hdr_value_len(req, "X-Bala2") == 0 || req->content_len >= sizeof(line)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad command");
+    }
+    const int n = httpd_req_recv(req, line, req->content_len);
+    if (n <= 0) {
+        return ESP_FAIL;
+    }
+    line[n] = 0;
+    line[strcspn(line, "\r\n")] = 0;
+    cbs.on_command(line);
+    return httpd_resp_sendstr(req, "ok\n");
+}
+
+// GET /info: which firmware is running.
 static esp_err_t info_handler(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
@@ -355,10 +410,30 @@ static void start_http(void)
     update.handler = update_handler;
     httpd_register_uri_handler(server, &update);
     httpd_uri_t info = {};
-    info.uri = "/";
+    info.uri = "/info";
     info.method = HTTP_GET;
     info.handler = info_handler;
     httpd_register_uri_handler(server, &info);
+    httpd_uri_t page = {};
+    page.uri = "/";
+    page.method = HTTP_GET;
+    page.handler = page_handler;
+    httpd_register_uri_handler(server, &page);
+    httpd_uri_t icon = {};
+    icon.uri = "/favicon.ico";
+    icon.method = HTTP_GET;
+    icon.handler = favicon_handler;
+    httpd_register_uri_handler(server, &icon);
+    httpd_uri_t state = {};
+    state.uri = "/state";
+    state.method = HTTP_GET;
+    state.handler = state_handler;
+    httpd_register_uri_handler(server, &state);
+    httpd_uri_t cmd = {};
+    cmd.uri = "/cmd";
+    cmd.method = HTTP_POST;
+    cmd.handler = cmd_handler;
+    httpd_register_uri_handler(server, &cmd);
 }
 
 void link_start(const link_callbacks_t *cb)
