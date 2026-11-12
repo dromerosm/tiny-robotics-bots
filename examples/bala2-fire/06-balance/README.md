@@ -89,7 +89,7 @@ Without the right token the robot answers 401, and it does not stop the motors. 
 
 **Balance.**
 
-1. Lay the robot down. Then stand it up on its wheels and hold it still and upright (tilt between -3 and +3 degrees on the screen) for 1 second.
+1. Lay the robot down. Then stand it up on its wheels and hold it where it does not pull to either side. Keep it still for 1 second (within 1.5 degrees, and less than 15 degrees from upright).
 2. The screen turns green: `balancing`. Let go gently, within 1 or 2 seconds.
 3. To stop: button B, or type `stop`. Lay it down before the next try.
 
@@ -114,7 +114,7 @@ PWM      = (v_cmd -+ turn) / 0.00118 + off * min(1, |v| / ramp)   left, right
 - **Position loop (`kpos`, `kvel`, `kt`).** When the robot is ahead of where it started, or rolls forward, it is asked to lean back a little, so it comes back. The slow `kt` part removes what is left, so it returns to its start point.
 - **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (test 10).
 - **Motor line.** 0.00118 m/s per PWM unit is the slope we measured. `off` (31) jumps the motors' dead band. It grows from 0 over `ramp` m/s, so the gain near 0 stays low.
-- **Balance point.** It is not 0, and it moves a lot with the load: -1.5 degrees for the bare robot, +9.4 with the servo on the back, and -3.5 to +0.7 with it on top (test 24). So the robot learns it. While it balances, it takes the mean tilt of each 10 s block. A block counts only if the robot stayed under 0.15 m/s in all of it, and the first two blocks of a run do not count. When the run ends, the last good value goes to flash, and the next start uses it. So it needs 30 s or more of calm balance to learn. On the first boot the value is -1.5. Buttons A and C move it, and so do `bp` and the phone page. These changes are not saved, only a learned value is. After you change the load, the saved value is wrong for the first start: move it by hand, let the robot balance for 30 s, and lay it down.
+- **Balance point.** It is not 0, and it moves a lot with the load: -1.5 degrees for the bare robot, +8 to +9.4 with the servo on the back, and -3.5 to +0.7 with it on top (test 24). So the robot takes it from your hand: the mean tilt of the second you hold it still before the start becomes the balance point. A person feels where the robot stops pulling, and in test 27 that was within 0.3 degrees of the true point. The position loop takes care of the rest. No saved value and no buttons are needed after the load changes. Buttons A and C, `bp` and the phone page still move it while it runs. The robot also learns the point while it balances (the mean tilt of each calm 10 s block, from the third block on) and saves the last one to flash when the run ends. That value is the start value after a restart and shows on the phone page, but the hand's angle replaces it at each start.
 - **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 in tests 20 and 21, but not in test 22.
 - **Wheel position loop (`kw`).** Off by default. It adds up the command into the place where the wheels should be, and pushes harder while they are behind. It cuts the slow sway but adds to the fast shake (tests 20 and 21).
 - The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz).
@@ -275,6 +275,8 @@ Test 24, the same day: the servo moved from the base to the body.
 
 Test 25, the same day: Bluetooth. The ESP32 in the Fire has it, but this firmware does not use it. A test build with NimBLE (224 KB larger) scanned for 5 s with Wi-Fi on and found 33 devices (131 adverts, best signal -38 dBm), then advertised as `BALA2` with no error. Wi-Fi telemetry went on during the scan. We did not check from a phone that the advert is seen. The test code is not in the repo.
 
+Test 27, the same day: start from the hand's angle. Servo on the back, cable out, no buttons. Two starts, held at 8.4 and 8.2 degrees. The mean tilt later in each run was 8.1 and 7.9, so the hand was 0.3 degrees off. The robot moved 0.5 cm and 4.3 cm in the first 3 s (8 cm in test 24, with a 4 degree error), and balanced for 177 s and 46 s. After the first run it saved 7.59 as the learned point.
+
 Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -337,7 +339,8 @@ sim: done, balancing
 
 ## Try next
 
-- Check that the learned balance point works: balance for 40 s, lay the robot down, restart it, and stand it up again. Not tested on the robot yet.
+- The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
+- Start from the hand's angle with the servo on top, and with a bad hold (2 to 5 degrees off), to see how much error the start takes.
 - Find why the robot restarts when the charging cable goes in or out.
 - Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.

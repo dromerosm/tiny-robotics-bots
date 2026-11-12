@@ -134,7 +134,12 @@ static const char *TAG = "balance";
 #define MAX_SPEED_MS     0.4f
 #define MAX_SPEED_TICKS  60 // 0.3 s
 #define LATE_US          15000
-#define UPRIGHT_DEG      3.0f
+#define UPRIGHT_DEG      3.0f  // fall test only: this close to the balance point
+// A balance starts from the angle the hand holds: a person feels where the
+// robot stops pulling, and that is its balance point, to a degree or two.
+// So the start needs no saved value and no buttons after the load changes.
+#define START_DEG 15.0f // held this close to upright
+#define HOLD_DEG  1.5f  // and this still, for UPRIGHT_TICKS
 #define UPRIGHT_RATE_DPS 15.0f
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
 #define LYING_DEG        45.0f
@@ -533,7 +538,7 @@ static void control_task(void *arg)
     float acc, g, yaw, pos = 0, ahead = 0;
     read_imu(&acc, &g, &yaw);
     float tilt = acc, speed = 0, last_pos = 0, start_pos = 0, integral = 0, trim = 0, rate_f = 0;
-    float learn_sum = 0;
+    float learn_sum = 0, hold_ref = 0, hold_sum = 0;
     int learn_n = 0, learn_blocks = 0;
     bool learn_calm = true;
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
@@ -625,13 +630,25 @@ static void control_task(void *arg)
                     break;
                 }
                 st.reason = "stand me up";
-                // Start only after it was lying down, then held upright and still.
-                if (st.seen_lying && fabsf(err) < UPRIGHT_DEG && fabsf(rate) < UPRIGHT_RATE_DPS) {
-                    upright_ticks++;
+                // Start only after it was lying down, then held upright and still:
+                // within HOLD_DEG of where this hold began. A fall test still
+                // needs the known balance point, so it keeps the old check.
+                if (st.seen_lying && fabsf(rate) < UPRIGHT_RATE_DPS &&
+                    (fall_request ? fabsf(err) < UPRIGHT_DEG
+                                  : fabsf(tilt) < START_DEG &&
+                                        (upright_ticks == 0 || fabsf(tilt - hold_ref) < HOLD_DEG))) {
+                    if (upright_ticks++ == 0) {
+                        hold_ref = tilt;
+                        hold_sum = 0;
+                    }
+                    hold_sum += tilt;
                 } else {
                     upright_ticks = 0;
                 }
                 if (upright_ticks >= UPRIGHT_TICKS) {
+                    if (!fall_request) {
+                        setpoint_trim = hold_sum / upright_ticks; // the hand's angle
+                    }
                     upright_ticks = 0;
                     balance_ticks = 0;
                     fast_ticks = 0;
