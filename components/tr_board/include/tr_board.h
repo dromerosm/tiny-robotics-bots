@@ -154,6 +154,15 @@ esp_err_t tr_port_power(bool on);
 // next look is 5 s later, so calling this often costs nothing.
 esp_err_t tr_tof_read(int *mm);
 
+// How wide the sensor looks. It has 16 x 16 detectors and uses a square of
+// them around the middle: 16 is the widest view (27 degrees in M5Stack's
+// docs), 4 the narrowest (15 degrees). A narrow view gets less light. The
+// size is kept until the next restart, also with no sensor plugged in.
+#define TR_TOF_ZONE_MIN 4
+#define TR_TOF_ZONE_MAX 16
+esp_err_t tr_tof_set_zone(int size);
+int tr_tof_zone(void);
+
 // The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),
 // motion (BMI270), clock (BM8563), power chip (AXP2101), light (LTR553), and
 // the ESP32-S3's own temperature. init sets them up; a chip that does not

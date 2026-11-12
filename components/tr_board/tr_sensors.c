@@ -308,6 +308,8 @@ void tr_sensors_status(char *text, size_t size)
         } else {
             at = add(text, size, at, "distance: nothing in range\n");
         }
+        at = add(text, size, at, "distance zone: %d x %d of 16 x 16\n", tr_tof_zone(),
+                 tr_tof_zone());
     }
 
     // Started on the first read, not at boot: esp-emu does not model it and

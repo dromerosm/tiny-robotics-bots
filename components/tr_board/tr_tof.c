@@ -27,6 +27,8 @@ static const char *TAG = "tr_tof";
 #define REG_VHV_BOUND 0x0008
 #define REG_CONFIG    0x002D // the table goes from here to 0x0087
 #define REG_READY     0x0031 // bit 0: a new measure waits
+#define REG_ZONE_AT   0x007F // the zone's center; 199 is the middle of the 16 x 16
+#define REG_ZONE_SIZE 0x0080 // (rows - 1) << 4 | (columns - 1)
 #define REG_CLEAR     0x0086
 #define REG_START     0x0087 // 0x40 starts, 0x00 stops
 #define REG_STATUS    0x0089 // low 5 bits: 9 is a good measure
@@ -50,6 +52,7 @@ static i2c_master_dev_handle_t dev;
 static bool ready;
 static int last_mm = -1;
 static int64_t retry_at;
+static int zone = TR_TOF_ZONE_MAX; // a side of the square the sensor looks through
 static SemaphoreHandle_t lock;
 
 static esp_err_t wr(uint16_t reg, uint8_t v)
@@ -76,6 +79,13 @@ static void release(void)
         bus = NULL;
     }
     ready = false;
+}
+
+// The sensor must be stopped. As ST's driver: always around the middle.
+static esp_err_t write_zone(void)
+{
+    ESP_RETURN_ON_ERROR(wr(REG_ZONE_AT, 199), TAG, "zone");
+    return wr(REG_ZONE_SIZE, (zone - 1) << 4 | (zone - 1));
 }
 
 static esp_err_t start(void)
@@ -122,10 +132,48 @@ static esp_err_t start(void)
     ESP_RETURN_ON_ERROR(wr(REG_START, 0x00), TAG, "stop");
     ESP_RETURN_ON_ERROR(wr(REG_VHV_BOUND, 0x09), TAG, "VHV");
     ESP_RETURN_ON_ERROR(wr(0x000B, 0x00), TAG, "VHV");
+    ESP_RETURN_ON_ERROR(write_zone(), TAG, "zone");
     ESP_RETURN_ON_ERROR(wr(REG_CLEAR, 0x01), TAG, "clear");
     ESP_RETURN_ON_ERROR(wr(REG_START, 0x40), TAG, "start");
-    ESP_LOGI(TAG, "VL53L1X on port A: measuring");
+    ESP_LOGI(TAG, "VL53L1X on port A: measuring, zone %d x %d", zone, zone);
     return ESP_OK;
+}
+
+int tr_tof_zone(void)
+{
+    return zone;
+}
+
+esp_err_t tr_tof_set_zone(int size)
+{
+    if (size < TR_TOF_ZONE_MIN || size > TR_TOF_ZONE_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!lock) {
+        lock = xSemaphoreCreateMutex();
+    }
+    xSemaphoreTake(lock, portMAX_DELAY);
+    zone = size;
+    esp_err_t err = ESP_OK;
+    if (ready) { // stop, change, run again; a sensor found later gets it in start()
+        err = wr(REG_START, 0x00);
+        if (err == ESP_OK) {
+            err = write_zone();
+        }
+        if (err == ESP_OK) {
+            err = wr(REG_CLEAR, 0x01);
+        }
+        if (err == ESP_OK) {
+            err = wr(REG_START, 0x40);
+        }
+        last_mm = -1;
+        if (err != ESP_OK) {
+            release();
+            retry_at = esp_timer_get_time() + RETRY_US;
+        }
+    }
+    xSemaphoreGive(lock);
+    return err;
 }
 
 void tr_tof_release(void)

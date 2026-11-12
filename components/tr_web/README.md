@@ -24,6 +24,7 @@ ESP_ERROR_CHECK(tr_web_start());   // adds the endpoints, looks for the servos, 
 | `POST /head/zero?yaw=436&pitch=585` | Save new zero positions (raw 0 to 1023). Token needed |
 | `GET /i2c` | The chips that answer on the internal I2C bus, and the units on Grove ports A, B and C |
 | `GET /sensors` | Head touch, screen touch, motion, clock, power chip, light and chip temperature (from `tr_board`). The page shows it every second |
+| `POST /tof?zone=8` | How wide the distance sensor on port A looks: a square of 4 (narrow, 15°) to 16 (wide, 27°) of its 16 × 16 detectors. Kept until the next restart. Token needed |
 | `GET /leds`, `POST /leds?color=ff8800&side=left` | The side LEDs: `left`, `right` or `all`, color as RRGGBB, `000000` is off. Token needed to change them. `409` if the battery is too low for their 5 V: plug in USB |
 | `GET /camera.jpg` | One camera frame as JPEG (320 x 240). Starts the camera the first time. Not there with `CONFIG_TR_WEB_CAMERA=n` |
 | `GET /sleep` | Awake or asleep, the battery current, its average and the time left (the same lines as `GET /`) |

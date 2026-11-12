@@ -6,6 +6,7 @@
 //   POST /head/zero?yaw=436&pitch=585   save new zero positions, raw 0..1023 (token needed)
 //   GET  /i2c                           the chips on the internal I2C bus and the Grove ports
 //   GET  /sensors                       touch, motion, clock, power chip, temperature
+//   POST /tof?zone=8                    how wide the distance sensor looks, 4 to 16 (token needed)
 //   GET  /leds, POST /leds?color=ff8800&side=left|right|all   side LEDs (token needed)
 //   GET  /camera.jpg                    one camera frame, JPEG (CONFIG_TR_WEB_CAMERA)
 //   GET  /sleep                         awake or asleep, and the battery use
@@ -409,6 +410,24 @@ static esp_err_t sensors_get(httpd_req_t *req)
     return httpd_resp_sendstr(req, text);
 }
 
+// POST /tof?zone=8 (token needed): how wide the distance sensor looks, 4
+// (narrow) to 16 (wide). Kept until the next restart.
+static esp_err_t tof_post(httpd_req_t *req)
+{
+    if (!tr_ota_token_ok(req)) {
+        return ESP_OK;
+    }
+    float v;
+    if (!query_float(req, "zone", &v) || tr_tof_set_zone((int)v) == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "400 Bad Request", "zone must be 4 to 16\n");
+    }
+    char text[48];
+    snprintf(text, sizeof(text), "distance zone: %d x %d of 16 x 16\n", tr_tof_zone(),
+             tr_tof_zone());
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_sendstr(req, text);
+}
+
 // GET /sleep: the sleep state and the battery use, as on GET /.
 static esp_err_t sleep_get(httpd_req_t *req)
 {
@@ -521,6 +540,7 @@ esp_err_t tr_web_start(void)
         {.uri = "/i2c", .method = HTTP_GET, .handler = i2c_get},
         {.uri = "/app", .method = HTTP_GET, .handler = app_get},
         {.uri = "/sensors", .method = HTTP_GET, .handler = sensors_get},
+        {.uri = "/tof", .method = HTTP_POST, .handler = tof_post},
         {.uri = "/leds", .method = HTTP_GET, .handler = leds_get},
         {.uri = "/leds", .method = HTTP_POST, .handler = leds_post},
 #if CONFIG_TR_WEB_CAMERA

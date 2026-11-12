@@ -136,7 +136,15 @@
     <div class="row"><button id="snap">Take a picture</button></div>
   </section>
   <section><h2>Touch and motion</h2><table id="touch"></table></section>
-  <section><h2>Room</h2><table id="room"></table></section>
+  <section>
+    <h2>Room</h2>
+    <table id="room"></table>
+    <div id="zonebox" hidden>
+      <label for="zone">Distance sensor view: 4 (narrow) to 16 (wide)</label>
+      <input id="zone" type="number" min="4" max="16" value="16">
+      <div class="row"><button id="zoneset">Set view</button></div>
+    </div>
+  </section>
   <section><h2>Chips on the I2C bus</h2><table id="i2c" class="grid"></table></section>
   <section class="wide"><h2>Log (last 4 KB, kept across restarts)</h2><pre id="log">…</pre></section>
 </main>
@@ -278,6 +286,12 @@ function showStatus() {
   if (light) room.push(["Light", light[1]], ["Proximity", light[2]]);
   else if (n.has("light")) room.push(["Light", n.get("light")]);
   if (n.has("distance")) room.push(["Distance", n.get("distance")]);
+  if (n.has("distance zone")) room.push(["Sensor view", n.get("distance zone")]);
+  // The box to change the view: only with a sensor, and the number follows
+  // the robot unless you are typing in it.
+  $("zonebox").hidden = !n.has("distance zone");
+  const z = (n.get("distance zone") || "").match(/^(\d+) x/);
+  if (z && document.activeElement !== $("zone")) $("zone").value = z[1];
   if (n.has("motion chip")) room.push(["Motion chip", deg(n.get("motion chip"))]);
   kv($("room"), room.length ? room : [[null, "No data"]]);
 }
@@ -470,6 +484,15 @@ for (const b of document.querySelectorAll("button[data-side]")) {
   b.onclick = () => leds(b.dataset.side, $("color").value.slice(1));
 }
 $("ledsoff").onclick = () => leds("all", "000000");
+$("zoneset").onclick = async () => {
+  try {
+    await text(`/tof?zone=${encodeURIComponent($("zone").value)}`, auth());
+    $("zone").blur();
+    $("msg").textContent = "";
+  } catch (e) {
+    $("msg").textContent = "Error: " + e.message;
+  }
+};
 $("snap").onclick = () => {
   $("cam").hidden = false;
   $("cam").src = "/camera.jpg?t=" + Date.now();
