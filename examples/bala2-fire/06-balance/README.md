@@ -223,6 +223,8 @@ Test 23, the same day: pushes by hand, about one every 10 s. The script changed 
 
 No clear difference with so few pushes, and the new setting was not worse. So `kx` and `kv` are gone, and `kpos` 18 and `kvel` 8 are the start values. Hard pushes, close to the 0.4 m/s stop, are not tested.
 
+A check of the final firmware, started from lying down and left alone, six recordings: shake 10.5 to 17.8 deg/s (mean 13.9), sway 0.89 to 1.03 degrees, travel 7 to 14 mm. About the same as the old start values in test 22, with less travel.
+
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
 What we learned:
