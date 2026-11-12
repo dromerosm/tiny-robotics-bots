@@ -95,4 +95,9 @@ On the home network, with the robot lying still:
 - Fast samples: 600 of 600 arrived in a 3 s take, 5 ms apart, none lost. A sample arrived 18 ms after the fastest one (median), 55 ms for 95% of them, 74 ms at worst.
 - A value outside its range was kept inside it: `kp 999` gave 20, `kp -5` gave 0.
 
-Not measured: the same while the robot balances, and on the robot's own network.
+The same while the robot balanced, with the motors at work:
+
+- A command and its answer: 9 ms (median of 60), 18 ms for 95% of them, 36 ms at worst. None went unanswered.
+- Fast samples: four takes of 10 s, 2000 of 2000 samples each, none lost. A sample arrived 17 to 19 ms after the fastest one (median), 54 to 57 ms for 95% of them, 74 to 103 ms at worst.
+
+So the link is as fast while the robot balances as when it lies still. Not measured: the same on the robot's own network.

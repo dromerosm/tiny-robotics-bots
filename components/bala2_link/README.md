@@ -99,4 +99,6 @@ Two limits:
 - Wi-Fi join, the page, `/state`, `/cmd`, UDP telemetry and commands, and four updates in a row.
 - A new app showed `on trial` and was accepted after 15 s.
 - A wrong key, no key and a bad image gave 401, 401 and 400, and the robot did not restart.
-- Not checked: a real rollback (an app that fails three starts), and the robot's own network.
+- A real rollback: we sent an app that fails on purpose at each start. 12 s after the upload the robot was back on the app it had before, with no help.
+- The robot's own network: an app built with no home networks made `BALA2-xxxx`, and a phone on it opened the page at `http://192.168.4.1/`.
+- A rollback by hand: that app never left its trial, and two presses of reset brought the old app and the home network back.

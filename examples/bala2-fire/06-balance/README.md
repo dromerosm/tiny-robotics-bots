@@ -289,6 +289,14 @@ Test 28, the same day: the link code moved to the `bala2_link` component. Four u
 
 Test 29, the same day: the commands and the 200 Hz samples moved to the `bala2_mon` component. A firmware now names its numbers once, and the commands, the list, the state for the page and the boxes on the page come from that. The samples no longer wait in memory to be sent later: they go out as they come. Robot lying still, home network: a command and its answer took 13 ms (median), 86 ms at worst. A 3 s take gave 600 of 600 samples, none lost, each about 18 ms behind (median), 74 ms at worst. Every number now has a range: `kp 999` gives 20.
 
+Test 30, the same day: what was left to check, with the two components in place. Servo on the back, cable out.
+
+- **Rollback.** An app that fails on purpose at each start went in over Wi-Fi. 12 s later the robot was back on the app before it, alone.
+- **It still balances.** Three runs of 26 s, 8 s and over 60 s, each ended by hand. Shake 13 deg/s in the long one, as before.
+- **A bad hold at the start.** Held about 3 degrees back from the balance point (5.9 against 8 to 9), twice: the robot rolled 11 cm and came back. Held about 3 degrees forward (11.5): it rolled 12 cm and came back. So the start takes a hand that is 3 degrees off, at the cost of about 11 cm.
+- **The link while it balances.** A command and its answer took 9 ms (median), 36 ms at worst. Four takes of 10 s at 200 Hz lost no sample.
+- **The robot's own network.** An app built with no home networks made `BALA2-xxxx`. A phone joined it with the key from the screen and opened the page at `http://192.168.4.1/`. It was also the first time the page ran on a real phone. That app was made to stay on trial, and two presses of reset brought the normal one back, on the home network.
+
 Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -351,9 +359,9 @@ sim: done, balancing
 
 ## Try next
 
-- Test a real rollback: send an app that fails on purpose and check that the third start brings the old app back. Have the USB cable at hand.
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
-- Start from the hand's angle with the servo on top, and with a bad hold (2 to 5 degrees off), to see how much error the start takes.
+- Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
+- When the computer goes quiet, the robot stops its motors and falls over. A softer end (roll to a stop, or keep balancing in place) would be kinder to it.
 - Find why the robot restarts when the charging cable goes in or out.
 - Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
