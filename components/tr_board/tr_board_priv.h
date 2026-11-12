@@ -10,6 +10,10 @@
 // and the finger is still there.
 bool tr_sleep_touch(int source, bool down);
 
+// tr_tof gives its I2C port back, so a scan of the Grove ports can use it.
+// The next tr_tof_read() takes it again.
+void tr_tof_release(void);
+
 // The sleep steps of tr_sensors and tr_cam. Called from the sleep task.
 void tr_sensors_sleep(bool asleep, bool camera, bool motion);
 esp_err_t tr_cam_power_off(void);

@@ -147,6 +147,13 @@ esp_err_t tr_led_show(void);
 // off when no LED is lit.
 esp_err_t tr_port_power(bool on);
 
+// The distance sensor on port A (Unit ToF4M, a VL53L1X), if there is one. It
+// needs tr_port_power(true). The first call sets it up, and it measures about
+// 10 times a second, up to 4 m. mm is the last distance, or -1 when the last
+// measure was not good (nothing in range). ESP_ERR_NOT_FOUND: no sensor; the
+// next look is 5 s later, so calling this often costs nothing.
+esp_err_t tr_tof_read(int *mm);
+
 // The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),
 // motion (BMI270), clock (BM8563), power chip (AXP2101), light (LTR553), and
 // the ESP32-S3's own temperature. init sets them up; a chip that does not

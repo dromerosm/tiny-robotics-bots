@@ -277,6 +277,7 @@ function showStatus() {
   const light = (n.get("light") || "").match(/^(.+?), proximity (.+)$/);
   if (light) room.push(["Light", light[1]], ["Proximity", light[2]]);
   else if (n.has("light")) room.push(["Light", n.get("light")]);
+  if (n.has("distance")) room.push(["Distance", n.get("distance")]);
   if (n.has("motion chip")) room.push(["Motion chip", deg(n.get("motion chip"))]);
   kv($("room"), room.length ? room : [[null, "No data"]]);
 }

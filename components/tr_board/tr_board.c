@@ -1,5 +1,6 @@
 // tr_board: see include/tr_board.h.
 #include "tr_board.h"
+#include "tr_board_priv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -173,6 +174,7 @@ int tr_board_scan(uint8_t *found, int max)
 // made for the scan and removed after it.
 int tr_board_scan_port(int sda, int scl, uint8_t *found, int max)
 {
+    tr_tof_release(); // the distance sensor may hold I2C port 1
     // An idle bus has both lines high. A unit with no power holds them low,
     // and then every probe would wait for its timeout.
     const gpio_config_t in = {

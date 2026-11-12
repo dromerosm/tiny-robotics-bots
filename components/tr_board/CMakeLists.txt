@@ -5,7 +5,7 @@ if(NOT IDF_TARGET STREQUAL "esp32s3")
     return()
 endif()
 
-idf_component_register(SRCS "tr_board.c" "tr_lcd.c" "tr_servo.c" "tr_sensors.c" "tr_mic.c" "tr_audio.c" "tr_cam.c"
+idf_component_register(SRCS "tr_board.c" "tr_lcd.c" "tr_servo.c" "tr_sensors.c" "tr_tof.c" "tr_mic.c" "tr_audio.c" "tr_cam.c"
                             "tr_sleep.c"
                        INCLUDE_DIRS "include"
                        REQUIRES esp_driver_i2c

@@ -300,6 +300,16 @@ void tr_sensors_status(char *text, size_t size)
         at = add(text, size, at, "light: no answer at 0x23\n");
     }
 
+    // The distance sensor on port A: a line only when one is plugged in.
+    int mm;
+    if (tr_tof_read(&mm) == ESP_OK) {
+        if (mm >= 0) {
+            at = add(text, size, at, "distance: %d mm\n", mm);
+        } else {
+            at = add(text, size, at, "distance: nothing in range\n");
+        }
+    }
+
     // Started on the first read, not at boot: esp-emu does not model it and
     // stops there, which would stop the example too.
     if (!chip_temp) {
