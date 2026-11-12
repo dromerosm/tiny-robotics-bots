@@ -225,6 +225,8 @@ No clear difference with so few pushes, and the new setting was not worse. So `k
 
 A check of the final firmware, started from lying down and left alone, six recordings: shake 10.5 to 17.8 deg/s (mean 13.9), sway 0.89 to 1.03 degrees, travel 7 to 14 mm. About the same as the old start values in test 22, with less travel.
 
+That run ended after 80 s with one hard push by hand. The tilt jumped 3 degrees in 0.1 s, the command stayed at the speed limit (PWM 455, 0.50 m/s) and the tilt kept growing to 10 degrees. The 0.4 m/s stop ended it 0.4 s later, 19 cm ahead. The old start values failed the same way in test 19, so one push does not tell the two apart. The battery read 25% under load.
+
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
 What we learned:
