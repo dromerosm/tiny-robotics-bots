@@ -161,6 +161,12 @@ esp_err_t tr_tof_read(int *mm);
 #define TR_TOF_ZONE_MIN 4
 #define TR_TOF_ZONE_MAX 16
 esp_err_t tr_tof_set_zone(int size);
+// The same, with the square moved off the middle, to look a little to one
+// side: its center as a column and a row of the 16 x 16 (the middle is column
+// 8, row 7). The whole square must fit. One detector is about 1.7 degrees.
+#define TR_TOF_ZONE_COL 8
+#define TR_TOF_ZONE_ROW 7
+esp_err_t tr_tof_set_zone_at(int size, int col, int row);
 int tr_tof_zone(void);
 
 // The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),

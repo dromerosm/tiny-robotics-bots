@@ -53,6 +53,7 @@ static bool ready;
 static int last_mm = -1;
 static int64_t retry_at;
 static int zone = TR_TOF_ZONE_MAX; // a side of the square the sensor looks through
+static int zone_col = TR_TOF_ZONE_COL, zone_row = TR_TOF_ZONE_ROW; // its center
 static SemaphoreHandle_t lock;
 
 static esp_err_t wr(uint16_t reg, uint8_t v)
@@ -81,10 +82,12 @@ static void release(void)
     ready = false;
 }
 
-// The sensor must be stopped. As ST's driver: always around the middle.
+// The sensor must be stopped. ST numbers the detectors in two halves: the top
+// 8 rows count up from 128, column by column, the bottom 8 count down from 127.
 static esp_err_t write_zone(void)
 {
-    ESP_RETURN_ON_ERROR(wr(REG_ZONE_AT, 199), TAG, "zone");
+    const int at = zone_row < 8 ? 128 + 8 * zone_col + zone_row : 127 - 8 * zone_col - (zone_row - 8);
+    ESP_RETURN_ON_ERROR(wr(REG_ZONE_AT, at), TAG, "zone");
     return wr(REG_ZONE_SIZE, (zone - 1) << 4 | (zone - 1));
 }
 
@@ -146,7 +149,14 @@ int tr_tof_zone(void)
 
 esp_err_t tr_tof_set_zone(int size)
 {
-    if (size < TR_TOF_ZONE_MIN || size > TR_TOF_ZONE_MAX) {
+    return tr_tof_set_zone_at(size, TR_TOF_ZONE_COL, TR_TOF_ZONE_ROW);
+}
+
+esp_err_t tr_tof_set_zone_at(int size, int col, int row)
+{
+    const int half = size / 2;
+    if (size < TR_TOF_ZONE_MIN || size > TR_TOF_ZONE_MAX || col < half || col > 16 - half ||
+        row < half - 1 || row > 15 - half) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!lock) {
@@ -154,6 +164,8 @@ esp_err_t tr_tof_set_zone(int size)
     }
     xSemaphoreTake(lock, portMAX_DELAY);
     zone = size;
+    zone_col = col;
+    zone_row = row;
     esp_err_t err = ESP_OK;
     if (ready) { // stop, change, run again; a sensor found later gets it in start()
         err = wr(REG_START, 0x00);

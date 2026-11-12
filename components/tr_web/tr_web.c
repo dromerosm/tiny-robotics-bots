@@ -411,15 +411,20 @@ static esp_err_t sensors_get(httpd_req_t *req)
 }
 
 // POST /tof?zone=8 (token needed): how wide the distance sensor looks, 4
-// (narrow) to 16 (wide). Kept until the next restart.
+// (narrow) to 16 (wide). Kept until the next restart. &col=4&row=11 moves the
+// square off the middle (column 8, row 7), to look a little to one side.
 static esp_err_t tof_post(httpd_req_t *req)
 {
     if (!tr_ota_token_ok(req)) {
         return ESP_OK;
     }
-    float v;
-    if (!query_float(req, "zone", &v) || tr_tof_set_zone((int)v) == ESP_ERR_INVALID_ARG) {
-        return send_error(req, "400 Bad Request", "zone must be 4 to 16\n");
+    float v, col = TR_TOF_ZONE_COL, row = TR_TOF_ZONE_ROW;
+    query_float(req, "col", &col);
+    query_float(req, "row", &row);
+    if (!query_float(req, "zone", &v) ||
+        tr_tof_set_zone_at((int)v, (int)col, (int)row) == ESP_ERR_INVALID_ARG) {
+        return send_error(req, "400 Bad Request",
+                          "zone must be 4 to 16, and fit around col and row\n");
     }
     char text[48];
     snprintf(text, sizeof(text), "distance zone: %d x %d of 16 x 16\n", tr_tof_zone(),
