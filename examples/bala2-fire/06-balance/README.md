@@ -74,7 +74,7 @@ Under the controls it shows what the robot reads, twice a second:
 - **Buttons:** A, B and C light up while you press them.
 - **Link and system:** network, address, signal, firmware build, the slot it runs from, time on, and free memory.
 
-The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the LED bars, the microSD card, Bluetooth, Grove port A and the servo headers S1 to S3.
+The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the microSD card, Bluetooth, Grove port A and the servo headers S1 to S3.
 
 The page is one file, `main/app.html`, built into the firmware. It asks the robot for its state twice a second (`GET /state`, JSON) and sends the same commands as the tool (`POST /cmd`). Unlike the tool, it has no heartbeat: if you close the page, the robot and the servo go on as they were. So stop them first. `GET /info` says which firmware is running. The page's icon is the same file as on StackChan's page (`components/tr_ota/favicon.svg`).
 
@@ -274,6 +274,8 @@ Test 24, the same day: the servo moved from the base to the body.
 - **The robot restarts when the charging cable goes in or out.** It happened every time. The balance point then went back to its start value. This is why the robot now learns the point and saves it.
 
 Test 25, the same day: Bluetooth. The ESP32 in the Fire has it, but this firmware does not use it. A test build with NimBLE (224 KB larger) scanned for 5 s with Wi-Fi on and found 33 devices (131 adverts, best signal -38 dBm), then advertised as `BALA2` with no error. Wi-Fi telemetry went on during the scan. We did not check from a phone that the advert is seen. The test code is not in the repo.
+
+Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
