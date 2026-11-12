@@ -231,8 +231,8 @@ static esp_err_t i2c_get(httpd_req_t *req)
     for (size_t p = 0; p < sizeof(ports) / sizeof(ports[0]); p++) {
         const int m = tr_board_scan_port(ports[p].sda, ports[p].scl, found, 32);
         if (m < 0) {
-            snprintf(line, sizeof(line), "---- port %c: a line is held low (a unit with no power?)\n",
-                     ports[p].name);
+            snprintf(line, sizeof(line),
+                     "---- port %c: a line is held low (a unit with no power?)\n", ports[p].name);
             httpd_resp_sendstr_chunk(req, line);
         }
         for (int i = 0; i < m; i++) {

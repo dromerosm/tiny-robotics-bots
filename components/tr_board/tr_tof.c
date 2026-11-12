@@ -18,11 +18,11 @@
 
 static const char *TAG = "tr_tof";
 
-#define PORT_A_SDA  2
-#define PORT_A_SCL  1
-#define ADDR        0x29
-#define TIMEOUT_MS  50
-#define RETRY_US    5000000 // no sensor: look again after this
+#define PORT_A_SDA 2
+#define PORT_A_SCL 1
+#define ADDR       0x29
+#define TIMEOUT_MS 50
+#define RETRY_US   5000000 // no sensor: look again after this
 
 #define REG_VHV_BOUND 0x0008
 #define REG_CONFIG    0x002D // the table goes from here to 0x0087
