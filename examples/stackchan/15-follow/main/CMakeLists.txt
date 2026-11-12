@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "talk.c" "rec.c" "track.c" "face.cpp"
+idf_component_register(SRCS "main.c" "talk.c" "rec.c" "track.c" "radar.c" "face.cpp"
                        PRIV_REQUIRES tr_ota tr_board tr_web esp_http_server esp_http_client esp_timer esp_wifi mbedtls)
 
 # esp-sr tells esp-dl to build only the operations its own models need. The

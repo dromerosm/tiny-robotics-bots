@@ -26,7 +26,7 @@
 //                               its Face buttons from these lines
 //   POST /face?blink=1          blink once (token needed)
 //   POST /face?follow=0|1       stop or start following faces (token needed)
-//   POST /face?view=face|status|track   change the screen (token needed)
+//   POST /face?view=face|status|track|radar   change the screen (token needed)
 //   GET  /talk, POST /talk      see talk.c
 //   GET  /rec, POST /rec        see rec.c
 //
@@ -34,6 +34,10 @@
 // face the finder sees, green for the one the head follows, and the center
 // of the frame. It shows that following works. A tap closes it, and so does
 // a talk or a recording, because the camera stops then.
+//
+// Tap above the eyes: the radar (radar.c). The head turns from side to side
+// and the screen shows the distance the sensor on port A finds at each angle.
+// A tap closes it, and so does a talk or a recording.
 //
 // Tap the mouth on the screen: the status screen (tr_screen), one section per
 // page: battery, robot, network (with the update token), touch and motion,
@@ -54,6 +58,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
+#include "radar.h"
 #include "rec.h"
 #include "talk.h"
 #include "track.h"
@@ -77,8 +82,8 @@
 #define EYE_FOLLOW_X 40.0f // pixels the eyes and mouth move with the face at the frame's edge
 #define EYE_FOLLOW_Y 25.0f
 
-typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_TRACK, VIEW_COUNT } view_t;
-static const char *view_names[] = {"face", "status", "track"};
+typedef enum { VIEW_FACE, VIEW_STATUS, VIEW_TRACK, VIEW_RADAR, VIEW_COUNT } view_t;
+static const char *view_names[] = {"face", "status", "track", "radar"};
 static volatile view_t want_view = VIEW_FACE; // set by POST /face?view=..
 static volatile bool view_request;
 static volatile view_t shown = VIEW_FACE; // the view on the screen now, for GET /face
@@ -123,6 +128,12 @@ static bool on_left_eye(int x, int y)
 static bool on_right_eye(int x, int y)
 {
     return x >= 185 && x < 265 && y >= 55 && y < 135;
+}
+
+// Above the eyes.
+static bool on_forehead(int y)
+{
+    return y < 40;
 }
 
 // The mouth, with some room around it for a finger.
@@ -185,7 +196,8 @@ static void face_task(void *arg)
         // open. When neither wants it any more, it stops and gives its
         // memory back.
         const bool quiet = talk_quiet() || rec_active();
-        const bool camera = follow || open == VIEW_TRACK;
+        // The radar moves the head itself: no camera and no finder then.
+        const bool camera = (follow && open != VIEW_RADAR) || open == VIEW_TRACK;
         static bool camera_was;
         if (camera_was && !camera && !quiet) {
             track_quiet();
@@ -221,12 +233,40 @@ static void face_task(void *arg)
         if (view_request) {
             view_request = false;
             track_show(false);
+            if (open == VIEW_RADAR && want_view != VIEW_RADAR) {
+                radar_close();
+            }
+            const bool new_radar = want_view == VIEW_RADAR && open != VIEW_RADAR;
             open = want_view;
             drawn.mouth = -1;
             if (open == VIEW_STATUS) {
                 tr_status_open();
                 next_update = now + 1000000;
             }
+            if (new_radar) {
+                radar_open();
+                continue; // the camera stops first, at the top of the loop
+            }
+        }
+        if (open == VIEW_FACE && tap && on_forehead(tap_y) && !quiet) {
+            ESP_LOGI("face", "radar open");
+            open = VIEW_RADAR;
+            radar_open();
+            continue;
+        }
+        // The radar: a tap closes it. So does a talk or a recording, because
+        // the servos stop then.
+        if (open == VIEW_RADAR) {
+            if (tap || quiet) {
+                ESP_LOGI("face", "radar closed");
+                radar_close();
+                open = VIEW_FACE;
+                drawn.mouth = -1; // draw the face again
+            } else {
+                radar_step(now);
+            }
+            vTaskDelayUntil(&wake, pdMS_TO_TICKS(FRAME_MS));
+            continue;
         }
         if (open == VIEW_FACE && tap && on_left_eye(tap_x, tap_y) && !quiet) {
             open = VIEW_TRACK;
@@ -329,7 +369,7 @@ static esp_err_t face_get(httpd_req_t *req)
     // mode the robot is in. "view:" is the screen now, also after a tap.
     static char text[320];
     const int n = snprintf(text, sizeof(text),
-                           "views: face status track\nview: %s\ntalk: %s\nrecording: %s\n"
+                           "views: face status track radar\nview: %s\ntalk: %s\nrecording: %s\n"
                            "following: %s\n",
                            view_names[shown],
                            talk_live()     ? "on, the robot listens"
