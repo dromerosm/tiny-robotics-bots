@@ -43,14 +43,14 @@ bool rec_next_line(char *out, size_t len)
         return false;
     }
     if (sent < 0) {
-        snprintf(out, len, "rec_start %d samples\nrec,t_ms,tilt,rate,acc_tilt,x,v,u,m5_angle\n",
+        snprintf(out, len, "rec_start %d samples\nrec,t_ms,tilt,rate,acc_tilt,x,v,u\n",
                  have);
     } else if (sent == have) {
         snprintf(out, len, "rec_end\n");
     } else {
         const rec_sample_t *s = &buf[sent];
-        snprintf(out, len, "rec,%lu,%.3f,%.2f,%.3f,%.4f,%.4f,%.0f,%.3f\n", (unsigned long)s->t_ms,
-                 s->tilt, s->rate, s->acc_tilt, s->x, s->v, s->u, s->m5_angle);
+        snprintf(out, len, "rec,%lu,%.3f,%.2f,%.3f,%.4f,%.4f,%.0f\n", (unsigned long)s->t_ms,
+                 s->tilt, s->rate, s->acc_tilt, s->x, s->v, s->u);
     }
     sent = sent + 1;
     return true;

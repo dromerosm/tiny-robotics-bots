@@ -13,8 +13,8 @@
 typedef struct {
     // A line came in over UDP (for example "kp 30").
     void (*on_command)(const char *line);
-    // Asked before an update. Return true once the motors are stopped.
-    bool (*stop_for_update)(void);
+    // Asked before an update. Return false to refuse it (the robot balances).
+    bool (*can_update)(void);
 } link_callbacks_t;
 
 // Join a home network or start the access point, then the UDP link and the
@@ -33,3 +33,7 @@ void link_send(const char *line);
 
 // False if a computer was talking to us and has been quiet for 1 second.
 bool link_alive(void);
+
+// True while an update is being written. The robot must not start then: the
+// flash writes stall the control loop.
+bool link_updating(void);

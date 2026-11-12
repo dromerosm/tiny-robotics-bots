@@ -64,6 +64,7 @@ static int sock = -1;
 static struct sockaddr_in peer;
 static volatile bool have_peer;
 static volatile int64_t last_rx_us;
+static volatile bool updating;
 
 const char *link_ssid(void)
 {
@@ -80,6 +81,11 @@ const char *link_ip(void)
 bool link_on_home(void)
 {
     return on_home;
+}
+
+bool link_updating(void)
+{
+    return updating;
 }
 
 bool link_alive(void)
@@ -260,7 +266,6 @@ static void udp_task(void *arg)
 // POST /update: write the new app to the other OTA slot, then restart.
 static esp_err_t update_handler(httpd_req_t *req)
 {
-    // Check the token first, so a wrong request never stops the motors.
     char token[sizeof(password)] = "";
     if (httpd_req_get_hdr_value_str(req, "X-Token", token, sizeof(token)) != ESP_OK ||
         strcmp(token, password) != 0) {
@@ -268,16 +273,19 @@ static esp_err_t update_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, "wrong or missing X-Token\n");
         return ESP_FAIL;
     }
-    if (!cbs.stop_for_update()) {
+    // Never stop a balancing robot for an update: it would fall over.
+    if (!cbs.can_update()) {
         httpd_resp_set_status(req, "409 Conflict");
         httpd_resp_sendstr(req, "robot is balancing, stop it first\n");
         return ESP_FAIL;
     }
+    updating = true; // from here on the robot does not start
     const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
     esp_ota_handle_t ota;
     // Erase each flash sector just before it is written. Erasing all 3 MB at
     // once stalls the control loop for over 1 s, and the watchdog resets.
     if (esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
+        updating = false;
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
@@ -304,6 +312,7 @@ static esp_err_t update_handler(httpd_req_t *req)
         if (n <= 0 || esp_ota_write(ota, buf, n) != ESP_OK) {
             esp_ota_abort(ota);
             esp_task_wdt_add(idle0);
+            updating = false;
             httpd_resp_send_500(req);
             return ESP_FAIL;
         }
@@ -312,6 +321,7 @@ static esp_err_t update_handler(httpd_req_t *req)
     // esp_ota_end() checks the image before we boot from it.
     if (esp_ota_end(ota) != ESP_OK || esp_ota_set_boot_partition(slot) != ESP_OK) {
         esp_task_wdt_add(idle0);
+        updating = false;
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad image");
         return ESP_FAIL;
     }

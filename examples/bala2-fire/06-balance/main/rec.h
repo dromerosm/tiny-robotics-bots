@@ -18,7 +18,6 @@ typedef struct {
     float x;        // m, from the start point
     float v;        // m/s
     float u;        // PWM sent
-    float m5_angle; // deg, factory law angle (Madgwick), 0 if not used
 } rec_sample_t;
 
 // Start a recording of n samples (at most REC_MAX). Safe from any task.

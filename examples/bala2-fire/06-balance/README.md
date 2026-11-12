@@ -87,19 +87,19 @@ The base's motors behave as a **speed** command: the wheels reach the speed we a
 setpoint = -(kpos * position + kvel * speed) + trim   degrees, at most 5
 trim    += kt * position * dt                           slow, at most 5
 e        = tilt - setpoint                              rad
-v_cmd    = kp*e + ki*SUM(e*dt) + kd*rate + kv*speed + kx*position
+v_cmd    = kp*e + ki*SUM(e*dt) + kd*rate
 turn     = -kh * heading                                m/s, at most 0.1
 PWM      = (v_cmd -+ turn) / 0.00118 + off * min(1, |v| / ramp)   left, right
 ```
 
 - **PID on the tilt.** P and D catch the fall. I keeps the wheels speeding up while the robot still leans, until they get under it.
 - **Position loop (`kpos`, `kvel`, `kt`).** When the robot is ahead of where it started, or rolls forward, it is asked to lean back a little, so it comes back. The slow `kt` part removes what is left, so it returns to its start point.
-- **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (`ys -1`).
+- **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (test 10).
 - **Motor line.** 0.00118 m/s per PWM unit is the slope we measured. `off` (31) jumps the motors' dead band. It grows from 0 over `ramp` m/s, so the gain near 0 stays low.
 - **Balance point.** It starts at -1.5 degrees, not 0. The factory app had -1.5 saved in our unit, and the mean tilt in our own runs was about -1.5 too (test 19). Buttons A and C move it.
-- **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 (tests 20 and 21).
+- **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 in tests 20 and 21, but not in test 22.
 - **Wheel position loop (`kw`).** Off by default. It adds up the command into the place where the wheels should be, and pushes harder while they are behind. It cuts the slow sway but adds to the fast shake (tests 20 and 21).
-- The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz). An optional notch filter (`nf`, `nq`) can remove one frequency from `v_cmd`; it is off by default (see test 12).
+- The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz).
 
 Start values, all can be changed while it runs:
 
@@ -109,15 +109,10 @@ Start values, all can be changed while it runs:
 | `ki` | 10 | m/s per rad·s | I on the tilt |
 | `kd` | 0.07 | m/s per rad/s | D on the tilt |
 | `rf` | 0.45 | share per tick | low-pass filter on the rate for D (0.32 is about 12 Hz, 0.45 about 19 Hz) |
-| `kv` | 0.3 | m/s per m/s | speed term, like M5Stack's |
-| `kx` | 0.5 | m/s per m | position term, like M5Stack's, at most 0.094 m/s |
-| `kpos` | 10 | degrees per m | position loop |
-| `kvel` | 3 | degrees per m/s | position loop, speed part |
+| `kpos` | 18 | degrees per m | position loop |
+| `kvel` | 8 | degrees per m/s | position loop, speed part |
 | `kt` | -0.05 | rad per m·s | slow return to the start point (with `kpos` and `kvel`; alone it fought the PID, test 6) |
 | `kh` | 0.1 | m/s per rad | heading hold |
-| `khr` | 0 | m/s per rad/s | heading rate damping |
-| `ys` | -1 | | sign of the gyro Z axis |
-| `nf`, `nq` | 0, 2 | Hz, | notch filter frequency (0 = off) and Q |
 | `off` | 31 | PWM | dead band jump |
 | `ramp` | 0.3 | m/s | how smoothly the jump comes in |
 | `vmax` | 0.5 | m/s | speed limit (at most 0.55) |
@@ -125,11 +120,10 @@ Start values, all can be changed while it runs:
 | `gw` | 0.995 | share per tick | gyro share in the tilt filter (0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s) |
 | `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And three for tests:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And two for tests:
 
 - `rec 3`: record 3 s (at most 5) of every control tick, at 200 Hz, then send it as `rec,...` lines. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
-- `law 1`: balance with M5Stack's factory law instead of ours, to compare them with the same telemetry and limits; `law 0` goes back. See `m5law.h` for what is the same and what is not.
 
 The gains came from a search on a simulated robot. We kept the sets that worked for many guesses of the center of mass height (5 to 16 cm), motor lag (30 to 150 ms) and extra delay (0 to 40 ms). Then we tuned them on the robot.
 
@@ -145,7 +139,7 @@ The robot should rather fall over than drive away.
 - If the home Wi-Fi drops while it balances, the heartbeat stops and so does the robot. It then joins the network again.
 - Wi-Fi power saving is off. With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
-- Updates need the token and are refused while it balances. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
+- Updates need the token and are refused while it balances or runs a fall test. The robot does not start while an update runs. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
 - On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
 
 ### Two cores
@@ -201,10 +195,35 @@ Tests 20 and 21, the same day: the robot was left alone and a script changed one
 | 21 | `kw` 10 with `kp` 2.5 and `gw` 0.995 | 14.4, 14.6 | 0.94, 0.82 |
 | 21 | `kw` 20 with `kp` 2.5 and `gw` 0.995 | 13.4, 19.0 | 0.34, 0.62 |
 
-- `gw` 0.995 is the new start value: about 40% less shake on average. Two recordings with the same values differ a lot, so this needed the ten and six recordings.
+- `gw` 0.995 became the start value after these two tests: 9.2 against 16.9 deg/s on average. Test 22 did not repeat it (see below), so the gain is not sure.
 - The dither changed nothing, so it is not in the code.
 - `kw` cuts the slow sway to a half or a third, but the shake grows with it. With a lower `kp` and `gw` 0.995, the shake is back to where it was and part of the sway gain is left. It stays off: no clear gain yet.
 - Most of the robot's movement is the slow sway, about 1 degree under 2 Hz, not the shake.
+
+Test 22, the same day, with `gw` 0.995 as the start value and the simpler code. Same method, three recordings per setting, one run of about 5 minutes without a stop. It was also the first start from lying down with `gw` 0.995, and it started well.
+
+| Setting | Shake (deg/s) | Sway (degrees) | Travel (mm) |
+| --- | --- | --- | --- |
+| Start values, 9 recordings | 11.0 to 20.9, mean 15.4 | 0.83 to 1.00 | 8 to 22 |
+| `kw` 5 | 21.8, 21.4, 17.5 | 0.86, 0.85, 0.86 | 11 to 13 |
+| `kw` 10 | 20.7, 23.3, 22.3 | 0.59, 0.64, 0.67 | 7 to 9 |
+| `kw` 15 | 28.0, 25.9, 26.4 | 0.50, 0.36, 0.23 | 5 to 6 |
+| `kx` 0 and `kv` 0, with `kpos` 18 and `kvel` 8 | 14.9, 12.9, 8.8 | 0.93, 0.78, 0.87 | 5 to 10 |
+
+- With `gw` 0.995 the shake was 15.4 deg/s on average, about the same as with 0.98 in tests 20 and 21. Over all three tests it is 12.9 (15 recordings) against 16.9 (10 recordings). So 0.995 is a little better at most.
+- `kw` is the same trade as before: the sway and the travel go down, the shake goes up. `kw` 5 only adds shake.
+- `kx` and `kv` can go: the position loop does the same job when `kpos` and `kvel` take their share. Not tested with pushes here, so the start values did not change yet (see test 23).
+
+Test 23, the same day: pushes by hand, about one every 10 s. The script changed between the two settings every 25 s, and the person pushing did not know which one was on. All pushes were soft (0.09 to 0.17 m/s at the peak), and none stopped the robot.
+
+| Setting | Pushes | Travel (mm) | Travel per m/s of push (mm) | Time to stop (s) |
+| --- | --- | --- | --- | --- |
+| `kx` 0.5, `kv` 0.3, `kpos` 10, `kvel` 3 | 5 | 82 | 565 | 2.6 (0.2 to 5.6) |
+| `kx` 0, `kv` 0, `kpos` 18, `kvel` 8 | 4 | 61 | 453 | 3.4 (0.4 to 5.8) |
+
+No clear difference with so few pushes, and the new setting was not worse. So `kx` and `kv` are gone, and `kpos` 18 and `kvel` 8 are the start values. Hard pushes, close to the 0.4 m/s stop, are not tested.
+
+Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
 What we learned:
 
@@ -246,7 +265,7 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kv 0.30 kx 0.50 kpos 10.0 kvel 3.0 kt -0.050 off 31 ramp 0.300 kh 0.10 khr 0.00 ys -1 nf 0.0 nq 2.0 law 0 vmax 0.50 max 500 gw 0.995 kw 0.0
+gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kpos 18.0 kvel 8.0 kt -0.050 off 31 ramp 0.300 kh 0.10 vmax 0.50 max 500 gw 0.995 kw 0.0
 t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging
 9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1
 ```
@@ -264,7 +283,11 @@ sim: done, balancing
 
 ## Try next
 
-- Stop faster after a push: raise `kvel` in small steps (5, 7) and check the shaking at each step.
+- Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
+- Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
+- The slow sway (about 1 degree, under 2 Hz) is most of the robot's movement, and it comes from the motors' dead band. `kw` cuts it but adds shake (tests 20 to 22). Find a way to get one without the other.
+- Check `gw` again with more recordings: 0.995 was better in tests 20 and 21 and the same in test 22.
+- Before test 23 the robot restarted once while it was handled (its clock went from 548 s back to 10 s). Nobody saw why. If it happens again, read the serial port to see if it was a crash or the watchdog.
 - Cut the loop's delay at 6 to 8 Hz: predict the tilt about 20 ms ahead from the rate, or model the motor lag in the law. Small gain changes are done (tests 14 to 18).
 - Test pushes with a fixed push (a pendulum or a weight on a string), so two settings get the same push.
 - Move: add a speed setpoint to drive forward, and a turn term (left and right wheels get `v_cmd ± turn`).
