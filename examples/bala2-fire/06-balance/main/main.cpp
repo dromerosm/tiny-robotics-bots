@@ -511,7 +511,8 @@ static void control_task(void *arg)
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
     notch_t notch = {};
     read_position(&last_pos, &ahead);
-    int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, battery_ticks = 0;
+    int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
+        battery_ticks = 0;
     int64_t last_us = esp_timer_get_time();
     TickType_t wake = xTaskGetTickCount();
 
@@ -531,12 +532,18 @@ static void control_task(void *arg)
             read_battery();
         }
         if (!read_imu(&acc, &g, &yaw) || !read_position(&pos, &ahead)) {
-            if (++errors >= 3 && st.state == ST_BALANCE) {
+            if (++errors >= 3 && (st.state == ST_BALANCE || st.state == ST_FALL)) {
                 stop("I2C error");
+            }
+            if (st.state == ST_WAIT || st.state == ST_STOPPED) {
+                set_speed(0); // the base keeps the last command, so repeat it
             }
             continue;
         }
         errors = 0;
+        if (st.state != ST_BALANCE) {
+            trim = 0; // or the last run's trim would move the start window
+        }
         const float rate = (g - gyro_offset) / GYRO_LSB_PER_DPS;
         // Factory law's angle filter runs all the time, so it has settled
         // when a start with "law 1" comes.
@@ -593,6 +600,7 @@ static void control_task(void *arg)
                     upright_ticks = 0;
                     balance_ticks = 0;
                     fast_ticks = 0;
+                    write_errors = 0;
                     start_pos = pos;
                     start_ahead = ahead;
                     heading = 0;
@@ -687,7 +695,10 @@ static void control_task(void *arg)
                     ul = ur = clampf(m5, lim * ramp);
                 }
                 st.u = (ul + ur) / 2;
-                if (!set_wheels((int16_t)ul, (int16_t)ur) && ++errors >= 3) {
+                // Its own counter: "errors" goes back to 0 on every good read.
+                if (set_wheels((int16_t)ul, (int16_t)ur)) {
+                    write_errors = 0;
+                } else if (++write_errors >= 3) {
                     stop("I2C error");
                 }
                 break;

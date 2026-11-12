@@ -211,6 +211,9 @@ static void start_wifi(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    // No modem sleep: with it, the robot answers late and drops packets, and
+    // a quiet second stops the balance.
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     if (!join_home()) {
         start_ap();
     }
@@ -284,16 +287,19 @@ static esp_err_t update_handler(httpd_req_t *req)
     // watchdog resets the robot (seen twice on 2026-10-31: "IDLE0", with the
     // backtrace in esp_ota_write). Short pauses did not help. The motors are
     // stopped, so we stop watching core 0's idle task until the update ends.
-    // The control task stays watched, and a stalled upload ends with the
-    // server's receive timeout.
+    // The control task stays watched, and a stalled upload ends after 3
+    // receive timeouts in a row (30 s).
     TaskHandle_t idle0 = xTaskGetIdleTaskHandleForCore(0);
     esp_task_wdt_delete(idle0);
     static char buf[4096];
-    int left = req->content_len;
+    int left = req->content_len, timeouts = 0;
     while (left > 0) {
         const int n = httpd_req_recv(req, buf, left < (int)sizeof(buf) ? left : sizeof(buf));
-        if (n == HTTPD_SOCK_ERR_TIMEOUT) {
+        if (n == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
             continue;
+        }
+        if (n > 0) {
+            timeouts = 0;
         }
         if (n <= 0 || esp_ota_write(ota, buf, n) != ESP_OK) {
             esp_ota_abort(ota);

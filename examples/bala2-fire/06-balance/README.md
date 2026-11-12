@@ -134,12 +134,13 @@ The robot should rather fall over than drive away.
 
 - Speed limit 0.5 m/s and PWM limit 500. Over Wi-Fi they can go up to 0.55 m/s and 600, never more.
 - It only starts after it was lying down, and then held upright and still for 1 second. Then the speed limit ramps up over 1 second.
-- It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if an I2C read fails, if the loop runs late, if the Wi-Fi link goes quiet for 1 second, or on button B.
+- It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, if the Wi-Fi link goes quiet for 1 second, or on button B.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
 - If the home Wi-Fi drops while it balances, the heartbeat stops and so does the robot. It then joins the network again.
+- Wi-Fi power saving is off. With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
-- Updates need the token and are refused while it balances. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched.
+- Updates need the token and are refused while it balances. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
 - On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
 
 ### Two cores
