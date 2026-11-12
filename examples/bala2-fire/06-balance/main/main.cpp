@@ -43,6 +43,9 @@
 //
 // Buttons: B stops. A and C move the balance point by -/+0.25 degrees.
 //
+// A Servo Kit 360 servo on the base's S4 header takes "servo <pulse>" (see
+// the README). It is not part of the balance.
+//
 // In the emulator there is no robot. A rough simulated pendulum on wheels
 // stands in for it. It checks the start, the soft start and the safety stops,
 // not the gains: its center of mass and motor response are guesses.
@@ -86,6 +89,14 @@ static const char *TAG = "balance";
 #define REG_PWR_MGMT_1   0x6B
 #define REG_SPEED        0x00
 #define REG_ENCODER      0x10
+#define REG_SERVO_US     0x30 // + 2 * (channel - 1): pulse in us, big-endian
+
+// Servo Kit 360 on the base's S4 header: a speed servo. 1500 us is stop,
+// 500 and 2500 are full speed, one each way. The base makes the 50 Hz signal.
+#define SERVO_CH      4
+#define SERVO_STOP_US 1500
+#define SERVO_MIN_US  500
+#define SERVO_MAX_US  2500
 
 #define GYRO_LSB_PER_DPS 16.4f      // +-2000 deg/s
 #define M_PER_COUNT      0.0003366f // 45 mm wheel, 420 counts per turn
@@ -188,6 +199,9 @@ static volatile bool stop_request;
 static volatile bool fall_request; // next start is a fall test, not a balance
 static volatile bool ready;        // set by the control task after calibration
 static volatile float setpoint_trim = BALANCE_POINT_DEG;
+// Servo pulse asked for by a command. Only the control task talks to the
+// base, so it sends the value when it changes.
+static volatile int servo_us = SERVO_STOP_US;
 
 // --- Simulated robot (emulator only) --------------------------------------
 
@@ -296,6 +310,15 @@ static bool set_wheels(int16_t left, int16_t right)
 static bool set_speed(int16_t u)
 {
     return set_wheels(u, u);
+}
+
+static bool set_servo(int us)
+{
+    if (sim) {
+        return true;
+    }
+    const uint8_t buf[3] = {REG_SERVO_US + 2 * (SERVO_CH - 1), (uint8_t)(us >> 8), (uint8_t)us};
+    return i2c_master_transmit(base, buf, sizeof(buf), I2C_TIMEOUT) == ESP_OK;
 }
 
 // Tilt from the accelerometer (deg), gyro X rate (raw, the tilt axis) and
@@ -457,6 +480,8 @@ static void control_task(void *arg)
     // Wi-Fi (on core 0) cannot delay it.
     sim = !hw_init();
     set_speed(0);
+    set_servo(SERVO_STOP_US); // the base keeps the last pulse too
+    int servo_sent = SERVO_STOP_US;
     if (sim) {
         st.seen_lying = true; // the emulator script starts with it held upright
         setpoint_trim = 0;    // the simulated robot balances at 0
@@ -681,6 +706,16 @@ static void control_task(void *arg)
             }
         }
 
+        // Servo: stop it if the computer went quiet, like the balance. Send
+        // the pulse only when it changes; a failed write is tried again.
+        if (!link_alive()) {
+            servo_us = SERVO_STOP_US;
+        }
+        const int want = servo_us;
+        if (want != servo_sent && set_servo(want)) {
+            servo_sent = want;
+        }
+
         // 200 Hz recorder (rec.h): every tick while it records.
         if (rec_active()) {
             const rec_sample_t s = {
@@ -746,9 +781,9 @@ static void say(const char *fmt, ...)
 static void say_gains(void)
 {
     say("gains kp %.2f ki %.1f kd %.3f rf %.2f kpos %.1f kvel %.1f kt %.3f "
-        "off %.0f ramp %.3f kh %.2f vmax %.2f max %.0f gw %.3f kw %.1f\n",
+        "off %.0f ramp %.3f kh %.2f vmax %.2f max %.0f gw %.3f kw %.1f servo %d\n",
         gain.kp, gain.ki, gain.kd, gain.rf, gain.kpos, gain.kvel, gain.kt,
-        gain.off, gain.ramp, gain.kh, gain.vmax, gain.max, gain.gw, gain.kw);
+        gain.off, gain.ramp, gain.kh, gain.vmax, gain.max, gain.gw, gain.kw, (int)servo_us);
 }
 
 // Change a gain while it runs, from the serial monitor or over Wi-Fi:
@@ -767,6 +802,7 @@ static void handle_command(const char *line)
     }
     if (!strcmp(name, "stop")) {
         stop_request = true;
+        servo_us = SERVO_STOP_US;
         return;
     }
     if (!strcmp(name, "fall")) {
@@ -803,6 +839,8 @@ static void handle_command(const char *line)
         gain.vmax = fminf(fmaxf(v, 0), HARD_MAX_V);
     } else if (n == 2 && !strcmp(name, "gw")) {
         gain.gw = fminf(fmaxf(v, 0.9f), 0.999f);
+    } else if (n == 2 && !strcmp(name, "servo")) {
+        servo_us = (int)fminf(fmaxf(v, SERVO_MIN_US), SERVO_MAX_US);
     } else if (n == 2 && !strcmp(name, "kw")) {
         gain.kw = fminf(fmaxf(v, 0), 100);
     } else if (n == 2 && !strcmp(name, "max")) {
@@ -887,6 +925,7 @@ extern "C" void app_main(void)
         } else {
             if (pressed(BTN_B, &last_b)) {
                 stop_request = true;
+                servo_us = SERVO_STOP_US;
             }
             if (pressed(BTN_A, &last_a)) {
                 setpoint_trim -= 0.25f;

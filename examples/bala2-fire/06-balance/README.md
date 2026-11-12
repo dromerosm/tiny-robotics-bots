@@ -120,8 +120,9 @@ Start values, all can be changed while it runs:
 | `gw` | 0.995 | share per tick | gyro share in the tilt filter (0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s) |
 | `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And two for tests:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And three more:
 
+- `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
 - `rec 3`: record 3 s (at most 5) of every control tick, at 200 Hz, then send it as `rec,...` lines. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
 
@@ -141,6 +142,24 @@ The robot should rather fall over than drive away.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
 - Updates need the token and are refused while it balances or runs a fall test. The robot does not start while an update runs. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
 - On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
+
+### The servo
+
+One servo of the M5Stack Servo Kit 360° is plugged into the base's **S4** header. It is a speed servo: it turns without end and cannot hold an angle. The base makes its 50 Hz signal; we only write the pulse width to the base (I2C 0x3A, register 0x36, in microseconds).
+
+| Command | What the servo does |
+| --- | --- |
+| `servo 1500` | stops |
+| `servo 1700` | turns one way; the further from 1500, the faster |
+| `servo 1300` | turns the other way |
+
+The value is kept between 500 and 2500. `?` shows it at the end of the gains line.
+
+- The base keeps the last pulse it got, like the motor speed. So the robot sends 1500 at boot, and button B and `stop` send it too.
+- If a computer was talking to the robot and goes quiet for 1 second, the servo stops, like the balance.
+- Only the control task talks to the base. A command just stores the value, and the control task sends it on its next tick, when it changes.
+- Each servo stops at a slightly different pulse. Ours stands still at 1500 (checked by eye). If yours creeps, try values near it.
+- It works while the robot balances, but that is not measured: a turning servo shakes the body a little and uses the same battery as the motors (up to 750 mA if it is blocked).
 
 ### Two cores
 
@@ -269,7 +288,7 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kpos 18.0 kvel 8.0 kt -0.050 off 31 ramp 0.300 kh 0.10 vmax 0.50 max 500 gw 0.995 kw 0.0
+gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kpos 18.0 kvel 8.0 kt -0.050 off 31 ramp 0.300 kh 0.10 vmax 0.50 max 500 gw 0.995 kw 0.0 servo 1500
 t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging
 9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1
 ```
