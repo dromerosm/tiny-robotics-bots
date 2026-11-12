@@ -95,7 +95,6 @@ static const char *TAG = "balance";
 #define LOOP_HZ 200
 #define DT      (1.0f / LOOP_HZ)
 
-#define GYRO_WEIGHT 0.98f    // complementary filter
 #define SPEED_LPF   0.2f     // speed filter, like M5Stack's
 #define M_S_PER_PWM 0.00118f // example 05: speed = 0.00118 * (PWM - 31)
 #define PWM_OFFSET  31.0f
@@ -107,6 +106,7 @@ static const char *TAG = "balance";
 #define TURN_LIMIT  0.1f   // m/s, most the heading loop may add to one wheel
 #define HEADING_ENC 0.01f  // heading filter: share of the encoder heading per tick
 #define HARD_MAX_V  0.55f  // m/s, never more
+#define KW_LIMIT    0.1f   // m/s, most the wheel position loop may add
 
 // Safety limits. MAX_PWM is the start value; "max" over serial can change it
 // up to HARD_MAX_PWM and never more.
@@ -123,7 +123,9 @@ static const char *TAG = "balance";
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
 #define LYING_DEG        45.0f
 #define MIN_BATTERY      25    // %, the IP5306 gives 0, 25, 50, 75 or 100
-#define M5_POINT_DEG     -1.5f // factory balance point, as saved in our unit
+// Balance point at boot. The factory app had -1.5 saved in our unit, and in
+// our own runs the mean tilt was about -1.5 too (2026-11-12).
+#define BALANCE_POINT_DEG -1.5f
 
 #define CAL_SAMPLES 1000
 
@@ -178,12 +180,22 @@ static struct {
     volatile int law = 0;            // 0 = ours, 1 = factory (M5Stack), to compare
     volatile float vmax = 0.5f;      // m/s, asked speed limit
     volatile float max = MAX_PWM;
+    // Share of the gyro in the tilt filter, per tick. 0.98 follows the
+    // accelerometer in about 0.25 s, 0.995 in about 1 s. The accelerometer
+    // also feels the wheels speed up, and that leaks into the tilt: with
+    // 0.995 the robot shook about 40% less than with 0.98 (tests 20, 21).
+    volatile float gw = 0.995f;
+    // Wheel position loop, 1/s (0 = off). The command is added up into the
+    // place where the wheels should be. If they are behind (stuck in the
+    // dead band), they get up to KW_LIMIT more speed. It cuts the slow sway
+    // but adds to the fast shake (tests 20, 21), so it is off.
+    volatile float kw = 0.0f;
 } gain;
 
 static volatile bool stop_request;
 static volatile bool fall_request; // next start is a fall test, not a balance
 static volatile bool ready;        // set by the control task after calibration
-static volatile float setpoint_trim;
+static volatile float setpoint_trim = BALANCE_POINT_DEG;
 
 // --- Simulated robot (emulator only) --------------------------------------
 
@@ -495,6 +507,7 @@ static void control_task(void *arg)
     set_speed(0);
     if (sim) {
         st.seen_lying = true; // the emulator script starts with it held upright
+        setpoint_trim = 0;    // the simulated robot balances at 0
     }
     const bool imu_ok = calibrate_gyro();
     if (!imu_ok) {
@@ -509,6 +522,7 @@ static void control_task(void *arg)
     read_imu(&acc, &g, &yaw);
     float tilt = acc, speed = 0, last_pos = 0, start_pos = 0, integral = 0, trim = 0, rate_f = 0;
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
+    float x_ref = 0;                    // m, where the wheels should be (kw)
     notch_t notch = {};
     read_position(&last_pos, &ahead);
     int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
@@ -551,7 +565,8 @@ static void control_task(void *arg)
                   (yaw - yaw_offset) / GYRO_LSB_PER_DPS, DT);
         const float yaw_rate = gain.ys * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
         rate_f += gain.rf * (rate - rate_f);
-        tilt = GYRO_WEIGHT * (tilt + rate * DT) + (1 - GYRO_WEIGHT) * acc;
+        const float gw = gain.gw;
+        tilt = gw * (tilt + rate * DT) + (1 - gw) * acc;
         speed = (1 - SPEED_LPF) * speed + SPEED_LPF * (pos - last_pos) / DT;
         last_pos = pos;
         const float setpoint = setpoint_trim + trim;
@@ -604,6 +619,7 @@ static void control_task(void *arg)
                     start_pos = pos;
                     start_ahead = ahead;
                     heading = 0;
+                    x_ref = 0;
                     speed = 0;
                     integral = 0;
                     notch.z1 = notch.z2 = 0;
@@ -685,13 +701,19 @@ static void control_task(void *arg)
                            vlim);
                 const float v_cmd =
                     clampf(notch_run(&notch, v_pid, gain.nf, fmaxf(gain.nq, 0.3f)), vlim);
+                // Wheel position loop: push harder while the wheels are behind
+                // the place the command asked for. The error is kept small,
+                // so it cannot wind up.
+                const float kw = gain.kw;
+                x_ref = x + clampf(x_ref + v_cmd * DT - x, KW_LIMIT / fmaxf(kw, 0.01f));
+                const float v_out = clampf(v_cmd + kw * (x_ref - x), vlim);
                 const float lim = fminf(gain.max, HARD_MAX_PWM);
-                float ul = clampf(pwm_for(v_cmd - turn), lim);
-                float ur = clampf(pwm_for(v_cmd + turn), lim);
+                float ul = clampf(pwm_for(v_out - turn), lim);
+                float ur = clampf(pwm_for(v_out + turn), lim);
                 if (gain.law == 1) {
                     // Factory law instead of ours, with our limits. Same PWM on
                     // both wheels, as in the original.
-                    const float m5 = m5_control(last_enc_sum, M5_POINT_DEG + setpoint_trim);
+                    const float m5 = m5_control(last_enc_sum, setpoint_trim);
                     ul = ur = clampf(m5, lim * ramp);
                 }
                 st.u = (ul + ur) / 2;
@@ -786,16 +808,17 @@ static void say(const char *fmt, ...)
 static void say_gains(void)
 {
     say("gains kp %.2f ki %.1f kd %.3f rf %.2f kv %.2f kx %.2f kpos %.1f kvel %.1f kt %.3f "
-        "off %.0f ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f law %d vmax %.2f max %.0f\n",
+        "off %.0f ramp %.3f kh %.2f khr %.2f ys %.0f nf %.1f nq %.1f law %d vmax %.2f max %.0f "
+        "gw %.3f kw %.1f\n",
         gain.kp, gain.ki, gain.kd, gain.rf, gain.kv, gain.kx, gain.kpos, gain.kvel, gain.kt,
         gain.off, gain.ramp, gain.kh, gain.khr, gain.ys, gain.nf, gain.nq, gain.law, gain.vmax,
-        gain.max);
+        gain.max, gain.gw, gain.kw);
 }
 
 // Change a gain while it runs, from the serial monitor or over Wi-Fi:
 //     kp 3.5  ki 10  kd 0.07  rf 0.45  kv 0.3  kx 0.5  kpos 10  kvel 3  kt -0.05  off 31
 //     ramp 0.3  kh 0.1  khr 0  ys -1  nf 8.5  nq 2
-//     vmax 0.4  max 500  ?  stop
+//     vmax 0.4  max 500  gw 0.995  kw 0  ?  stop
 // "hb" (heartbeat) only keeps the Wi-Fi link alive. Each change is printed, so
 // the log shows which values were used.
 static void handle_command(const char *line)
@@ -856,6 +879,10 @@ static void handle_command(const char *line)
         gain.ramp = fminf(fmaxf(v, 0.001f), 0.5f);
     } else if (n == 2 && !strcmp(name, "vmax")) {
         gain.vmax = fminf(fmaxf(v, 0), HARD_MAX_V);
+    } else if (n == 2 && !strcmp(name, "gw")) {
+        gain.gw = fminf(fmaxf(v, 0.9f), 0.999f);
+    } else if (n == 2 && !strcmp(name, "kw")) {
+        gain.kw = fminf(fmaxf(v, 0), 100);
     } else if (n == 2 && !strcmp(name, "max")) {
         gain.max = fminf(fmaxf(v, 0), HARD_MAX_PWM);
     } else if (strcmp(name, "?")) {

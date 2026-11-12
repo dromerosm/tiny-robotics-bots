@@ -96,6 +96,9 @@ PWM      = (v_cmd -+ turn) / 0.00118 + off * min(1, |v| / ramp)   left, right
 - **Position loop (`kpos`, `kvel`, `kt`).** When the robot is ahead of where it started, or rolls forward, it is asked to lean back a little, so it comes back. The slow `kt` part removes what is left, so it returns to its start point.
 - **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (`ys -1`).
 - **Motor line.** 0.00118 m/s per PWM unit is the slope we measured. `off` (31) jumps the motors' dead band. It grows from 0 over `ramp` m/s, so the gain near 0 stays low.
+- **Balance point.** It starts at -1.5 degrees, not 0. The factory app had -1.5 saved in our unit, and the mean tilt in our own runs was about -1.5 too (test 19). Buttons A and C move it.
+- **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 (tests 20 and 21).
+- **Wheel position loop (`kw`).** Off by default. It adds up the command into the place where the wheels should be, and pushes harder while they are behind. It cuts the slow sway but adds to the fast shake (tests 20 and 21).
 - The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz). An optional notch filter (`nf`, `nq`) can remove one frequency from `v_cmd`; it is off by default (see test 12).
 
 Start values, all can be changed while it runs:
@@ -119,6 +122,8 @@ Start values, all can be changed while it runs:
 | `ramp` | 0.3 | m/s | how smoothly the jump comes in |
 | `vmax` | 0.5 | m/s | speed limit (at most 0.55) |
 | `max` | 500 | PWM | PWM limit (at most 600) |
+| `gw` | 0.995 | share per tick | gyro share in the tilt filter (0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s) |
+| `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
 
 Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And three for tests:
 
@@ -177,6 +182,30 @@ Tests on 2026-10-31, with the 200 Hz recorder (`rec 5`). Each setting got two wi
 | 17 | `ramp` 0.1, 0.2, 0.3, 0.5 | A softer dead band jump moved the peak down to 5.5 to 7 Hz and halved the motor reversals. The robot swayed a little more (tilt 1.15 against 1.0 degrees). No drift to the 0.3 m stop this time (compare test 8). |
 | 18 | `rf` 0.45 with `ramp` 0.3, against the old values, with pushes | **Better on all counts:** 41 against 71 deg/s of shaking, 6 against 17 cm of travel after a push, and it stopped sooner. The pushes were by hand, and those on the old values were a little stronger, so the exact numbers are not reliable. These are now the start values. |
 
+Test on 2026-11-12: one run of 92 s with the start values, left alone and pushed by hand, with seven 200 Hz recordings.
+
+| Test | Change | Result |
+| --- | --- | --- |
+| 19 | None, only measured | The shake peak was at 6.4 to 8.8 Hz, with 50 to 74% of the rate's power between 5 and 10 Hz. **The command was under PWM 55 for 33 to 67% of the time, and there the wheels mostly stand still:** 71% of the time under PWM 20, 57% at 20 to 40, 30% at 40 to 55, and 5% at 75 to 95. At the shake frequency the wheels gave 0.37 to 0.43 mm/s per PWM unit, a third of the measured line, with only 25 to 30 ms of delay. The accelerometer added 0.13 to 0.21 degrees (RMS) of false tilt between 5 and 10 Hz, to a true tilt of 0.23 to 0.64. Replaying the filter on the same data with `gw` 0.995 gave 0.08 to 0.10. The mean tilt was about -1.5 degrees. The run ended after a push: the command stayed at the speed limit for 0.35 s with only 2 to 4 degrees of tilt, and the 0.4 m/s stop ended it. |
+
+Tests 20 and 21, the same day: the robot was left alone and a script changed one setting about every 25 s, with two 200 Hz recordings of 5 s each. The robot stood through each test without a stop (about 3 and 4 minutes). "Shake" is the rate between 5 and 10 Hz, "sway" is the tilt under 2 Hz, both RMS.
+
+| Test | Setting | Shake (deg/s) | Sway (degrees) |
+| --- | --- | --- | --- |
+| 20, 21 | Start values of that day (`gw` 0.98), 10 recordings | 12.5 to 28.1, mean 16.9 | 0.82 to 1.05 |
+| 20, 21 | `gw` 0.995, 6 recordings | 0.2 to 14.7, mean 9.2 | 0.06 to 0.87 |
+| 20 | Dither of 30 and 50 PWM at 50 Hz, opposite on the two wheels | 13.7 to 21.3 | 0.68 to 0.96 |
+| 20 | `kw` 10 | 25.0, 30.4 | 0.49, 0.52 |
+| 20 | `kw` 20 | 42.1, 38.5 | 0.27, 0.31 |
+| 21 | `kw` 10 with `kp` 2.5 | 17.2, 22.8 | 0.84, 0.87 |
+| 21 | `kw` 10 with `kp` 2.5 and `gw` 0.995 | 14.4, 14.6 | 0.94, 0.82 |
+| 21 | `kw` 20 with `kp` 2.5 and `gw` 0.995 | 13.4, 19.0 | 0.34, 0.62 |
+
+- `gw` 0.995 is the new start value: about 40% less shake on average. Two recordings with the same values differ a lot, so this needed the ten and six recordings.
+- The dither changed nothing, so it is not in the code.
+- `kw` cuts the slow sway to a half or a third, but the shake grows with it. With a lower `kp` and `gw` 0.995, the shake is back to where it was and part of the sway gain is left. It stays off: no clear gain yet.
+- Most of the robot's movement is the slow sway, about 1 degree under 2 Hz, not the shake.
+
 What we learned:
 
 - Fit the law to the actuator. These motors follow a speed, so a pure P on the tilt (M5Stack's law) leaves the robot leaning.
@@ -217,7 +246,7 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kv 0.30 kx 0.50 kpos 10.0 kvel 3.0 kt -0.050 off 31 ramp 0.300 kh 0.10 khr 0.00 ys -1 nf 0.0 nq 2.0 law 0 vmax 0.50 max 500
+gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kv 0.30 kx 0.50 kpos 10.0 kvel 3.0 kt -0.050 off 31 ramp 0.300 kh 0.10 khr 0.00 ys -1 nf 0.0 nq 2.0 law 0 vmax 0.50 max 500 gw 0.995 kw 0.0
 t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging
 9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1
 ```

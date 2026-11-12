@@ -18,7 +18,7 @@ While it runs, it sends a heartbeat ("hb") 5 times a second. If the robot
 balances and hears nothing for 1 second, it stops. So stopping this tool
 (Ctrl+C) also stops the robot.
 
-Commands: kp, ki, kd, rf, kv, kx, kpos, kvel, kt, off, ramp, kh, khr, ys, nf, nq, law, vmax, max
+Commands: kp, ki, kd, rf, kv, kx, kpos, kvel, kt, off, ramp, kh, khr, ys, nf, nq, law, vmax, max, gw, kw
 (each with a value), rec N, fall, ?, stop
 """
 import argparse
