@@ -58,7 +58,7 @@ Be on the same network as the robot, then:
 python3 examples/bala2-fire/06-balance/tools/bala2_link.py --log run.csv
 ```
 
-The tool finds the robot as `bala2.local`, or at 192.168.4.1 (`--host` picks another address). It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, about 40 to 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot balances and hears nothing for 1 second, it stops. So closing the tool stops the robot.
+The tool finds the robot as `bala2.local`, or at 192.168.4.1 (`--host` picks another address). It shows the telemetry (`t_ms,state,tilt,rate,speed,position,u,setpoint`, about 40 to 50 times a second) and sends what you type as commands. It also sends a heartbeat. If the robot hears nothing for 1 second, it stops the servo and keeps balancing in place. So closing the tool does not make the robot fall. To stop it, type `stop` or press button B.
 
 Wi-Fi, the updates and the web server are not in this example. They are in the shared component [bala2_link](../../../components/bala2_link), so every BALA2 firmware can have them. The numbers you can change, and the 200 Hz samples, come from a second one, [bala2_mon](../../../components/bala2_mon). A new firmware is on trial after an update: if it fails three starts, the robot goes back to the one before (see the component's README).
 
@@ -157,10 +157,10 @@ The robot should rather fall over than drive away.
 
 - Speed limit 0.5 m/s and PWM limit 500. Over Wi-Fi they can go up to 0.55 m/s and 600, never more.
 - It only starts after it was lying down, and then held upright and still for 1 second. Then the speed limit ramps up over 1 second.
-- It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, if the Wi-Fi link goes quiet for 1 second, or on button B.
+- It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, or on button B.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
-- If the home Wi-Fi drops while it balances, the heartbeat stops and so does the robot. It then joins the network again.
+- If the computer goes quiet for 1 second, or the home Wi-Fi drops, the robot keeps balancing in place and the screen says `balancing, link lost`. It used to cut the motors, and a healthy robot fell over for it. The position loop holds it where it started, and the stop rules above still work. The robot joins the network again by itself.
 - Wi-Fi power saving is off. With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
 - Updates need the token and are refused while it balances or runs a fall test. The robot does not start while an update runs. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
@@ -179,7 +179,7 @@ One servo of the M5Stack Servo Kit 360° is plugged into the base's **S4** heade
 The value is kept between 500 and 2500. `?` shows it at the end of the gains line.
 
 - The base keeps the last pulse it got, like the motor speed. So the robot sends 1500 at boot, and button B and `stop` send it too.
-- If a computer was talking to the robot and goes quiet for 1 second, the servo stops, like the balance.
+- If a computer was talking to the robot and goes quiet for 1 second, the servo stops. The balance goes on.
 - Only the control task talks to the base. A command just stores the value, and the control task sends it on its next tick, when it changes.
 - Each servo stops at a slightly different pulse. Ours stands still at 1500 (checked by eye). If yours creeps, try values near it.
 - It works while the robot balances, but that is not measured: a turning servo shakes the body a little and uses the same battery as the motors (up to 750 mA if it is blocked).
@@ -297,6 +297,8 @@ Test 30, the same day: what was left to check, with the two components in place.
 - **The link while it balances.** A command and its answer took 9 ms (median), 36 ms at worst. Four takes of 10 s at 200 Hz lost no sample.
 - **The robot's own network.** An app built with no home networks made `BALA2-xxxx`. A phone joined it with the key from the screen and opened the page at `http://192.168.4.1/`. It was also the first time the page ran on a real phone. That app was made to stay on trial, and two presses of reset brought the normal one back, on the home network.
 
+Test 31, the same day: a lost link no longer stops the balance. With the robot balancing, a computer sent a heartbeat for 8 s with the servo turning (1600), then went quiet for 20 s. The servo went back to 1500 within 2 s. The robot kept balancing all the time, within 3 cm of where it started, and the screen and the page said `balancing, link lost`. When the heartbeat came back, so did `balancing`.
+
 Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -361,7 +363,6 @@ sim: done, balancing
 
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
-- When the computer goes quiet, the robot stops its motors and falls over. A softer end (roll to a stop, or keep balancing in place) would be kinder to it.
 - Find why the robot restarts when the charging cable goes in or out.
 - Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.

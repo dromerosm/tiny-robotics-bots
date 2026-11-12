@@ -15,8 +15,9 @@ The update token is the key on the robot's screen. Put it in the
 environment variable BALA2_TOKEN, not on the command line.
 
 While it runs, it sends a heartbeat ("hb") 5 times a second. If the robot
-balances and hears nothing for 1 second, it stops. So stopping this tool
-(Ctrl+C) also stops the robot.
+hears nothing for 1 second, it stops the servo and keeps balancing in place.
+So stopping this tool (Ctrl+C) does not make the robot fall. To stop the
+robot, type "stop" or press its button B.
 
 Commands: a name and a value (kp, ki, kd, rf, kpos, kvel, kt, off, ramp, kh,
 vmax, max, gw, kw, bp, servo, bl), ? to list them, rec N (N seconds of 200 Hz
@@ -79,7 +80,7 @@ def main():
 
     def send(data):
         # While the robot restarts, its network is gone for a moment and
-        # sendto() fails. Keep going: a dead heartbeat would stop the robot.
+        # sendto() fails. Keep going: a dead heartbeat would stop the servo.
         try:
             sock.sendto(data, robot)
         except OSError as e:

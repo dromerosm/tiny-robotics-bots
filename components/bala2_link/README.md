@@ -73,7 +73,7 @@ The file has `SSID_01`, `PWD_SSID_01`, `SSID_02` and `PWD_SSID_02`. With none se
 
 ## Safety for a robot that moves
 
-- **Heartbeat.** Once a computer has talked to the robot over UDP, `link_alive()` turns false if it is quiet for 1 second. A control loop calls it and stops the motors. The web page does not start this rule.
+- **Heartbeat.** Once a computer has talked to the robot over UDP, `link_alive()` turns false if it is quiet for 1 second. The firmware decides what that means: 06-balance stops the servo and keeps balancing in place, because a robot that cuts its motors falls over. The web page does not start this rule.
 - **No update while it moves.** `can_update()` returns false, and the robot answers 409. `link_updating()` is true while an update is written, so the firmware can refuse to start: flash writes stall both cores for a few milliseconds at a time.
 - **Core 0 only.** Wi-Fi, the web server and the UDP task run on core 0. A control loop on core 1 only calls `link_alive()` and `link_updating()`, which read one word each.
 - **A bad request does no harm.** A wrong key gives 401, an image that is too large or empty gives 400, and the connection closes at once.

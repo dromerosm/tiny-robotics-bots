@@ -713,12 +713,16 @@ static void control_task(void *arg)
                     stop("too fast");
                 } else if (late && !sim) { // QEMU does not run in real time
                     stop("loop late");
-                } else if (!link_alive()) {
-                    stop("Wi-Fi link lost");
                 }
                 if (st.state != ST_BALANCE) {
                     break;
                 }
+                // The computer went quiet: keep balancing. Stopping the motors
+                // here made a healthy robot fall over. It holds its place by
+                // itself (the position loop), the servo stops (below), and
+                // every other stop rule still works. A speed or turn asked
+                // for over the link must go back to 0 here, when there is one.
+                st.reason = link_alive() ? "balancing" : "balancing, link lost";
 
                 // The balance point follows a slow drift (kt), up to 5 degrees.
                 trim = clampf(trim + gain.kt * x * DT * RAD_TO_DEG_F, TRIM_LIMIT);
@@ -796,7 +800,7 @@ static void control_task(void *arg)
             }
         }
 
-        // Servo: stop it if the computer went quiet, like the balance. Send
+        // Servo: stop it if the computer went quiet. Send
         // the pulse only when it changes; a failed write is tried again.
         if (!link_alive()) {
             servo_us = SERVO_STOP_US;
