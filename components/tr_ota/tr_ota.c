@@ -188,11 +188,19 @@ static const char *state_name(esp_ota_img_states_t state)
     }
 }
 
+// The running app's state. Reading it touches the flash, and a task with its
+// stack in PSRAM must not do that (ESP-IDF stops the robot). So read_state
+// reads it at start and when a trial ends, and everyone else gets the copy.
+static esp_ota_img_states_t app_state = ESP_OTA_IMG_UNDEFINED;
+
+static void read_state(void)
+{
+    esp_ota_get_state_partition(esp_ota_get_running_partition(), &app_state);
+}
+
 static esp_ota_img_states_t running_state(void)
 {
-    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    esp_ota_get_state_partition(esp_ota_get_running_partition(), &state);
-    return state;
+    return app_state;
 }
 
 // One line about the running app, for the serial port and for GET /.
@@ -606,6 +614,7 @@ static void trial_task(void *arg)
                             pdMS_TO_TICKS(TRIAL_WIFI_S * 1000)) &
         GOT_IP) {
         ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
+        read_state();
         ESP_LOGI(TAG, "new app marked valid");
     } else {
         ESP_LOGI(TAG, "no Wi-Fi within %d s, going back to the old app", TRIAL_WIFI_S);
@@ -617,6 +626,7 @@ static void trial_task(void *arg)
 esp_err_t tr_ota_start(void)
 {
     start_log();
+    read_state();
     char text[160];
     describe_app(text, sizeof(text));
     ESP_LOGI(TAG, "%.*s", (int)strcspn(text, "\n"), text);
