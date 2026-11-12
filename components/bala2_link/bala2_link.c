@@ -104,6 +104,26 @@ int link_rssi(void)
     return on_home && esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
 }
 
+const char *link_last_restart(void)
+{
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:
+            return "power on";
+        case ESP_RST_BROWNOUT:
+            return "brownout";
+        case ESP_RST_PANIC:
+            return "crash";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            return "watchdog";
+        case ESP_RST_SW:
+            return "software";
+        default:
+            return "other";
+    }
+}
+
 bool link_updating(void)
 {
     return updating;
@@ -502,10 +522,10 @@ static esp_err_t update_handler(httpd_req_t *req)
 static esp_err_t info_handler(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
-    char text[128];
-    snprintf(text, sizeof(text), "%s, built %s %s, running from %s%s\n", app->project_name,
-             app->date, app->time, esp_ota_get_running_partition()->label,
-             on_trial ? ", on trial" : "");
+    char text[160];
+    snprintf(text, sizeof(text), "%s, built %s %s, running from %s%s, last restart: %s\n",
+             app->project_name, app->date, app->time, esp_ota_get_running_partition()->label,
+             on_trial ? ", on trial" : "", link_last_restart());
     return httpd_resp_sendstr(req, text);
 }
 

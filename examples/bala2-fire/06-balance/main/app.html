@@ -146,6 +146,7 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
     <dt>Firmware</dt><dd id="fw">–</dd>
     <dt>Running from</dt><dd id="slot">–</dd>
     <dt>On for</dt><dd id="up">–</dd>
+    <dt>Last restart</dt><dd id="restart">–</dd>
     <dt>Free memory</dt><dd id="heap">–</dd>
     <dt>Lowest free memory</dt><dd id="heapmin">–</dd>
   </dl>
@@ -226,6 +227,7 @@ function show(s) {
   set('rssi', s.home ? s.rssi + ' dBm' : '–');
   set('fw', s.fw);
   set('slot', s.slot);
+  set('restart', s.restart);
   const h = Math.floor(s.up / 3600), m = Math.floor(s.up / 60) % 60, sec = s.up % 60;
   set('up', (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + sec + ' s');
   set('heap', Math.round(s.heap / 1024) + ' KB');

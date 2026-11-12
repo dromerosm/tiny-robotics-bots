@@ -76,7 +76,7 @@ Under the controls it shows what the robot reads, twice a second:
 - **Motion sensor (MPU6886):** acceleration and rotation on the three axes, raw, and the chip's temperature.
 - **Wheels:** both encoder counts, and how many sensor reads failed since the start.
 - **Buttons:** A, B and C light up while you press them.
-- **Link and system:** network, address, signal, firmware build, the slot it runs from, time on, and free memory.
+- **Link and system:** network, address, signal, firmware build, the slot it runs from, time on, why it last restarted, and free memory.
 
 The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the microSD card, Bluetooth, Grove port A and the servo headers S1 to S3.
 
@@ -127,7 +127,7 @@ Start values, all can be changed while it runs:
 
 | Name | Value | Unit | What it does |
 | --- | --- | --- | --- |
-| `kp` | 3.5 | m/s per rad | P on the tilt (about 52 PWM per degree) |
+| `kp` | 3.0 | m/s per rad | P on the tilt (about 45 PWM per degree). It was 3.5 until test 33 |
 | `ki` | 10 | m/s per rad·s | I on the tilt |
 | `kd` | 0.07 | m/s per rad/s | D on the tilt |
 | `rf` | 0.45 | share per tick | low-pass filter on the rate for D (0.32 is about 12 Hz, 0.45 about 19 Hz) |
@@ -275,7 +275,7 @@ Test 24, the same day: the servo moved from the base to the body.
 - **The charging cable holds the robot up.** With the cable plugged in, the robot stood at about 6.5 degrees with the motors doing nothing. It looks like a balance, but the wheels moved less than 1 mm in a minute and the command stayed under the dead band. Do not test with the cable in.
 - **Servo on top, cable out.** The robot balanced. It started at +1.5 degrees, the trim brought it to -3.2 in about 20 s, and the mean tilt over the last minute was -3.4 to -3.5. Shake 15.6 deg/s, travel 3 cm. The battery read 0% here too, so the shake needs a new check on a full battery. In the next run, 20 minutes later, the point was +0.7. We do not know what changed (the servo was not fixed in place, or the cable still hung from the robot).
 - **Servo on the back again, cable out.** The robot balanced, with a mean tilt of 9.4 to 9.6 degrees over 50 s and shake of 12.8 to 16.9 deg/s. So the servo on the back was not the problem in the first runs. The cable and the battery were, and the start window too: the robot only starts within 3 degrees of its balance point, and that point was far off.
-- **The robot restarts when the charging cable goes in or out.** It happened every time. The balance point then went back to its start value. This is why the robot now learns the point and saves it.
+- **The robot restarts when the charging cable comes out** (test 32 found that it is only then, and why). It happened every time. The balance point then went back to its start value. This is why the robot now learns the point and saves it.
 
 Test 25, the same day: Bluetooth. The ESP32 in the Fire has it, but this firmware does not use it. A test build with NimBLE (224 KB larger) scanned for 5 s with Wi-Fi on and found 33 devices (131 adverts, best signal -38 dBm), then advertised as `BALA2` with no error. Wi-Fi telemetry went on during the scan. We did not check from a phone that the advert is seen. The test code is not in the repo.
 
@@ -298,6 +298,60 @@ Test 30, the same day: what was left to check, with the two components in place.
 - **The robot's own network.** An app built with no home networks made `BALA2-xxxx`. A phone joined it with the key from the screen and opened the page at `http://192.168.4.1/`. It was also the first time the page ran on a real phone. That app was made to stay on trial, and two presses of reset brought the normal one back, on the home network.
 
 Test 31, the same day: a lost link no longer stops the balance. With the robot balancing, a computer sent a heartbeat for 8 s with the servo turning (1600), then went quiet for 20 s. The servo went back to 1500 within 2 s. The robot kept balancing all the time, within 3 cm of where it started, and the screen and the page said `balancing, link lost`. When the heartbeat came back, so did `balancing`.
+
+Test 32, the same day: why the robot restarts with the charging cable. A test build showed the reason of the last restart and the power chip's registers (IP5306), and a script logged each restart.
+
+| Cable to | Plugged in | Pulled out |
+| --- | --- | --- |
+| A computer, twice | charges, no restart | restarts, `power on`, back in 7 s |
+| A computer, with the chip's "keep the boost on" bit set, twice | charges, no restart | restarts, `power on`, back in 7 s |
+| A wall charger, twice | charges, no restart | restarts, `power on`, back in 8 s |
+
+So it restarts only when the cable comes out, six times out of six, and never when it goes in. The chip sees a cold start, not a crash or a watchdog. The serial chip is not the cause, because a charger with no data does the same. The cause is the power path of the Fire: with the cable in, the Fire runs from USB, and when the cable comes out the power chip must start its boost from the battery. The supply drops for a moment, long enough to restart the ESP32. The "keep the boost on" bit (register 0x00, bit 1) does not help; we put it back. The other settings were already what M5Stack's library sets. Firmware cannot fix this. It does little harm: the robot lies down while it charges, it is back in 7 s, and it takes its balance point from the hand. `GET /info` and the phone page now show the reason of the last restart.
+
+Test 33, the same day: parquet. All the tests before this one were on a smooth carpet. On parquet the robot stood, but badly.
+
+| | Carpet | Parquet |
+| --- | --- | --- |
+| Shake | 6 to 15 deg/s | 23 to 25 deg/s |
+| Where the shake's power is | under 2 Hz (the slow sway) | 75 to 81% between 5 and 10 Hz, peak at 8 Hz |
+| Travel in 10 s | 1 to 4 cm | 11 to 25 cm |
+| Mean motor command | PWM 50 to 78 | PWM 90 to 110 |
+
+It is the loop's own shake at 6 to 9 Hz (tests 14 to 18). The carpet's pile damps it, a hard floor does not, and the gains were set on the carpet. The wheels did not slip: the encoders and the tilt agree.
+
+The start was a second problem. In the first parquet runs the balance point was 15.3 degrees, and the robot only started within 15 degrees of upright. So it had to be let go off its balance, and each start began with a lurch of 25 cm. The start window and the range of `bp` are now 25 degrees.
+
+Two sweeps on parquet, each setting twice for 8 s, in the order A to E and back:
+
+| Setting | Shake (deg/s) | Tilt sd (degrees) | Travel (cm) |
+| --- | --- | --- | --- |
+| `kp` 3.5 (the start value) | 25.4, 25.0 | 1.32, 1.25 | 11.2, 7.2 |
+| `kp` 3.0 | 20.3, 18.9 | 1.65, 1.49 | 10.9, 10.4 |
+| `kp` 2.5 | 16.9, 17.3, 18.2, 19.1 | 1.73, 1.64, 1.42, 1.53 | 10.6, 9.0, 5.2, 8.8 |
+| `kp` 2.0 | 16.1, 15.1 | 2.01, 1.78 | 10.4, 10.3 |
+| `kp` 2.5, `kd` 0.05 | 17.1, 15.4 | 1.91, 1.34 | 12.0, 6.2 |
+| `kp` 2.5, `kw` 10 | 27.6, 31.2 | 1.06, 1.13 | 7.9, 4.8 |
+| `kp` 2.5, `kw` 20 | 44.8, 28.6 | 1.26, 0.87 | 6.7, 2.8 |
+| `kp` 2.0, `kw` 10 | 22.4, 23.2 | 1.14, 1.19 | 3.9, 3.6 |
+| `kp` 2.0, `kw` 20 | 34.1, 27.6 | 1.18, 1.01 | 8.9, 3.5 |
+
+- A lower `kp` cuts the 8 Hz shake: 25 deg/s at 3.5, 18 at 2.5, 16 at 2.0. The slow sway grows a little with it.
+- `kw` cuts the sway and the travel, and brings the shake back, as on the carpet. It stays off.
+The same sweep on the carpet, right after, with the same load:
+
+| Setting | Shake (deg/s) | Tilt sd (degrees) | Travel (cm) |
+| --- | --- | --- | --- |
+| `kp` 3.5 | 15.6, 17.2 | 1.03, 1.06 | 1.6, 2.7 |
+| `kp` 3.0 | 16.5, 16.1 | 1.28, 1.26 | 2.4, 2.2 |
+| `kp` 2.5 | 16.4, 17.0 | 1.57, 1.61 | 2.9, 3.5 |
+| `kp` 2.0 | 15.7, 17.6 | 1.71, 1.96 | 3.5, 3.7 |
+| `kp` 2.5, `kd` 0.05 | 18.7, 19.4 | 1.59, 1.60 | 3.4, 3.0 |
+
+- On the carpet `kp` does not change the shake (16 deg/s for all), but a lower `kp` adds sway and travel.
+- So the two floors want different values: 3.5 on the carpet, 2.5 or less on parquet. **3.0 is the new start value.** On parquet it takes away a fifth of the shake (25 to 20 deg/s). On the carpet it costs a fifth more sway (1.05 to 1.27 degrees) and no more travel. For one floor only, set `kp` from the phone page.
+- Each number here is two takes of 8 s. Pushes were only tested with 3.5 (test 23).
+- In these sweeps the balance point was 9.2 degrees (8.3 on the carpet), not 15.3, on the same floor an hour apart. We do not know what moved. One guess: the sensor sits on the servo's arm, so each turn of the servo moves its weight.
 
 Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
@@ -343,7 +397,7 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3.50 ki 10.0 kd 0.070 rf 0.45 kpos 18.0 kvel 8.0 kt -0.050 off 31 ramp 0.300 kh 0.10 vmax 0.50 max 500 gw 0.995 kw 0.0 servo 1500
+gains kp 3 ki 10 kd 0.07 rf 0.45 kpos 18 kvel 8 kt -0.05 off 31 ramp 0.3 kh 0.1 vmax 0.5 max 500 gw 0.995 kw 0 bp -1.5 servo 1500 bl 20
 t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging
 9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1
 ```
@@ -363,7 +417,6 @@ sim: done, balancing
 
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
-- Find why the robot restarts when the charging cable goes in or out.
 - Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
 - The slow sway (about 1 degree, under 2 Hz) is most of the robot's movement, and it comes from the motors' dead band. `kw` cuts it but adds shake (tests 20 to 22). Find a way to get one without the other.

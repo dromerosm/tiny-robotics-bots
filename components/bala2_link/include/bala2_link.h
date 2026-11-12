@@ -61,6 +61,11 @@ bool link_on_home(void);
 // Signal of the home network in dBm, or 0 on the robot's own network.
 int link_rssi(void);
 
+// Why the chip last restarted: "power on", "brownout", "crash", "watchdog",
+// "software" (an update, or esp_restart()) or "other". GET /info shows it too.
+// On the ESP32 a press of the reset button reads as "power on".
+const char *link_last_restart(void);
+
 // Send one line to the computer that last talked to us over UDP (if any).
 void link_send(const char *line);
 

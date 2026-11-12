@@ -12,7 +12,7 @@ It is for the BALA2 Fire only (ESP32). StackChan has its own module, [tr_ota](..
 - **Key.** 12 random characters, made on the first boot and kept in the robot. It is the password of the robot's own network and the token for updates. It is never in the code. Show it on the screen with `link_password()`.
 - **UDP link, port 4210.** Send a line to the robot (a command, or `hb` as a heartbeat) and it sends its telemetry back to you.
 - **Updates.** `POST /update` with the app image and the header `X-Token: <key>`.
-- **Web server.** `GET /` gives the firmware's page, `GET /state` its state as JSON, `POST /cmd` takes a command line, and `GET /info` says which firmware runs.
+- **Web server.** `GET /` gives the firmware's page, `GET /state` its state as JSON, `POST /cmd` takes a command line, and `GET /info` says which firmware runs and why the robot last restarted (`power on`, `brownout`, `crash`, `watchdog` or `software`).
 
 ## Use it
 

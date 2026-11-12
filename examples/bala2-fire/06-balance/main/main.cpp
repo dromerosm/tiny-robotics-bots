@@ -138,7 +138,7 @@ static const char *TAG = "balance";
 // A balance starts from the angle the hand holds: a person feels where the
 // robot stops pulling, and that is its balance point, to a degree or two.
 // So the start needs no saved value and no buttons after the load changes.
-#define START_DEG 15.0f // held this close to upright
+#define START_DEG 25.0f // held this close to upright (15 was too little, test 33)
 #define HOLD_DEG  1.5f  // and this still, for UPRIGHT_TICKS
 #define UPRIGHT_RATE_DPS 15.0f
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
@@ -156,7 +156,7 @@ static const char *TAG = "balance";
 #define LEARN_TICKS     (10 * LOOP_HZ)
 #define LEARN_SKIP      2
 #define LEARN_MAX_SPEED 0.15f // m/s
-#define BP_LIMIT        15.0f // degrees
+#define BP_LIMIT        25.0f // degrees
 
 #define CAL_SAMPLES 1000
 
@@ -196,7 +196,9 @@ static float gyro_offset, yaw_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
 static struct {
-    volatile float kp = 3.5f;  // m/s per rad of tilt (about 52 PWM per degree)
+    // 3.5 was set on a carpet. On parquet it shakes at 8 Hz, and 3.0 cuts that
+    // by a fifth for a little more sway on the carpet (test 33).
+    volatile float kp = 3.0f;  // m/s per rad of tilt (about 45 PWM per degree)
     volatile float ki = 10.0f; // m/s per (rad*s)
     volatile float kd = 0.07f; // m/s per rad/s (0.10 shook more, test 9)
     // Low-pass filter on the rate used by the D term: share of the new sample
@@ -938,7 +940,8 @@ static void state_json(char *buf, size_t size)
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
-             "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\"}",
+             "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\","
+             "\"restart\":\"%s\"}",
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
@@ -950,7 +953,7 @@ static void state_json(char *buf, size_t size)
              link_on_home() ? "true" : "false", link_ip(), link_rssi(),
              esp_timer_get_time() / 1000000, (unsigned long)esp_get_free_heap_size(),
              (unsigned long)esp_get_minimum_free_heap_size(), app->date, app->time,
-             esp_ota_get_running_partition()->label);
+             esp_ota_get_running_partition()->label, link_last_restart());
 }
 
 // The learned balance point lives in flash (NVS), in hundredths of a degree.
