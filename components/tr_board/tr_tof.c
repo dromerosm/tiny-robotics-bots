@@ -86,7 +86,8 @@ static void release(void)
 // 8 rows count up from 128, column by column, the bottom 8 count down from 127.
 static esp_err_t write_zone(void)
 {
-    const int at = zone_row < 8 ? 128 + 8 * zone_col + zone_row : 127 - 8 * zone_col - (zone_row - 8);
+    const int at =
+        zone_row < 8 ? 128 + 8 * zone_col + zone_row : 127 - 8 * zone_col - (zone_row - 8);
     ESP_RETURN_ON_ERROR(wr(REG_ZONE_AT, at), TAG, "zone");
     return wr(REG_ZONE_SIZE, (zone - 1) << 4 | (zone - 1));
 }
