@@ -391,6 +391,7 @@ esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b)
 #define MIN_LED_MV    3600
 
 static bool five_volts;
+static bool port_wants; // tr_port_power(true): keep the 5 V on with all LEDs off
 
 static esp_err_t leds_power(bool on)
 {
@@ -441,8 +442,24 @@ esp_err_t tr_led_show(void)
         err = i2c_master_transmit(py32, show, 2, 50);
     }
     xSemaphoreGive(bus_lock);
-    if (err == ESP_OK && !any) {
+    if (err == ESP_OK && !any && !port_wants) {
         err = leds_power(false); // all off: no need for the 5 V
     }
     return err;
+}
+
+// The Grove ports take their 5 V from the same line as the LEDs. A unit on a
+// port (a distance sensor on port A) needs it also when no LED is lit.
+esp_err_t tr_port_power(bool on)
+{
+    port_wants = on;
+    if (on) {
+        return leds_power(true);
+    }
+    for (size_t i = 1; i < sizeof(led_ram); i++) {
+        if (led_ram[i] != 0) {
+            return ESP_OK; // an LED is lit: it still needs the 5 V
+        }
+    }
+    return leds_power(false);
 }

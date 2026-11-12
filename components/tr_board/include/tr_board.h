@@ -24,6 +24,11 @@ esp_err_t tr_board_i2c(i2c_master_bus_handle_t *bus);
 // Find the chips on the internal I2C bus. Returns how many addresses it put in found.
 int tr_board_scan(uint8_t *found, int max);
 
+// The same for a Grove port of the body, given its two pins: port A is SDA G2
+// and SCL G1, port B is G9 and G8, port C is G17 and G18. Returns -1 when a
+// line of the port is held low (a unit with no power does that).
+int tr_board_scan_port(int sda, int scl, uint8_t *found, int max);
+
 // Read or write one register of a chip on the internal bus (for debugging).
 esp_err_t tr_board_reg_read(uint8_t addr, uint8_t reg, uint8_t *value);
 esp_err_t tr_board_reg_write(uint8_t addr, uint8_t reg, uint8_t value);
@@ -136,6 +141,11 @@ esp_err_t tr_servo_set_zero(tr_servo_t id, int raw);
 #define TR_LED_COUNT 12
 esp_err_t tr_led_set(int index, uint8_t r, uint8_t g, uint8_t b);
 esp_err_t tr_led_show(void);
+
+// The 5 V of the three Grove ports. It is the same line as the LEDs' 5 V, so
+// the same battery rule holds. On: it stays on with all LEDs off. Off: it goes
+// off when no LED is lit.
+esp_err_t tr_port_power(bool on);
 
 // The other sensors on the I2C bus: head touch (Si12T), screen touch (FT6336),
 // motion (BMI270), clock (BM8563), power chip (AXP2101), light (LTR553), and

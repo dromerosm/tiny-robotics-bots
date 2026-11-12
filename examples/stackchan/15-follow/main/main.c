@@ -313,6 +313,15 @@ static void on_sleep(bool going_to_sleep)
     }
 }
 
+// The distance sensor on port A needs the 5 V of the Grove ports. Asleep, it
+// goes off to save the battery.
+static void port_sleep(bool going_to_sleep)
+{
+    if (tr_port_power(!going_to_sleep) != ESP_OK) {
+        ESP_LOGW("port", "no 5 V for the Grove ports");
+    }
+}
+
 static esp_err_t face_get(httpd_req_t *req)
 {
     // The page (tr_web) shows a pair of buttons for each of the lines
@@ -377,6 +386,8 @@ void app_main(void)
     const httpd_uri_t rec_p = {.uri = "/rec", .method = HTTP_POST, .handler = rec_post};
     ESP_ERROR_CHECK(tr_ota_add_uri(&rec_g));
     ESP_ERROR_CHECK(tr_ota_add_uri(&rec_p));
+    port_sleep(false);
+    tr_sleep_add_hook(port_sleep);
     if (track_init() == ESP_OK) {
         talk_set_quiet_hook(track_quiet);
         tr_sleep_add_hook(on_sleep);

@@ -4,7 +4,7 @@
 //   POST /head?yaw=20&pitch=45&ms=1000  move (token needed); &hold=1 keeps the torque on
 //   POST /head/off                      torque and servo power off (token needed)
 //   POST /head/zero?yaw=436&pitch=585   save new zero positions, raw 0..1023 (token needed)
-//   GET  /i2c                           the chips on the internal I2C bus
+//   GET  /i2c                           the chips on the internal I2C bus and the Grove ports
 //   GET  /sensors                       touch, motion, clock, power chip, temperature
 //   GET  /leds, POST /leds?color=ff8800&side=left|right|all   side LEDs (token needed)
 //   GET  /camera.jpg                    one camera frame, JPEG (CONFIG_TR_WEB_CAMERA)
@@ -196,7 +196,7 @@ static esp_err_t head_zero(httpd_req_t *req)
     return head_get(req);
 }
 
-// GET /i2c: which chips answer on the internal bus.
+// GET /i2c: which chips answer on the internal bus and on the Grove ports.
 static esp_err_t i2c_get(httpd_req_t *req)
 {
     static const struct {
@@ -222,6 +222,24 @@ static esp_err_t i2c_get(httpd_req_t *req)
         }
         snprintf(line, sizeof(line), "0x%02X %s\n", found[i], name);
         httpd_resp_sendstr_chunk(req, line);
+    }
+    // The three Grove ports of the body: what is plugged in, if anything.
+    static const struct {
+        char name;
+        int sda, scl;
+    } ports[] = {{'A', 2, 1}, {'B', 9, 8}, {'C', 17, 18}};
+    for (size_t p = 0; p < sizeof(ports) / sizeof(ports[0]); p++) {
+        const int m = tr_board_scan_port(ports[p].sda, ports[p].scl, found, 32);
+        if (m < 0) {
+            snprintf(line, sizeof(line), "---- port %c: a line is held low (a unit with no power?)\n",
+                     ports[p].name);
+            httpd_resp_sendstr_chunk(req, line);
+        }
+        for (int i = 0; i < m; i++) {
+            snprintf(line, sizeof(line), "0x%02X %s, port %c\n", found[i],
+                     found[i] == 0x29 ? "VL53L1X distance" : "?", ports[p].name);
+            httpd_resp_sendstr_chunk(req, line);
+        }
     }
     return httpd_resp_sendstr_chunk(req, NULL);
 }

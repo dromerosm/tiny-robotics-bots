@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -165,6 +166,47 @@ int tr_board_scan(uint8_t *found, int max)
             found[n++] = addr;
         }
     }
+    return n;
+}
+
+// A Grove port has its own two pins, so it gets its own bus (I2C port 1),
+// made for the scan and removed after it.
+int tr_board_scan_port(int sda, int scl, uint8_t *found, int max)
+{
+    // An idle bus has both lines high. A unit with no power holds them low,
+    // and then every probe would wait for its timeout.
+    const gpio_config_t in = {
+        .pin_bit_mask = 1ULL << sda | 1ULL << scl,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&in);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    const bool idle = gpio_get_level(sda) && gpio_get_level(scl);
+    gpio_reset_pin(sda);
+    gpio_reset_pin(scl);
+    if (!idle) {
+        return -1;
+    }
+    const i2c_master_bus_config_t cfg = {
+        .i2c_port = 1,
+        .sda_io_num = sda,
+        .scl_io_num = scl,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_master_bus_handle_t b;
+    if (i2c_new_master_bus(&cfg, &b) != ESP_OK) {
+        return 0;
+    }
+    int n = 0;
+    for (uint8_t addr = 0x08; addr < 0x78 && n < max; addr++) {
+        if (i2c_master_probe(b, addr, 20) == ESP_OK) {
+            found[n++] = addr;
+        }
+    }
+    i2c_del_master_bus(b);
     return n;
 }
 
