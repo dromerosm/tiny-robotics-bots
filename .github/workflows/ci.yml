@@ -36,6 +36,13 @@ jobs:
           scripts/format.sh --check
       - name: Host unit tests
         run: scripts/test-host.sh
+      # The virtual parts (Rust): host tests, then the WebAssembly build.
+      # rustup is on the runner; the version comes from tools.env.
+      - name: Parts
+        run: |
+          . ./tools.env
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-unknown-unknown
+          scripts/build-parts.sh
       - name: List examples
         id: list
         run: echo "examples=$(scripts/list-examples.sh | jq -R -s -c 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"

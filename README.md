@@ -52,6 +52,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 13 | [home](examples/stackchan/13-home) | 12's talk plus the plugs on the home network (Tuya 3.3 and 3.4, no cloud): a Home screen on the left eye, switch them by voice, and `/home` on the web | ✅ (no screen or audio; it reads the real plugs through the emulator's network) |
 | 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room (36 dB gain, 90 Hz high-pass) and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The face turns orange if the uploads fall behind. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
 | 15 | [follow](examples/stackchan/15-follow) | 14 plus 11's face tracking, by turns: the head follows your face while nobody talks, and for a talk or a recording the camera, the face model and the servos stop. The echo canceller works on one microphone, so it all fits in internal RAM. The speaker is louder, with less microphone gain | ✅ (no screen, camera, servos or audio in esp-emu) |
+| 16 | [servos](examples/stackchan/16-servos) | The head servos from the console, with the real driver: serial bus packets on UART1 and power through the PY32 | ✅ (in the browser a virtual body answers, so the head moves) |
 
 ### BALA2 Fire
 
@@ -73,6 +74,12 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | [tr_ota](components/tr_ota) | Home Wi-Fi, updates over Wi-Fi and rollback for StackChan. Every example that runs on the robot calls `tr_ota_start()`. |
 | [tr_board](components/tr_board) | StackChan board parts: screen, touch, head servos, side LEDs, microphones, camera, battery and the other sensors. Also sleep: after a minute with no touch, on battery, it turns off what nobody uses, and a touch wakes it. |
 | [tr_web](components/tr_web) | The robot's web page (`http://stackchan.local/app`), the head and sleep endpoints, and the status screen on the robot. Every example that runs on the robot uses it. |
+
+### Virtual parts for the emulator
+
+| Part | What it is |
+| --- | --- |
+| [stackchan-body](parts/stackchan-body) | StackChan's body for esp-emu, in Rust: the PY32 (servo power) and the two head servos on the serial bus. The browser emulator runs it, so [16-servos](examples/stackchan/16-servos) moves the head with the real driver. Built by `scripts/build-parts.sh`, published with each release. |
 
 ### Workers and Mac tools
 

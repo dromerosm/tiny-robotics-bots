@@ -27,8 +27,27 @@ jobs:
           path: out/*.bin
           if-no-files-found: error
 
+  parts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The virtual parts for esp-emu (Rust to WebAssembly). The site's
+      # emulator loads stackchan-body.wasm from the release.
+      - name: Build the parts
+        run: |
+          . ./tools.env
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-unknown-unknown
+          scripts/build-parts.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: parts
+          path: out/*.wasm
+          if-no-files-found: error
+
   publish:
-    needs: build
+    needs: [build, parts]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # only this job can create the release
@@ -37,12 +56,16 @@ jobs:
         with:
           name: firmware
           path: out
-      - name: Create release with images and checksums
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: parts
+          path: out
+      - name: Create release with images, parts and checksums
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           cd out
-          sha256sum *.bin > SHA256SUMS
-          gh release create "$TAG" *.bin SHA256SUMS \
+          sha256sum *.bin *.wasm > SHA256SUMS
+          gh release create "$TAG" *.bin *.wasm SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
