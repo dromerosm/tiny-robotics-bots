@@ -196,7 +196,7 @@ The gains came from a search on a simulated robot. We kept the sets that worked 
 - **An order ends by itself.** Without a time it lasts 0.5 s. With one, at most 5 s. A server that drives the robot sends the order again a few times a second. If the server or the link dies, the robot stops in 0.5 s and holds its place.
 - `stop` is still the emergency stop: it cuts the motors and the robot falls over. To stop driving, send `drive 0 0`.
 - The robot does not drive in the first 2 seconds after the start.
-- `GET /state` has `"drive":[speed, turn]`: what the robot follows right now.
+- `GET /state` has `"drive":[speed, turn]`: what the robot follows right now. It also has `"goal":[place, heading]`: the place (m from the start) and the heading (degrees) the robot holds. Compare them with `pos` and `heading` to see how far off it is.
 - With a distance sensor, a forward order slows down and stops before a wall (see [The distance sensor](#the-distance-sensor)).
 
 How it works: an order does not touch the motors. It moves the place and the heading that the robot holds. The position loop and the heading hold do the rest, so every balance and stop rule still works. The speed changes slowly (`dacc`), because the robot must lean before it can speed up. For a turn, the wheels also get the speed difference of that turn directly, because `kh` alone is too soft to follow it. While it drives, the slow trim and the learning of the balance point wait.
@@ -248,7 +248,69 @@ A Unit ToF4M (a VL53L1X laser distance sensor) on the Fire's Grove port A lets t
 - **Where to see it:** `"tof"` in `GET /state` (mm, -1 for nothing in range, -2 for no sensor) and `"tof_slows"`, the last column of the telemetry, "Distance ahead" in the Drive tab of the phone page, and a bar on the right of the robot's screen. The bar is full at 1 m or more. It is red under `ts`, yellow under `tw` and green over it.
 - **Port A is the robot's own I2C bus** (pins 21 and 22), with the motion sensor, the base and the power chip. So the control task reads the sensor too: it asks 50 times a second if a new distance is there, and never waits for one. The sensor measures 10 times a second, up to 4 m.
 
-**The sensor sees the floor.** The robot leans forward when it balances (5 to 8 degrees with our load), and the sensor's view is 27 degrees wide. So the whole view reads the floor, 15 to 25 cm ahead, and the distance follows the tilt. The sensor has 16 x 16 detectors and can use a small square of them. `tz` is the side of the square, and `tcol` and `trow` are its center. One detector is about 1.7 degrees. Our unit lies on its side, so `tcol` is up and down, and a high value looks up. With `tz 4` and `tcol 14` it saw no floor in 32 s of balancing, and a box at once (test 37). These are the start values. **For another mount, find your own:** change them while the robot balances and watch the bar.
+**The sensor sees the floor.** The robot leans forward when it balances (5 to 8 degrees with our load), and the sensor's view is 27 degrees wide. So the whole view reads the floor, 15 to 25 cm ahead, and the distance follows the tilt. The sensor has 16 x 16 detectors and can use a small square of them. `tz` is the side of the square, and `tcol` and `trow` are its center. One detector is about 1.7 degrees. Our unit lies on its side, so `tcol` is up and down, and a high value looks up. With `tz 4` and `tcol 14` it saw no floor in 32 s of balancing, and a box at once (test 37). `tzr` makes the zone a rectangle: with a value (4 to 16), `tz` counts the columns and `tzr` the rows, and 0 gives a square again. On our mount `tzr 16` with `tz 4` looks 27 degrees wide and still does not see the floor (test 41). It also sees much further: walls at 0.8 to 1.6 m that the small square read as nothing. The firmware still starts with the square (`tzr 0`), so set `tzr 16` and `save` to keep it. These are the start values. **For another mount, find your own:** change them while the robot balances and watch the bar.
+
+### The explorer tool
+
+`tools/explorer.py` drives the robot one order at a time, so an AI agent (Claude, in our case) can explore a room with it. An agent needs seconds between two orders, and a `drive` order ends in half a second. So each command of this tool does one whole thing, waits until the robot is still, prints one line of JSON and ends.
+
+```bash
+python3 examples/bala2-fire/06-balance/tools/explorer.py scan
+```
+
+| Command | What it does |
+| --- | --- |
+| `status` | The sensors (tilt, speed, place, heading, distance, battery, Wi-Fi), the pose and a list of warnings. `--raw` gives all of `GET /state` |
+| `watch 5` | 5 s of sensor numbers without moving: least, most, mean and spread |
+| `scan` | Turns once around, reads the distance sensor all the way, and lists the free sectors and the best one. `--arc 120` looks only ahead |
+| `look` | A small fan ahead, with no movement: it moves the sensor's zone (`trow`) from side to side |
+| `turn 90` | Turns left 90 degrees. A negative angle turns right. `--to 0` turns to a heading |
+| `forward 0.4` | Goes 0.4 m ahead. A negative distance goes back, 0.15 m at most, because nothing looks that way |
+| `halt` | Ends the order now. The robot keeps balancing |
+| `map` | Draws what the scans have seen, the path and the robot |
+| `origin` | Forgets the map. The place where the robot is becomes (0, 0) |
+| `params` | Every value you can change: the tool's own, with what each one is, and the robot's |
+| `set scan_rate 20` | Changes a value. If the name is one of the robot's (`set ts 0.25`), it goes to the robot |
+| `cmd "save"` | Sends any command line to the robot |
+
+- **How it moves.** The robot times each order, and an order moves the place or the heading it holds. So `turn 90` asks for 45 degrees per second for 2 s, and the heading hold does the rest. A slow link does not change how far it goes. The tool sends an order of 1.5 s again every half second. If the tool dies, the robot stops in 1.5 s at most.
+- **When the way is closed.** `forward` ends early and says why in `"stopped"`: `tof` (the sensor stopped the robot before a wall), `stall` (the robot is more than `stall_lag` behind its goal and hardly moves, or more than `stall_hard` behind at any speed, so something the sensor did not see holds it; the tool then moves the goal back, before the robot's own 0.30 m stop makes it fall), `tilt` or `rssi` (the Wi-Fi got weak). The exit code is 3.
+- **A scan.** Each direction is 10 degrees wide (`scan_bin`) and keeps the nearest distance it saw. A direction where the sensor sees nothing counts as `free_mm`. Samples taken while the robot leaned more than usual are dropped, because then the sensor may see the floor. A sector is free when nothing is closer than `clear_mm`, and passable when it is wide enough for `robot_w_mm` plus `margin_mm` on each side.
+- **The pose.** The tool adds up what the wheels did, with the heading, to get x and y. It keeps them, the path and the points the scans saw in `~/.bala2-explorer`. The robot counts its place and heading from each start, so the map begins again when the robot starts again. If you stood it up between two commands and the tool did not see it, run `origin`.
+- **Values for one call.** `--set name=value` changes one of the tool's values for that call only.
+
+First run on the robot, 2026-11-13 (test 38), on the floor with a box 25 cm ahead:
+
+- **Turns are good.** `turn 90` gave 88.7 and 89.9 degrees, and `turn -85.9` gave -86.8. No extra turn was needed.
+- **The scan finds the box.** A full turn at 30 degrees per second took 122 samples. The box showed in 5 directions, 221 to 287 mm, where it was. After the robot moved 20 cm to the side, a 120 degree scan put the box 35 to 55 degrees to the right. `/state` was read about 7 times a second, not 10.
+- **Most directions read "nothing".** With the small zone (`tz 4`) the sensor does not see the far walls of the room. So "nothing" means "nothing close", and we don't know yet how far that is. Do not trust `free_mm` as a real distance.
+- **Long moves work, short ones do not.** `forward 0.3` moved 0.25 and 0.28 m. But `forward 0.2` moved 0.08 m, and `forward -0.1` moved 0.05 and 0.01 m. The robot holds its place loosely: before the first order it stood 0.18 m from where it started. A short order is lost in that.
+- **The stall check was not sound.** The tool could not read the robot's goal, so it counted the lag from 0 at each order, and the robot may already be 0.1 m off. A free run reached a lag of 0.12 m, and the first rule (0.12 m, at any speed) ended a free run as a stall. Now it also needs the robot to be nearly still. After this test the firmware got `"goal"` in `GET /state`. The tool now takes the lag from it, asks for the distance from where the robot is (not from where its goal is), and waits until the robot is within `settle_off` of its goal. Each `forward` reports `off_goal`. Tested in the second run, below.
+
+Second run, the same day, with the new firmware (test 39):
+
+- **Short moves work now.** `forward -0.1` moved 0.07 m and `forward -0.15` moved 0.11 and 0.12 m. Before, the same orders moved 0.01 to 0.05 m. Free runs of 0.3 m moved 0.24 and 0.22 m.
+- **The robot stops 3 to 4 cm before its goal** (`off_goal` from 0.031 to 0.039 m, every time). `settle_off` is 0.04 m, so there is little room. The lag while it drives at 0.10 m/s went up to 0.155 m.
+- **A box at the edge of the view.** With the box 25 cm ahead, the firmware's own stop line kept the robot in place (`forward 0.3` moved 0.07 m), but the tool did not say why. Now it reports `tof` when the sensor slows the robot within `tof_stop_m` of the stop line. Not tested yet.
+- **One run ended 0.11 m behind its goal**, with the sensor reading 26 cm in 2 samples of 15 and nothing in the rest. Then `forward -0.1` moved the goal 0.21 m back, and the robot did not move: it stayed 0.10 m ahead of its goal. Diego looked: the right wheel was caught on the corner of the box, and the sensor looked past it. With `tz 4` the view is about 7 degrees wide, much less than the robot. So the brake only sees what is right ahead, and a thing in front of one wheel is not seen. The stall check did not fire, because `stall_lag` was 0.15 m. It is 0.08 m now (with the robot nearly still). Not tested yet.
+- `turn 90` gave 88.3 degrees, `turn -89.8` gave -88.5.
+
+Third run, the same day (test 40), at the same corner:
+
+- **The stall check works.** The first try missed it: the lag went over 0.08 m only after the order had ended, and the check only ran during the order. Now it also runs while the robot settles. Then `forward 0.05` and `forward 0.2`, with the wheel on the corner, both ended as `stall` in a few seconds, with a lag of 0.10 to 0.11 m.
+- **Moving the goal back did not free the robot.** The goal went 0.075 m behind the robot and the robot stayed. `forward -0.15` moved it 0.03 m and ended as a stall too. The wheel was caught, and it took a hand to free it. After a stall the goal now goes `stall_back` (0.10 m) behind the robot, not 0.03 m.
+- A stall while it goes back moves the goal forward, into the thing that held it first. This is wrong here and still to fix.
+
+Fourth run, the same day (test 41), with the rectangle zone (`tzr`) and the box again in front of the right wheel:
+
+- **The wide zone sees the box.** With `tz 4` alone the sensor read nothing in 23 samples of 23. With `tzr 16` it read the box at 234 to 262 mm, every time.
+- **It is not the floor.** The robot turned in steps of 45 degrees and read 1.65 m, 0.88 m, 1.22 m and 0.87 m, then 0.24 m again when it faced the box.
+- **The brake holds.** `forward 0.3` at the box ended at once as `tof` and the robot did not move.
+- **A scan sees the room now.** 33 of 36 directions had a real distance, from 235 mm to 1.5 m. In test 38 it was 8 of 36. The view is 27 degrees wide, so a thing looks wider than it is: the box filled 5 directions.
+- While the box read under `ts`, the robot went back about 0.23 m by itself. The stop line moves the goal back to the robot each time it sways back, and never forward again.
+- The robot sways all the time (tilt from 3.9 to 8.4 degrees, turn rate up to 20 degrees per second while it stands). So "still" is judged by means over one second.
+
+The other start values (`clear_mm`, `robot_w_mm`, `tof_offset_mm`, `look_sign`) are still guesses. `look` ran, but it had nothing in front to see.
 
 ### The servo
 
@@ -582,4 +644,5 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
 - The distance sensor, after test 37: check the stop without the creep, measure the distance against a tape, and try dark, thin and low things. Then let the robot back away or turn when the way is closed, not only stop.
+- The explorer tool, after tests 38 to 40: check the `tof` stop with a box in the middle of the view. After a stall, do not move the goal into the thing that stopped the robot before. Decide if `tzr 16` becomes the start value, and check it at 0.2 m: there the view is about 10 cm wide and the robot is wider. Make the robot reach its goal, not stop 4 cm before it. Run `forward` to a wall and against a low thing the sensor does not see. Find how far the small zone sees, to give "nothing" a real distance. Set `look_sign` with a box on one side, and measure a scan against a tape.
 - The sensor only looks forward. For all around, put it on the servo. The servo turns without end and does not say where it points, so the firmware must find that out first.

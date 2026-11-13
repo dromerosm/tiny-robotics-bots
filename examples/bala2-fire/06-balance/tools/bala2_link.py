@@ -20,7 +20,8 @@ So stopping this tool (Ctrl+C) does not make the robot fall. To stop the
 robot, type "stop" or press its button B.
 
 Commands: a name and a value (kp, ki, kd, rf, kpos, kvel, kt, off, ramp, kh,
-vmax, max, gw, kw, tp, mt, mk, ks, kr, kst, as, amin, av, bp, servo, bl), ? to list them, rec N (N seconds of 200 Hz
+vmax, max, gw, kw, tp, mt, mk, ks, kr, kst, as, amin, av, ts, tw, tz, tzr, tcol,
+trow, bp, servo, bl), ? to list them, rec N (N seconds of 200 Hz
 samples, sent as they come), fall, stop
 """
 import argparse

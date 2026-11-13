@@ -115,20 +115,21 @@ int tof_poll(int *mm)
     return 1;
 }
 
-bool tof_set_zone(int size, int col, int row)
+bool tof_set_zone(int cols, int rows, int col, int row)
 {
     if (!dev) {
         return false;
     }
-    size = size < 4 ? 4 : (size > 16 ? 16 : size);
-    const int half = size / 2;
-    row = row < half - 1 ? half - 1 : (row > 15 - half ? 15 - half : row);
-    col = col < half ? half : (col > 16 - half ? 16 - half : col);
+    cols = cols < 4 ? 4 : (cols > 16 ? 16 : cols);
+    rows = rows < 4 ? 4 : (rows > 16 ? 16 : rows);
+    const int half_r = rows / 2, half_c = cols / 2;
+    row = row < half_r - 1 ? half_r - 1 : (row > 15 - half_r ? 15 - half_r : row);
+    col = col < half_c ? half_c : (col > 16 - half_c ? 16 - half_c : col);
     // ST numbers the detectors in two halves: the top 8 rows count up from
     // 128, column by column, the bottom 8 count down from 127.
     const int at = row < 8 ? 128 + 8 * col + row : 127 - 8 * col - (row - 8);
     // Stop, change, run again.
     return wr(REG_START, 0x00, POLL_TIMEOUT) && wr(REG_ZONE_AT, at, POLL_TIMEOUT) &&
-           wr(REG_ZONE_SIZE, (size - 1) << 4 | (size - 1), POLL_TIMEOUT) &&
+           wr(REG_ZONE_SIZE, (rows - 1) << 4 | (cols - 1), POLL_TIMEOUT) &&
            wr(REG_CLEAR, 0x01, POLL_TIMEOUT) && wr(REG_START, 0x40, POLL_TIMEOUT);
 }

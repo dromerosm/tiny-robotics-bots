@@ -19,13 +19,13 @@ bool tof_init(i2c_master_bus_handle_t bus);
 int tof_poll(int *mm);
 
 // How wide the sensor looks, and where. It has 16 x 16 detectors and uses a
-// square of them: `size` is its side (4 to 16; 16 is the whole view, 27
-// degrees in M5Stack's docs), and `col` and `row` are the column and the row
-// of its center (8 and 7 are the middle). One detector is about 1.7 degrees.
-// Which of the two is up and down depends on how the unit is mounted. A value
-// that does not fit is brought inside the range. It takes about 1 ms; false
-// if the sensor did not answer.
-bool tof_set_zone(int size, int col, int row);
+// rectangle of them: `cols` and `rows` are its sides (4 to 16 each; 16 is the
+// whole view that way, 27 degrees in M5Stack's docs), and `col` and `row` are
+// the column and the row of its center (8 and 7 are the middle). One detector
+// is about 1.7 degrees. Which of the two is up and down depends on how the
+// unit is mounted. A value that does not fit is brought inside the range. It
+// takes about 1 ms; false if the sensor did not answer.
+bool tof_set_zone(int cols, int rows, int col, int row);
 
 #ifdef __cplusplus
 }

@@ -211,6 +211,7 @@ typedef struct {
     volatile bool seen_lying;
     const char *volatile reason;
     volatile float drive_v, drive_w; // m/s and deg/s the robot follows now
+    volatile float goal_x, goal_h;   // m and deg: the place and the heading it holds
     // To watch the motor model, the shake meter and the kp in use (see `gain`).
     volatile float v_model, shake, kp_eff;
 } status_t;
@@ -262,7 +263,7 @@ static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0};
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0};
 static float gyro_offset, yaw_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
@@ -372,6 +373,7 @@ static volatile bool tof_slows;
 // the column is up and down, and 14 looks up: a small square there saw no
 // floor in 32 s, and a box at once (test 37).
 static volatile int tof_zone = 4, tof_col = 14, tof_row = 7;
+static volatile int tof_rows = 0; // rows of the zone; 0: as many as columns (a square)
 static bool have_tof;
 
 // --- Simulated robot (emulator only) --------------------------------------
@@ -735,7 +737,7 @@ static void control_task(void *arg)
         battery_ticks = 0;
     int rest_ticks = 0; // ticks lying down, waiting and charging
     int tof_ticks = 0, tof_quiet = 0; // ticks to the next ask, asks with no answer
-    int zone_set = 16, col_set = 8, row_set = 7; // the zone the sensor has now (its own at start)
+    int zone_set = 16, rows_set = 16, col_set = 8, row_set = 7; // the zone the sensor has now (its own at start)
     int64_t last_us = esp_timer_get_time();
     TickType_t wake = xTaskGetTickCount();
 
@@ -759,9 +761,11 @@ static void control_task(void *arg)
             // A new zone first. The measure that is on its way is the old
             // zone's, so the distance is unknown until the next one.
             const int zone = tof_zone, col = tof_col, row = tof_row;
-            if ((zone != zone_set || col != col_set || row != row_set) &&
-                tof_set_zone(zone, col, row)) {
+            const int rows = tof_rows ? tof_rows : zone;
+            if ((zone != zone_set || rows != rows_set || col != col_set || row != row_set) &&
+                tof_set_zone(zone, rows, col, row)) {
                 zone_set = zone;
+                rows_set = rows;
                 col_set = col;
                 row_set = row;
                 tof_mm = TOF_FREE;
@@ -959,6 +963,8 @@ static void control_task(void *arg)
                 const float x = pos - start_pos; // m from the start
                 const float xe = x - x_goal;     // m ahead of where it should be
                 st.position = x;
+                st.goal_x = x_goal;
+                st.goal_h = h_goal * RAD_TO_DEG_F;
                 fast_ticks = fabsf(speed) > MAX_SPEED_MS ? fast_ticks + 1 : 0;
 
                 if (stop_request) {
@@ -1283,7 +1289,7 @@ static void state_json(char *buf, size_t size)
              "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
              "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
-             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"tof\":%d,\"tof_slows\":%s,\"saved_bp\":%s,\"stored\":%d,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"goal\":[%.3f,%.1f],\"tof\":%d,\"tof_slows\":%s,\"saved_bp\":%s,\"stored\":%d,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
@@ -1292,7 +1298,7 @@ static void state_json(char *buf, size_t size)
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
-             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, (int)tof_mm, tof_slows ? "true" : "false", saved_text, mon_stored(), raw.ax / 4096.0f,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, st.goal_x, st.goal_h, (int)tof_mm, tof_slows ? "true" : "false", saved_text, mon_stored(), raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
              (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
@@ -1370,6 +1376,7 @@ extern "C" void app_main(void)
     mon_float("ts", &gain.ts, 0, 1);
     mon_float("tw", &gain.tw, 0.05f, 3);
     mon_int("tz", &tof_zone, 4, 16);
+    mon_int("tzr", &tof_rows, 0, 16);
     mon_int("tcol", &tof_col, 0, 16);
     mon_int("trow", &tof_row, 0, 15);
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees

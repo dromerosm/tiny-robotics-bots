@@ -245,6 +245,7 @@ const ABOUT = {
   ts: 'Distance sensor: the robot does not drive forward when something is closer than this, in m. 0 turns the sensor\'s brake off.',
   tw: 'Distance sensor: from this distance on, in m, a forward order gets its full speed. Between ts and tw it gets less and less.',
   tz: 'Distance sensor: how wide it looks. The side of the square of detectors it uses, 4 to 16. 16 is the whole view (27 degrees), 4 the narrowest.',
+  tzr: 'Distance sensor: the other side of the zone, to make it a rectangle. 0 = a square of side tz. With a value (4 to 16), tz counts the columns and tzr the rows, so the sensor can look wide one way and narrow the other.',
   tcol: 'Distance sensor: where it looks, one way. The column of the square\'s center, 0 to 16. 8 is the middle, and one column is about 1.7 degrees.',
   trow: 'Distance sensor: where it looks, the other way. The row of the square\'s center, 0 to 15. 7 is the middle. Which of tcol and trow is up and down depends on how the sensor is mounted.',
   bp: 'Balance point, in degrees: the tilt at which the robot stands. The robot takes it from the angle you hold it at before it starts, and learns it while it balances.',
