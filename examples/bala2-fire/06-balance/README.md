@@ -65,6 +65,7 @@ Wi-Fi, the updates and the web server are not in this example. They are in the s
 **From a phone.** Open `http://bala2.local/` (or the address on the robot's screen) in the phone's browser, on the same network. The page shows the state, the tilt, the speed and the battery, and it has:
 
 - a big **STOP** button (it also stops the servo),
+- a **Drive** tab with nine buttons: forward, back, turn left and right, the four arcs between them, and `hold` in the middle. The robot drives while you hold a button and holds its place when you let go. Two sliders set the speed (up to `dv`) and the turn rate (15 to 90 degrees per second). The page sends the order 5 times a second, so the robot stops by itself if the page closes or the phone sleeps (see [Driving](#driving)). All the rest is in the **Robot** tab,
 - a slider for the servo, from -100% to +100%, and a button to stop it,
 - a box for every number you can change (the Tuning card), filled from the list the robot sends. The **i** next to a name tells what the number does. **Save** keeps the numbers in the robot's flash, so it starts with them, and **Defaults** brings back the firmware's (see `save` below),
 - a slider for the screen's backlight. It starts at 5%, which can still be read indoors and saves battery. `bl 50` sets it over UDP. `save` keeps it, like the other numbers.
@@ -470,6 +471,7 @@ Test 36, the same day: `drive` on the robot, over UDP from a script that sent th
 - **`dff` 1 fixes it.** The driving speed is added to the wheel command, so the command leaves the dead band. `dff` came with a new firmware in the middle of the test, sent over Wi-Fi.
 - **The first half second of an order does little.** The speed grows at `dacc`, and the wheels wait until the command is out of the dead band.
 - **A turn in place is slow and jerky.** 45 degrees per second is only 0.03 m/s on each wheel, inside the dead band. The wheels move when the heading error has grown enough, in steps (the turn rate jumps between 15 and 45 degrees per second). The final heading is right, to 2 or 3 degrees. A higher `kh` (0.3) gets there sooner and did not change the shake in 5 s of standing still. It is not the start value yet: one run.
+- After these runs the phone page got its Drive tab. Driving the robot with it from a phone worked, on the same carpet. Nothing was measured there.
 - The robot never stopped or fell in these runs. The heading stayed within 3 degrees while it drove straight.
 
 Test 26, on 2026-11-12: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
@@ -549,5 +551,4 @@ The simulated robot drives forward for 3 s at 0.1 m/s. The distance changes a li
 - Test pushes with a fixed push (a pendulum or a weight on a string), so two settings get the same push.
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
-- Buttons on the phone page that drive while you hold them.
 - A ToF4M distance sensor on the servo, to stop before the robot hits something. The speed limit of `drive` is the place for it: the closer the wall, the lower the limit. The servo turns without end and does not say where it points, so the firmware must find that out first.

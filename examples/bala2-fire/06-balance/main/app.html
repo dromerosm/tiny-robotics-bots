@@ -60,6 +60,17 @@ dd.long { white-space:normal; overflow-wrap:anywhere; max-width:55vw; }
           background:var(--key); border-radius:8px; }
 .vars p b { font-variant-numeric:tabular-nums; }
 ul { margin:0; padding-left:20px; color:var(--dim); }
+.tabs { display:flex; gap:8px; margin-bottom:12px; }
+.tabs button { flex:1; min-height:44px; color:var(--dim); background:transparent; }
+.tabs button[aria-selected=true] { color:var(--card); background:var(--text); border-color:var(--text); }
+.pad { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; touch-action:none;
+       user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+.pad button { min-height:76px; padding:0; font-size:26px; touch-action:none; }
+.pad button.on { background:var(--ok); border-color:var(--ok); color:#fff; }
+.pad button.hold { font-size:15px; color:var(--dim); }
+.pad.off button { opacity:.45; }
+.set { display:flex; justify-content:space-between; color:var(--dim); margin-top:12px; }
+.set b { color:var(--text); font-variant-numeric:tabular-nums; }
 </style>
 
 <header><h1>BALA2</h1><span id="link">connecting…</span></header>
@@ -77,6 +88,40 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
   </div>
 </section>
 
+<div class="tabs" role="tablist">
+  <button id="tab-robot" role="tab" aria-controls="panel-robot">Robot</button>
+  <button id="tab-drive" role="tab" aria-controls="panel-drive">Drive</button>
+</div>
+
+<div id="panel-drive" role="tabpanel" aria-labelledby="tab-drive" hidden>
+<section>
+  <h2>Drive</h2>
+  <div class="pad" id="pad">
+    <button data-v="1" data-w="1" aria-label="Forward and left">↖</button>
+    <button data-v="1" data-w="0" aria-label="Forward">▲</button>
+    <button data-v="1" data-w="-1" aria-label="Forward and right">↗</button>
+    <button data-v="0" data-w="1" aria-label="Turn left">◀</button>
+    <button data-v="0" data-w="0" class="hold" aria-label="Hold this place">hold</button>
+    <button data-v="0" data-w="-1" aria-label="Turn right">▶</button>
+    <button data-v="-1" data-w="-1" aria-label="Back and left">↙</button>
+    <button data-v="-1" data-w="0" aria-label="Back">▼</button>
+    <button data-v="-1" data-w="1" aria-label="Back and right">↘</button>
+  </div>
+  <p class="hint" id="drivehint">–</p>
+  <div class="set"><span>Speed</span><b id="dspeed">–</b></div>
+  <input id="dv" type="range" min="0.05" max="0.25" step="0.01" value="0.1">
+  <div class="set"><span>Turn</span><b id="dturn">–</b></div>
+  <input id="dw" type="range" min="15" max="90" step="5" value="45">
+  <dl>
+    <dt>The robot follows</dt><dd id="dnow">–</dd>
+    <dt>Position</dt><dd id="dpos">–</dd>
+    <dt>Heading</dt><dd id="dhead">–</dd>
+  </dl>
+  <p class="hint">The robot drives while you hold a button, and holds its place when you let go. If the page or the link dies, it stops by itself in half a second. The red button cuts the motors, and the robot falls over.</p>
+</section>
+</div>
+
+<div id="panel-robot" role="tabpanel" aria-labelledby="tab-robot">
 <section>
   <h2>Servo</h2>
   <div class="val" id="servo">–</div>
@@ -165,6 +210,7 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
     <li>Servo headers S1 to S3</li>
   </ul>
 </section>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -290,7 +336,76 @@ function show(s) {
   set('up', (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + sec + ' s');
   set('heap', Math.round(s.heap / 1024) + ' KB');
   set('heapmin', Math.round(s.heap_min / 1024) + ' KB');
+
+  // The Drive tab.
+  const can = s.state === 'balancing';
+  $('pad').classList.toggle('off', !can);
+  set('drivehint', can ? 'Hold a button to drive.'
+                       : 'The robot only drives while it balances. Stand it up first.');
+  $('dv').max = s.vars.dv; // the robot's own limit
+  set('dspeed', (+$('dv').value).toFixed(2) + ' m/s');
+  set('dnow', s.drive[0].toFixed(2) + ' m/s, ' + s.drive[1].toFixed(0) + ' °/s');
+  set('dpos', (s.pos * 100).toFixed(1) + ' cm');
+  set('dhead', s.heading.toFixed(1) + '°');
 }
+
+// Tabs. The address keeps the open one (#drive), so a reload stays on it.
+function openTab(name) {
+  for (const t of ['robot', 'drive']) {
+    $('panel-' + t).hidden = t !== name;
+    $('tab-' + t).setAttribute('aria-selected', String(t === name));
+  }
+  if (name !== 'drive') release();
+  history.replaceState(null, '', name === 'drive' ? '#drive' : location.pathname);
+}
+
+// Driving: while a button is held, the order goes out 5 times a second. An
+// order lasts half a second in the robot, so it stops by itself when the
+// orders stop: the page was closed, the phone slept, or the link died.
+let held = null, timer = 0, waiting = false;
+function order(line) {
+  if (waiting) return; // the last one is still on its way: do not pile them up
+  waiting = true;
+  fetch('/cmd', {method: 'POST', headers: {'X-Bala2': '1'}, body: line})
+    .catch(() => {}).finally(() => { waiting = false; });
+}
+function tick() {
+  if (!held) return;
+  order('drive ' + (held.dataset.v * $('dv').value).toFixed(2) + ' ' +
+        held.dataset.w * $('dw').value);
+}
+function release() {
+  if (!held) return;
+  held.classList.remove('on');
+  held = null;
+  clearInterval(timer);
+  waiting = false;
+  send('drive 0 0');
+}
+$('pad').addEventListener('pointerdown', e => {
+  const key = e.target.closest('button');
+  if (!key) return;
+  e.preventDefault();
+  release();
+  if (key.dataset.v === '0' && key.dataset.w === '0') { send('drive 0 0'); return; }
+  held = key;
+  key.classList.add('on');
+  key.setPointerCapture(e.pointerId);
+  tick();
+  timer = setInterval(tick, 200);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  $('pad').addEventListener(type, release);
+}
+$('pad').addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('blur', release);
+document.addEventListener('visibilitychange', release);
+$('dv').oninput = e => { $('dspeed').textContent = (+e.target.value).toFixed(2) + ' m/s'; };
+$('dw').oninput = e => { $('dturn').textContent = e.target.value + ' °/s'; };
+$('dturn').textContent = $('dw').value + ' °/s';
+$('tab-robot').onclick = () => openTab('robot');
+$('tab-drive').onclick = () => openTab('drive');
+openTab(location.hash === '#drive' ? 'drive' : 'robot');
 
 async function poll() {
   try {
