@@ -79,7 +79,8 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 
 | Part | What it is |
 | --- | --- |
-| [stackchan-body](parts/stackchan-body) | StackChan's body for esp-emu, in Rust: the PY32 (servo power) and the two head servos on the serial bus. The browser emulator runs it, so [16-servos](examples/stackchan/16-servos) moves the head with the real driver. Built by `scripts/build-parts.sh`, published with each release. |
+| [stackchan-body](parts/stackchan-body) | StackChan's body for esp-emu, in Rust: the PY32 (servo power, side LEDs) and the two head servos on the serial bus. The browser emulator runs it, so [16-servos](examples/stackchan/16-servos) moves the head with the real driver. Built by `scripts/build-parts.sh`, published with each release. |
+| [cores3](parts/cores3) | The CoreS3 chips that switch the body's 5 V: the AW9523 IO expander and the AXP2101 power chip (USB power present). With it the side LEDs light in the emulator. |
 
 ### Workers and Mac tools
 

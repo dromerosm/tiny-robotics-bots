@@ -9,11 +9,12 @@ A [virtual part](https://github.com/espressif/esp-emulator/blob/main/docs/guides
 | PY32 IO expander, I2C address 0x6F | Version 0x41 at register 0x02. Bit 0 of registers 0x03 (output) and 0x05 (level) is VM_EN, the servo power. Every other register stores what is written |
 | Two FEETECH SCS0009 servos on UART1, 1 Mbaud, IDs 1 (yaw) and 2 (pitch) | The SCS protocol: ping, read, write, reg write, action and sync write. Goal position, time and speed (register 42), position, speed, voltage and temperature (register 56), torque (40), moving (66) |
 | Servo power | The servos answer only while VM_EN is on. Power off turns their torque off |
+| The 12 side LEDs (PY32 pin 13) | Colors in LED memory (register 0x30, RGB565, low byte first), shown when bit 6 of register 0x24 is written |
 | A move | Takes the time the firmware asks for, in emulated time. With no time it follows the speed, or takes about 0.15 s for 60°. Writing a goal turns the torque on, as on the servo |
 
-It leaves out: load, a hand that turns the head, temperature and voltage changes (always 5.0 V and 30 °C), the side LEDs, and the servo's limits and other settings. After a chip reset the body keeps its power and the servos stay where they are, as on the robot.
+It leaves out: load, a hand that turns the head, temperature and voltage changes (always 5.0 V and 30 °C), and the servo's limits and other settings. The LEDs need 5 V from the CoreS3, and the [cores3](../cores3) part plays the chips that switch it. The page lights the LEDs only when that part says the 5 V is on. After a chip reset the body keeps its power and the servos stay where they are, as on the robot.
 
-The page reads `state()`: `power`, `yaw` and `pitch` in degrees (from the default zero positions 460 and 620, 3.2 steps per degree), `yaw_raw`, `pitch_raw`, `yaw_torque`, `pitch_torque` and `moving`.
+The page reads `state()`: `power`, `yaw` and `pitch` in degrees (from the default zero positions 460 and 620, 3.2 steps per degree), `yaw_raw`, `pitch_raw`, `yaw_torque`, `pitch_torque`, `moving`, and `leds`: the 12 shown colors as `rrggbb`, LED 0 first, separated by commas.
 
 ## Wiring
 

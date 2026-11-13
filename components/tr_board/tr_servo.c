@@ -368,6 +368,14 @@ static esp_err_t leds_init(void)
     ESP_RETURN_ON_ERROR(i2c_master_transmit(py32, cfg, 2, 50), TAG, "LED count");
     vTaskDelay(pdMS_TO_TICKS(200));
     leds_ready = true;
+    // The LEDs get their 5 V through the AW9523 on the CoreS3. Without it (as
+    // in an emulator with no model of that chip) the LEDs are set up but stay
+    // dark, which is not an error of the LEDs.
+    uint8_t out0;
+    if (tr_board_reg_read(0x58, 0x02, &out0) != ESP_OK) {
+        ESP_LOGW(TAG, "side LEDs: no 5 V switch (AW9523 did not answer), they stay dark");
+        return ESP_OK;
+    }
     return tr_led_show(); // all off, so the LEDs start in a known state
 }
 

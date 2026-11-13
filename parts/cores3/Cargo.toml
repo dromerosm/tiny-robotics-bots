@@ -1,0 +1,27 @@
+# A virtual part for esp-emu: the chips on StackChan's CoreS3 board that the
+# firmware needs here (AW9523, AXP2101). README.md says what it models.
+#
+# Its own workspace, so it builds on its own.
+[workspace]
+
+[package]
+name = "cores3"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[lib]
+# A cdylib builds to the .wasm module the emulator loads.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Espressif's part SDK (Apache-2.0), pinned to the commit that published
+# esp-emu 1.0.0. The v1.0.0 tag does not have serial parts yet.
+esp-part = { git = "https://github.com/espressif/esp-emulator.git", rev = "1a848572c733ecbb6aaaac96d7f43b1194832a11" }
+
+[profile.release]
+# A smaller module loads faster in a browser.
+opt-level = "s"
+lto = true
+strip = true

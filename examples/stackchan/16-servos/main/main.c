@@ -151,6 +151,27 @@ static int cmd_torque(int argc, char **argv)
     return err == ESP_OK ? 0 : 1;
 }
 
+// The 12 side LEDs, all in one color. They run on the 5 V the CoreS3 gives the
+// body, which tr_led_show() turns on while any LED is lit.
+static int cmd_led(int argc, char **argv)
+{
+    const bool off = argc == 2 && !strcmp(argv[1], "off");
+    if (!off && argc != 4) {
+        printf("usage: led <r> <g> <b> (0..255), or led off\n");
+        return 1;
+    }
+    if (!need_body()) {
+        return 1;
+    }
+    const int r = off ? 0 : atoi(argv[1]), g = off ? 0 : atoi(argv[2]), b = off ? 0 : atoi(argv[3]);
+    for (int i = 0; i < TR_LED_COUNT; i++) {
+        tr_led_set(i, r, g, b);
+    }
+    const esp_err_t err = tr_led_show();
+    printf("led: %s\n", esp_err_to_name(err));
+    return err == ESP_OK ? 0 : 1;
+}
+
 static void register_commands(void)
 {
     const esp_console_cmd_t commands[] = {
@@ -160,6 +181,7 @@ static void register_commands(void)
         {.command = "read", .help = "Read both servos", .func = cmd_read},
         {.command = "power", .help = "Servo power: power on|off", .func = cmd_power},
         {.command = "torque", .help = "Hold or free the head: torque on|off", .func = cmd_torque},
+        {.command = "led", .help = "Side LEDs: led <r> <g> <b>, or led off", .func = cmd_led},
     };
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         ESP_ERROR_CHECK(esp_console_cmd_register(&commands[i]));

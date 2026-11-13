@@ -32,6 +32,12 @@ const PY32_VERSION: u8 = 0x41;
 const PY32_MODE_L: usize = 0x03; // bit set: the pin is an output
 const PY32_OUT_L: usize = 0x05;
 const VM_EN: u8 = 0x01;
+// The 12 side LEDs: colors in LED memory (RGB565, low byte first), shown when
+// bit 6 of LED_CFG is written.
+const PY32_LED_CFG: usize = 0x24;
+const PY32_LED_RAM: usize = 0x30;
+const LED_SHOW: u8 = 0x40;
+const LEDS: usize = 12;
 
 // ---------------------------------------------------------------- servos
 
@@ -184,6 +190,8 @@ struct Body {
     rx_buf: Vec<u8>,
     tx_buf: Vec<u8>,
     powered: bool,
+    /// The colors the LEDs show, as RGB565, from the last show.
+    leds: [u16; LEDS],
 }
 
 impl Default for Body {
@@ -204,6 +212,7 @@ impl Default for Body {
             rx_buf: Vec::new(),
             tx_buf: Vec::new(),
             powered: false,
+            leds: [0; LEDS],
         }
     }
 }
@@ -359,11 +368,19 @@ impl Body {
     fn py32_bus(&mut self, i2c: &I2cTransaction) -> Vec<u8> {
         if let Some((&reg, data)) = i2c.write.split_first() {
             self.py32_at = reg;
+            let mut show = false;
             for &b in data {
                 if self.py32_at as usize != PY32_VERSION_REG {
                     self.py32[self.py32_at as usize] = b;
                 }
+                show |= self.py32_at as usize == PY32_LED_CFG && b & LED_SHOW != 0;
                 self.py32_at = self.py32_at.wrapping_add(1);
+            }
+            if show {
+                for (i, led) in self.leds.iter_mut().enumerate() {
+                    let at = PY32_LED_RAM + 2 * i;
+                    *led = u16::from_le_bytes([self.py32[at], self.py32[at + 1]]);
+                }
             }
             self.update_power();
         }
@@ -439,12 +456,28 @@ impl Device for Body {
                 .set("pitch_raw", pitch.position(now).round() as i32)
                 .set("yaw_torque", yaw.torque() as u8)
                 .set("pitch_torque", pitch.torque() as u8)
-                .set("moving", (yaw.moving(now) || pitch.moving(now)) as u8),
+                .set("moving", (yaw.moving(now) || pitch.moving(now)) as u8)
+                .set("leds", self.led_colors()),
         )
     }
 }
 
-// The chip's serial data arrives in pieces of up to 128 bytes.
+impl Body {
+    /// The shown colors as `rrggbb` (8 bits each), LED 0 first, comma
+    /// separated. The LEDs only light with the body's 5 V, which comes from
+    /// the CoreS3 (the cores3 part); the page puts the two together.
+    fn led_colors(&self) -> String {
+        let hex = |c: u16| {
+            let (r, g, b) = ((c >> 11) & 31, (c >> 5) & 63, c & 31);
+            let (r, g, b) = ((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
+            format!("{r:02x}{g:02x}{b:02x}")
+        };
+        self.leds.iter().map(|&c| hex(c)).collect::<Vec<_>>().join(",")
+    }
+}
+
+// The chip's serial data arrives in pieces of up to 128 bytes, and the state
+// (with 12 LED colors) is about 200 bytes.
 esp_part::export_part!(Body, buffer = 512);
 
 #[cfg(test)]
@@ -581,6 +614,26 @@ mod tests {
         b.poll(510_000_000);
         assert_eq!(b.state().unwrap().get("yaw_raw"), Some("460"));
         assert_eq!(b.state().unwrap().get("moving"), Some("0"));
+    }
+
+    #[test]
+    fn side_leds_show_on_the_show_bit() {
+        let mut b = body();
+        let off = "000000,".repeat(11) + "000000";
+        assert_eq!(b.state().unwrap().get("leds"), Some(off.as_str()));
+        // As tr_led_show(): LED 0 red, LED 11 blue, in one transfer from 0x30.
+        let mut ram = vec![PY32_LED_RAM as u8];
+        ram.extend_from_slice(&[0x00, 0xF8]);
+        ram.extend_from_slice(&[0u8; 20]);
+        ram.extend_from_slice(&[0x1F, 0x00]);
+        i2c(&mut b, &ram, 0);
+        assert_eq!(b.state().unwrap().get("leds"), Some(off.as_str()), "nothing until the show bit");
+        i2c(&mut b, &[PY32_LED_CFG as u8], 0);
+        let cfg = i2c(&mut b, &[], 1)[0];
+        i2c(&mut b, &[PY32_LED_CFG as u8, cfg | LED_SHOW], 0);
+        let shown = b.state().unwrap().get("leds").unwrap().to_string();
+        assert!(shown.starts_with("ff0000,000000"));
+        assert!(shown.ends_with(",0000ff"));
     }
 
     #[test]
