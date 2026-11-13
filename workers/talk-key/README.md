@@ -24,8 +24,27 @@ The Worker starts the session itself (`session.start`), so the robot can't chang
 | Audio | 16-bit PCM at 16 kHz both ways, the robot's own rate |
 | Instructions | In Spanish: always speak Spanish, short answers, hand off what needs a search |
 | Delegation | `gpt-6-luna` through Responses, with web search. Add its tools in `SESSION.delegation.responses.tools` in `src/index.js` |
+| Second Brain | With the `BRAIN` binding, `gpt-6-luna` also gets `brain_ask`. See below |
 
 From the robot, the Worker passes only audio (`session.input_audio.append`) and `session.close`. To the robot, it passes everything except the delegated model's own events (`response.event`). They are big, and the robot does not need them.
+
+## Second Brain
+
+The robot can answer from Diego's Second Brain: his tech notes, achievements, site articles, reference sources, tasks and personal pages. It can only read.
+
+```
+gpt-live-1 -> gpt-6-luna -- brain_ask(question) --> this Worker -- service binding --> second-brain (RobotBrain.ask)
+```
+
+- `wrangler.jsonc` binds `BRAIN` to the `RobotBrain` entrypoint of the `second-brain` Worker. There is no token and no URL in between.
+- With the binding, the Worker adds the `brain_ask` tool and one line to each model's instructions. Without it, the session is the same as before.
+- The Worker runs the call itself. It reads the finished call from `gpt-6-luna` (a `response.output_item.done` inside a `response.event`), asks the Second Brain, sends the answer back (`response.item.create` with a `function_call_output`) and then `response.create`. When one response has several calls, it sends `response.create` once, after the last answer.
+- The robot never sees these events, and it can still send only audio and `session.close`. The firmware does not change.
+- The `second-brain` Worker decides what can be read (`ROBOT_DATABASES` in its `wrangler.jsonc`). People and Interactions are left out.
+
+Deploy `second-brain` first, so the entrypoint exists, and then this Worker.
+
+Checked on the robot on 2026-11-11, in real talks: the answers were right. They were a bit slow, but fine to use. The delay is not measured yet. The event shapes come from OpenAI's [delegation guide](https://developers.openai.com/api/docs/guides/live-delegation).
 
 ## Secrets
 
@@ -49,3 +68,4 @@ cd workers/talk-key && npx wrangler deploy
 - The robot token is in the firmware. Someone with the robot (or its flash) can open talks, and each talk costs money. To stop it, change `ROBOT_TOKEN`.
 - Cloudflare's bot check blocks some clients (Python's `urllib` got error 1010). The ESP32's clients and curl get through.
 - The Worker stays in the middle for the whole talk, which adds a little delay.
+- What `brain_ask` returns goes to OpenAI and the robot says it aloud. Anyone who can start a talk can ask. `gpt-6-luna` also searches the web, so a web page could try to make it ask the Second Brain and repeat the answer in a search. To turn it off, remove the binding and deploy.

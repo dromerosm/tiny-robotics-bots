@@ -78,7 +78,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 
 | Folder | What it is |
 | --- | --- |
-| [workers/talk-key](workers/talk-key) | The robot's bridge to GPT-Live, for 12-talk to 15-follow. The OpenAI key stays in the Worker. |
+| [workers/talk-key](workers/talk-key) | The robot's bridge to GPT-Live, for 12-talk to 15-follow. The OpenAI key stays in the Worker. It can also ask Diego's Second Brain, read-only. |
 | [workers/rec](workers/rec) | The robot's recordings (14-record) in R2, in the EU, deleted after 30 days. |
 | [tools/transcribe](tools/transcribe) | Speech to text and who spoke when on a Mac, in Python (mlx-whisper, pyannote), with benchmarks on public Spanish data. |
 | [tools/scribe](tools/scribe) | A native Mac app for the same job, in Swift (WhisperKit, FluidAudio). It lists the robot's recordings in R2. |

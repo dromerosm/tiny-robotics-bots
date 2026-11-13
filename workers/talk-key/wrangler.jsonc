@@ -7,5 +7,8 @@
   // The robot reaches it at <name>.<account>.workers.dev. No preview URLs.
   "workers_dev": true,
   "preview_urls": false,
+  // Diego's Second Brain, read-only: the RobotBrain entry of the second-brain
+  // Worker. Without this binding the talk has no brain_ask. See README.md.
+  "services": [{ "binding": "BRAIN", "service": "second-brain", "entrypoint": "RobotBrain" }],
   // Secrets (wrangler secret put): OPENAI_API_KEY, ROBOT_TOKEN.
 }
