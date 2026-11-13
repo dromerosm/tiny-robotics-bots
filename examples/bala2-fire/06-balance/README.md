@@ -7,7 +7,7 @@ Keep BALA2 upright and move as little as possible. It starts from M5Stack's bala
 | **Robot** | BALA2 Fire (M5Stack Fire, ESP32) |
 | **Level** | Advanced |
 | **Emulator** | Yes, with a rough simulated robot, in the [browser](https://robotics.diegoromero.es/emulator/) (pick **ESP32**) or with Espressif QEMU. It checks the start and the safety stops, not the gains. No Wi-Fi there. |
-| **Hardware used** | MPU6886 IMU, BALA2 base (motors, encoders), IP5306 power chip, buttons, screen, Wi-Fi |
+| **Hardware used** | MPU6886 IMU, BALA2 base (motors, encoders), IP5306 power chip, buttons, screen, Wi-Fi. Optional: a Unit ToF4M distance sensor on port A |
 
 > **Safety:** the robot can move fast. Test it on the floor with at least 1 m free in front and behind, away from table edges. It is built to fall over rather than drive away (see [Safety](#safety)).
 
@@ -78,7 +78,7 @@ Under the controls it shows what the robot reads, twice a second:
 - **Buttons:** A, B and C light up while you press them.
 - **Link and system:** network, address, signal, firmware build, the slot it runs from, time on, why it last restarted, and free memory.
 
-The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the microSD card, Bluetooth, Grove port A and the servo headers S1 to S3.
+The last card lists what the robot has and this firmware does not use: the magnetometer, the microphone, the speaker, the microSD card, Bluetooth and the servo headers S1 to S3.
 
 The page is one file, `main/app.html`, built into the firmware. It asks the robot for its state twice a second (`GET /state`, JSON) and sends the same commands as the tool (`POST /cmd`). Unlike the tool, it has no heartbeat: if you close the page, the robot and the servo go on as they were. So stop them first. `GET /info` says which firmware is running. The page's icon is the same file as on StackChan's page (`components/tr_ota/favicon.svg`).
 
@@ -162,6 +162,11 @@ Start values, all can be changed while it runs:
 | `dv` | 0.15 | m/s | the most a `drive` order may ask for (at most 0.25) |
 | `dacc` | 0.2 | m/s² | how fast the driving speed changes |
 | `dff` | 1 | share | how much of the driving speed goes straight to the wheels (0 = the robot only leans to move, test 36) |
+| `ts` | 0.20 | m | distance sensor: no forward driving closer than this (0 = the sensor does not brake) |
+| `tw` | 0.50 | m | distance sensor: full forward speed from this distance on |
+| `tz` | 4 | detectors | distance sensor: side of the square it looks through (4 to 16) |
+| `tcol` | 14 | column | distance sensor: where the square is, up and down on our robot (8 is the middle) |
+| `trow` | 7 | row | distance sensor: where the square is, left and right on our robot (7 is the middle) |
 
 Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And seven more:
 
@@ -192,6 +197,7 @@ The gains came from a search on a simulated robot. We kept the sets that worked 
 - `stop` is still the emergency stop: it cuts the motors and the robot falls over. To stop driving, send `drive 0 0`.
 - The robot does not drive in the first 2 seconds after the start.
 - `GET /state` has `"drive":[speed, turn]`: what the robot follows right now.
+- With a distance sensor, a forward order slows down and stops before a wall (see [The distance sensor](#the-distance-sensor)).
 
 How it works: an order does not touch the motors. It moves the place and the heading that the robot holds. The position loop and the heading hold do the rest, so every balance and stop rule still works. The speed changes slowly (`dacc`), because the robot must lean before it can speed up. For a turn, the wheels also get the speed difference of that turn directly, because `kh` alone is too soft to follow it. While it drives, the slow trim and the learning of the balance point wait.
 
@@ -231,6 +237,18 @@ Stand the robot up or send an update, and it goes back to normal at once. Pullin
 The power chip's setting is not the limit. On our unit it may take up to 2.25 A from USB (register `0x24` reads `0xD6`). It lowers the charge by itself if the USB voltage falls to about 4.55 V (register `0x21`). The chip does not report the real current. `GET /state` gives its raw registers as `pwr`.
 
 First check, 2026-11-13: the level read 50% for 8 minutes, then jumped to 75% a few seconds after charge mode began. The level comes from the battery voltage, so this shows the lower load, not a faster charge. We have not measured the charge time yet.
+
+### The distance sensor
+
+A Unit ToF4M (a VL53L1X laser distance sensor) on the Fire's Grove port A lets the robot stop before it hits something. Ours is fixed to the front of the base, 4 cm over the floor, and looks forward. The firmware looks for it at each start. Without one, nothing changes.
+
+- **What it does.** A forward `drive` order gets less speed the closer the thing ahead is: all of it from `tw` (0.50 m) on, none under `ts` (0.20 m), and a straight line between. Driving back and turning stay free, because the sensor only looks forward. `ts 0` turns the brake off.
+- **The stop line.** The place the robot holds is never past the line `ts` from the thing ahead. An order moves that place, and the robot runs a little behind it. So after the stop the robot may still roll slowly up to the line, and it stays there.
+- **If the sensor stops answering** for half a second, the robot does not drive forward. A sensor that sees nothing it trusts means the way is free.
+- **Where to see it:** `"tof"` in `GET /state` (mm, -1 for nothing in range, -2 for no sensor) and `"tof_slows"`, the last column of the telemetry, "Distance ahead" in the Drive tab of the phone page, and a bar on the right of the robot's screen. The bar is full at 1 m or more. It is red under `ts`, yellow under `tw` and green over it.
+- **Port A is the robot's own I2C bus** (pins 21 and 22), with the motion sensor, the base and the power chip. So the control task reads the sensor too: it asks 50 times a second if a new distance is there, and never waits for one. The sensor measures 10 times a second, up to 4 m.
+
+**The sensor sees the floor.** The robot leans forward when it balances (5 to 8 degrees with our load), and the sensor's view is 27 degrees wide. So the whole view reads the floor, 15 to 25 cm ahead, and the distance follows the tilt. The sensor has 16 x 16 detectors and can use a small square of them. `tz` is the side of the square, and `tcol` and `trow` are its center. One detector is about 1.7 degrees. Our unit lies on its side, so `tcol` is up and down, and a high value looks up. With `tz 4` and `tcol 14` it saw no floor in 32 s of balancing, and a box at once (test 37). These are the start values. **For another mount, find your own:** change them while the robot balances and watch the bar.
 
 ### The servo
 
@@ -474,6 +492,18 @@ Test 36, the same day: `drive` on the robot, over UDP from a script that sent th
 - After these runs the phone page got its Drive tab. Driving the robot with it from a phone worked, on the same carpet. Nothing was measured there.
 - The robot never stopped or fell in these runs. The heading stayed within 3 degrees while it drove straight.
 
+Test 37, the same day: the distance sensor. A Unit ToF4M on port A, fixed to the front of the base, 4 cm over the floor, lying on its side. On the carpet, servo on the back, battery at 50%.
+
+- **The robot found it** at the start, with no I2C errors. Lying down, the robot now rests on the sensor, at 45 degrees and not 83, and the sensor reads 0 mm.
+- **The whole view reads the floor.** 30 s of balancing with nothing ahead: every measure was good, between 150 and 280 mm, and it followed the tilt (254 mm at 3 degrees, 207 at 5, 174 at 8). A fit gives a sensor 37 mm over the floor.
+- **A small square that looks up does not.** Views tried for 5 s each, with nothing ahead: the whole view (`tz 16`) read 240 mm all the time, a square of 4 at `tcol 2` read 186 mm, and at `tcol 14` it saw nothing 86% of the time. So on our unit the column is up and down. A second round did not count: a hand was moving in front of the sensor.
+- **`tz 4`, `tcol 14`, `trow 7`, 80 s.** Nothing ahead for 32 s: no measure at all, so no false wall. Then a box, put about 30 cm ahead by eye: 199 to 229 mm for 48 s, 214 in the middle, while the tilt went from 2.5 to 8.5 degrees. The 30 cm were a guess, so this does not say how exact the sensor is.
+- **The brake.** With the box in place, `drive -0.1 0` for 3 s took the robot 23 cm back, and the sensor went from 214 to 453 mm: the same 24 cm. Then `drive 0.15 0` for 4 s, which is 60 cm with no wall. The robot reached 0.17 m/s, slowed down as the box came closer, and stood still 3.5 s after the order began, with the box 185 mm ahead. It did not touch the box and it kept its balance.
+- **The distance is right, at least up close.** Some minutes later the box stood about 14 cm from the sensor, measured by hand, and the sensor read 138 to 150 mm.
+- **It crept closer after the stop:** 3 cm in the next 5 s, to 157 mm, and to about 14 cm in the minutes after. The place it held was still the one the order was going to, past the box. A first fix only worked under `ts`. In the next run the robot stopped at 21 cm, stood still for 5 s, and then jumped 7 cm, to 15 cm from the box.
+- **The fix: a stop line.** The place the robot holds can no longer be past the line `ts` from the box. A run with it, from 72 cm: the robot slowed down, stood at 28 to 29 cm when the order ended, and rolled on slowly (0.015 m/s at most) to the line in the next 15 s. It ended at 191 to 201 mm and stayed there. No jump.
+- One run of each, and one box. Dark, thin or low things, and how exact the distance is, are not tested.
+
 Test 26, on 2026-11-12: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -519,9 +549,9 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3 ki 10 kd 0.07 rf 0.45 tp 0 mt 0.08 mk 0 ks 90 kr 55 kst 0.04 as 11 amin 0.6 av 0.15 kpos 18 kvel 16 kt -0.05 off 31 ramp 0.3 kh 0.1 vmax 0.5 max 500 gw 0.995 kw 0 dv 0.15 dacc 0.2 bp -1.5 servo 1500 bl 5
-t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging,v_model,shake,kp_eff
-9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1,0.000,0.1,3.00
+gains kp 3 ki 10 kd 0.07 rf 0.45 tp 0 mt 0.08 mk 0 ks 90 kr 55 kst 0.04 as 11 amin 0.6 av 0.15 kpos 18 kvel 16 kt -0.05 off 31 ramp 0.3 kh 0.1 vmax 0.5 max 500 gw 0.995 kw 0 dv 0.15 dacc 0.2 dff 1 ts 0.2 tw 0.5 tz 4 tcol 14 trow 7 bp -1.5 servo 1500 bl 5
+t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging,v_model,shake,kp_eff,tof
+9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1,0.000,0.1,3.00,-2
 ```
 
 State: 0 waiting, 1 balancing, 2 stopped.
@@ -531,11 +561,11 @@ In QEMU, with the simulated robot:
 ```
 W (...) balance: no IMU or base (emulator?), using a simulated robot
 I (...) balance: start
-sim: drove 0.39 m
+sim: drove 0.26 m, wall at 0.45 m
 sim: done, balancing
 ```
 
-The simulated robot drives forward for 3 s at 0.1 m/s. The distance changes a little from run to run. Some seconds after `sim: done` it sways too far and a stop rule ends the run: the gains were set on the real robot, not on this model.
+The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which would be 0.45 m. A made-up wall stands 0.45 m ahead, and the robot stops about 0.20 m from it. The distance changes a little from run to run. Some seconds after `sim: done` it sways too far and a stop rule ends the run: the gains were set on the real robot, not on this model.
 
 ## Try next
 
@@ -551,4 +581,5 @@ The simulated robot drives forward for 3 s at 0.1 m/s. The distance changes a li
 - Test pushes with a fixed push (a pendulum or a weight on a string), so two settings get the same push.
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
-- A ToF4M distance sensor on the servo, to stop before the robot hits something. The speed limit of `drive` is the place for it: the closer the wall, the lower the limit. The servo turns without end and does not say where it points, so the firmware must find that out first.
+- The distance sensor, after test 37: check the stop without the creep, measure the distance against a tape, and try dark, thin and low things. Then let the robot back away or turn when the way is closed, not only stop.
+- The sensor only looks forward. For all around, put it on the servo. The servo turns without end and does not say where it points, so the firmware must find that out first.

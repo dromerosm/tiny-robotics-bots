@@ -74,6 +74,7 @@
 #include <M5GFX.h>
 #include "bala2_link.h"
 #include "bala2_mon.h"
+#include "tof.h"
 
 static const char *TAG = "balance";
 
@@ -181,6 +182,20 @@ static const char *TAG = "balance";
 #define DRIVE_HOLD_S  0.5f   // an order lasts this long without a time
 #define DRIVE_MAX_S   5.0f   // and at most this long with one
 #define DRIVE_WAIT_S  2.0f   // no driving this soon after the start
+
+// Distance sensor (Unit ToF4M on port A, looking forward), if there is one.
+// It slows a forward drive order down near a wall (see `ts` and `tw`).
+#define TOF_NONE    -2  // no sensor found at boot
+#define TOF_FREE    -1  // nothing in range
+#define TOF_TICKS   4   // ask it every 4th tick: 50 times a second
+#define TOF_LOST_S  0.5f // no answer for this long: do not drive forward
+#define SIM_WALL_M  0.45f // emulator: a wall this far ahead of the start
+// The distance bar on the screen (320 x 240): right of the short lines.
+#define BAR_X      276
+#define BAR_Y      82
+#define BAR_W      28
+#define BAR_H      82
+#define BAR_FULL_M 1.0f
 
 #define CAL_SAMPLES 1000
 
@@ -326,6 +341,10 @@ static struct {
     // robot only leans, and on our floors a lean of 3 degrees moved it at
     // 0.03 m/s when 0.10 was asked: the command stayed in the dead band.
     volatile float dff = 1.0f;
+    // Distance sensor: a forward drive order gets no speed closer than `ts`,
+    // and all of it from `tw` on, with a straight line between. ts 0 = off.
+    volatile float ts = 0.20f; // m
+    volatile float tw = 0.50f; // m
 } gain;
 
 static volatile bool stop_request;
@@ -342,6 +361,18 @@ static volatile int servo_us = SERVO_STOP_US;
 // and the time it ends (ms since boot). The control task follows it.
 static volatile float drive_v, drive_w;
 static volatile uint32_t drive_end_ms;
+// The last distance ahead in mm, or TOF_NONE or TOF_FREE. And if it holds a
+// drive order back right now. The control task writes both.
+static volatile int tof_mm = TOF_NONE;
+static volatile bool tof_slows;
+// The square of detectors the sensor looks through: its side, and the column
+// and the row of its center (see tof.h). The whole view (16, 8, 7) also sees
+// the floor, 15 to 25 cm ahead: the sensor sits 4 cm over the floor, and the
+// robot leans forward when it balances. Our unit is mounted on its side, so
+// the column is up and down, and 14 looks up: a small square there saw no
+// floor in 32 s, and a box at once (test 37).
+static volatile int tof_zone = 4, tof_col = 14, tof_row = 7;
+static bool have_tof;
 
 // --- Simulated robot (emulator only) --------------------------------------
 
@@ -435,6 +466,8 @@ static bool hw_init(void)
         ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &power));
         have_power = true;
     }
+    have_tof = tof_init(bus);
+    tof_mm = have_tof ? TOF_FREE : TOF_NONE;
 
     // MPU6886, as in example 03: +-2000 deg/s, +-8 g, 500 Hz.
     imu_write(REG_PWR_MGMT_1, 0x80);
@@ -701,6 +734,8 @@ static void control_task(void *arg)
     int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
         battery_ticks = 0;
     int rest_ticks = 0; // ticks lying down, waiting and charging
+    int tof_ticks = 0, tof_quiet = 0; // ticks to the next ask, asks with no answer
+    int zone_set = 16, col_set = 8, row_set = 7; // the zone the sensor has now (its own at start)
     int64_t last_us = esp_timer_get_time();
     TickType_t wake = xTaskGetTickCount();
 
@@ -715,7 +750,30 @@ static void control_task(void *arg)
             sim_step();
         }
 
-        // Sense. The battery once a second.
+        // Sense. The distance ahead first: the sensor has a new one about
+        // 10 times a second. In the emulator a wall stands ahead of the start.
+        if (sim) {
+            tof_mm = (int)((SIM_WALL_M - sm.x) * 1000);
+        } else if (have_tof && ++tof_ticks >= (low ? 1 : TOF_TICKS)) {
+            tof_ticks = 0;
+            // A new zone first. The measure that is on its way is the old
+            // zone's, so the distance is unknown until the next one.
+            const int zone = tof_zone, col = tof_col, row = tof_row;
+            if ((zone != zone_set || col != col_set || row != row_set) &&
+                tof_set_zone(zone, col, row)) {
+                zone_set = zone;
+                col_set = col;
+                row_set = row;
+                tof_mm = TOF_FREE;
+            }
+            int mm;
+            const int got = tof_poll(&mm);
+            if (got > 0) {
+                tof_mm = mm;
+            }
+            tof_quiet = got < 0 ? tof_quiet + 1 : 0;
+        }
+        // The battery once a second.
         if (++battery_ticks >= (low ? CHARGE_HZ : LOOP_HZ)) {
             battery_ticks = 0;
             read_battery();
@@ -864,11 +922,35 @@ static void control_task(void *arg)
                 // The speed changes slowly, because the robot must lean first.
                 const bool driving = balance_ticks > DRIVE_WAIT_S * LOOP_HZ &&
                                      (int32_t)(drive_end_ms - (uint32_t)(now / 1000)) > 0;
-                const float want_v = driving ? clampf(drive_v, fminf(gain.dv, DRIVE_HARD_V)) : 0;
+                float want_v = driving ? clampf(drive_v, fminf(gain.dv, DRIVE_HARD_V)) : 0;
+                // Something ahead: less forward speed the closer it is, none
+                // from `ts` on. Back and turns stay free. A sensor that was
+                // there and went quiet counts as a wall.
+                const int mm = tof_mm;
+                const float ts = gain.ts;
+                float most = DRIVE_HARD_V;
+                float room = 10; // m the robot may still go forward
+                if (ts > 0 && mm != TOF_NONE) {
+                    if (tof_quiet > TOF_LOST_S * LOOP_HZ / TOF_TICKS) {
+                        most = 0;
+                        room = 0;
+                    } else if (mm != TOF_FREE) {
+                        const float d = mm * 0.001f;
+                        most *= fminf(1.0f, fmaxf(0.0f, (d - ts) / fmaxf(gain.tw - ts, 0.01f)));
+                        room = fmaxf(0.0f, d - ts);
+                    }
+                }
+                tof_slows = want_v > most;
+                want_v = fminf(want_v, most);
                 const float want_w = driving ? clampf(drive_w, DRIVE_MAX_W) : 0;
                 v_ref += clampf(want_v - v_ref, gain.dacc * DT);
                 w_ref += clampf(want_w - w_ref, DRIVE_W_ACC * DT);
                 x_goal += v_ref * DT;
+                // The place to hold is never past the line `ts` from the
+                // thing ahead. The robot runs behind the place an order moves,
+                // and without this it crept on after the stop, to 14 cm from
+                // a box (test 37).
+                x_goal = fminf(x_goal, pos - start_pos + room);
                 h_goal += w_ref / RAD_TO_DEG_F * DT;
                 st.drive_v = v_ref;
                 st.drive_w = w_ref;
@@ -1038,8 +1120,32 @@ static void screen_line(int y, uint32_t color, const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     display.setTextColor(color, TFT_BLACK);
-    display.setTextPadding(304);
+    // The short lines in the middle leave the right side to the distance bar.
+    display.setTextPadding(y >= BAR_Y - 4 && y < BAR_Y + BAR_H + 20 ? BAR_X - 24 : 304);
     display.drawString(buf, 8, y);
+}
+
+// The distance ahead as a bar on the right of the screen: full at 1 m or
+// more. Red where a forward order gets no speed (under `ts`), yellow where it
+// gets less (under `tw`), green where it is free. Nothing ahead is a full
+// green bar, and with no sensor there is only the frame.
+static void screen_distance(int mm)
+{
+    const float d = mm == TOF_FREE ? BAR_FULL_M : mm * 0.001f;
+    const int fill = mm == TOF_NONE ? 0 : (int)(fminf(d / BAR_FULL_M, 1.0f) * BAR_H);
+    const uint32_t color = d < gain.ts ? TFT_RED : (d < gain.tw ? TFT_YELLOW : TFT_GREEN);
+    display.drawRect(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2, TFT_DARKGREY);
+    display.fillRect(BAR_X, BAR_Y, BAR_W, BAR_H - fill, TFT_BLACK);
+    display.fillRect(BAR_X, BAR_Y + BAR_H - fill, BAR_W, fill, color);
+    char text[20] = "no ToF";
+    if (mm == TOF_FREE) {
+        snprintf(text, sizeof(text), "free");
+    } else if (mm != TOF_NONE) {
+        snprintf(text, sizeof(text), "%d cm", (mm + 5) / 10);
+    }
+    display.setTextColor(mm == TOF_NONE ? TFT_DARKGREY : color, TFT_BLACK);
+    display.setTextPadding(320 - (BAR_X - 12));
+    display.drawString(text, BAR_X - 12, BAR_Y + BAR_H + 6);
 }
 
 static bool pressed(gpio_num_t pin, int *last)
@@ -1068,12 +1174,12 @@ static void sim_script(int64_t ms)
         return;
     }
     const int64_t t = ms - start_ms;
-    if (t > 2500 && t < 5500) {
+    if (t > 2500 && t < 7500) { // the wall stops it before the order ends
         handle_command("drive 0.1 0");
     }
-    if (!done && t > 7500) {
+    if (!done && t > 9500) {
         done = true;
-        printf("sim: drove %.2f m\n", st.position);
+        printf("sim: drove %.2f m, wall at %.2f m\n", st.position, SIM_WALL_M);
         printf("sim: done, %s\n", st.reason);
     }
 }
@@ -1177,7 +1283,7 @@ static void state_json(char *buf, size_t size)
              "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
              "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
-             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"saved_bp\":%s,\"stored\":%d,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"tof\":%d,\"tof_slows\":%s,\"saved_bp\":%s,\"stored\":%d,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
@@ -1186,7 +1292,7 @@ static void state_json(char *buf, size_t size)
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
-             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, saved_text, mon_stored(), raw.ax / 4096.0f,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, (int)tof_mm, tof_slows ? "true" : "false", saved_text, mon_stored(), raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
              (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
@@ -1261,6 +1367,11 @@ extern "C" void app_main(void)
     mon_float("dv", &gain.dv, 0, DRIVE_HARD_V);
     mon_float("dacc", &gain.dacc, 0.05f, 1);
     mon_float("dff", &gain.dff, 0, 1.5f);
+    mon_float("ts", &gain.ts, 0, 1);
+    mon_float("tw", &gain.tw, 0.05f, 3);
+    mon_int("tz", &tof_zone, 4, 16);
+    mon_int("tcol", &tof_col, 0, 16);
+    mon_int("trow", &tof_row, 0, 15);
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
@@ -1314,7 +1425,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
     mon_list();
     mon_say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
-        "battery,charging,v_model,shake,kp_eff\n");
+        "battery,charging,v_model,shake,kp_eff,tof\n");
     int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
     bool low_set = false;
     int64_t low_ms = 0; // when charge mode began
@@ -1347,10 +1458,10 @@ extern "C" void app_main(void)
         mon_rec_send(); // the fast samples that are waiting, in one packet
         const bool slow = low_set; // charge mode: this loop at 5 Hz
         if (!slow || n % 5 == 0) { // 50 Hz log, or once a second
-            mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d,%.3f,%.1f,%.2f\n",
+            mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d,%.3f,%.1f,%.2f,%d\n",
                 ms, (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
                 st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging,
-                st.v_model, st.shake, st.kp_eff);
+                st.v_model, st.shake, st.kp_eff, (int)tof_mm);
         }
         if (slow || low_power || n % 10 == 0) { // 5 Hz screen
             const bool low = low_power;
@@ -1395,6 +1506,7 @@ extern "C" void app_main(void)
             screen_line(152, st.battery >= 0 && st.battery < MIN_BATTERY ? TFT_RED : TFT_DARKGREY,
                         "battery %d%%%s", st.battery, st.charging ? ", charging" : "");
             screen_line(170, TFT_DARKGREY, "B: stop");
+            screen_distance(tof_mm);
             if (!sim) {
                 screen_line(196, TFT_CYAN, "Wi-Fi %s  key %s", link_ssid(), link_password());
                 screen_line(214, TFT_CYAN, "%s  %s  %s", link_ip(), LINK_HOST,

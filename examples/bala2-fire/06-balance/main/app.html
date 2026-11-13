@@ -114,6 +114,7 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
   <input id="dw" type="range" min="15" max="90" step="5" value="45">
   <dl>
     <dt>The robot follows</dt><dd id="dnow">–</dd>
+    <dt>Distance ahead</dt><dd id="dtof">–</dd>
     <dt>Position</dt><dd id="dpos">–</dd>
     <dt>Heading</dt><dd id="dhead">–</dd>
   </dl>
@@ -206,7 +207,6 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
     <li>Speaker</li>
     <li>microSD card</li>
     <li>Bluetooth</li>
-    <li>Grove port A</li>
     <li>Servo headers S1 to S3</li>
   </ul>
 </section>
@@ -242,6 +242,11 @@ const ABOUT = {
   dv: 'The most speed a drive order may ask for, in m/s. Never more than 0.25.',
   dacc: 'How fast the driving speed changes, in m/s².',
   dff: 'Share of the driving speed that goes straight to the wheels. 0 = the robot only leans to move.',
+  ts: 'Distance sensor: the robot does not drive forward when something is closer than this, in m. 0 turns the sensor\'s brake off.',
+  tw: 'Distance sensor: from this distance on, in m, a forward order gets its full speed. Between ts and tw it gets less and less.',
+  tz: 'Distance sensor: how wide it looks. The side of the square of detectors it uses, 4 to 16. 16 is the whole view (27 degrees), 4 the narrowest.',
+  tcol: 'Distance sensor: where it looks, one way. The column of the square\'s center, 0 to 16. 8 is the middle, and one column is about 1.7 degrees.',
+  trow: 'Distance sensor: where it looks, the other way. The row of the square\'s center, 0 to 15. 7 is the middle. Which of tcol and trow is up and down depends on how the sensor is mounted.',
   bp: 'Balance point, in degrees: the tilt at which the robot stands. The robot takes it from the angle you hold it at before it starts, and learns it while it balances.',
   servo: 'Servo pulse in microseconds. 1500 is stop, less and more turn it one way or the other. The Servo card does the same.',
   bl: 'Screen backlight, in percent. The Screen card does the same.',
@@ -345,6 +350,9 @@ function show(s) {
   $('dv').max = s.vars.dv; // the robot's own limit
   set('dspeed', (+$('dv').value).toFixed(2) + ' m/s');
   set('dnow', s.drive[0].toFixed(2) + ' m/s, ' + s.drive[1].toFixed(0) + ' °/s');
+  set('dtof', s.tof === -2 ? 'no sensor' : s.tof === -1 ? 'nothing in range'
+              : (s.tof / 10).toFixed(0) + ' cm' + (s.tof_slows ? ', slowing down' : ''));
+  $('dtof').style.color = s.tof_slows ? 'var(--warn)' : '';
   set('dpos', (s.pos * 100).toFixed(1) + ' cm');
   set('dhead', s.heading.toFixed(1) + '°');
 }
