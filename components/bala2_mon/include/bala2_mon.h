@@ -27,6 +27,30 @@ extern "C" {
 void mon_float(const char *name, volatile float *value, float min, float max);
 void mon_int(const char *name, volatile int *value, int min, int max);
 
+// ---- Values that outlive a restart ----
+//
+// The values can go to flash (NVS), so the robot starts with them and nobody
+// has to build a new firmware to keep a good set. A flash write stops both
+// cores for a few ms: call mon_save() and mon_defaults() only while the
+// control loop can take that (the robot does not balance).
+
+// Leave a variable out of the saved set (a servo speed, for example). Call
+// it after the variable is named.
+void mon_not_saved(const char *name);
+
+// Read the saved values, each kept inside its range. Call it once at boot,
+// after link_start() (it opens the flash storage). Returns how many it read.
+int mon_load(void);
+
+// Write the values of now to flash. False if the flash did not take them.
+bool mon_save(void);
+
+// Delete the saved values and go back to the ones the firmware started with.
+bool mon_defaults(void);
+
+// How many values are in flash now (0 = none: the firmware's values rule).
+int mon_stored(void);
+
 // Take a command line. "name value" sets a variable (kept inside its range)
 // and "?" lists them; both answer with the list. Returns false if the line is
 // not one of these, so the firmware can try its own commands.

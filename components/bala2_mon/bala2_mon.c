@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "bala2_link.h"
+#include "nvs.h"
 
 // ---- Variables ----
 
@@ -13,15 +14,36 @@ typedef struct {
     volatile float *f; // one of the two is set
     volatile int *i;
     float min, max;
+    float start; // the firmware's value, for mon_defaults()
+    bool keep;   // false: mon_save() leaves it out
 } var_t;
 
 static var_t vars[MON_VARS];
 static int var_count;
+static int stored; // values in flash now
+
+static float var_get(const var_t *v)
+{
+    return v->f ? *v->f : (float)*v->i;
+}
+
+// Keep the value inside the variable's range, then write it.
+static void var_set(const var_t *v, float value)
+{
+    value = value < v->min ? v->min : value > v->max ? v->max : value;
+    if (v->f) {
+        *v->f = value;
+    } else {
+        *v->i = (int)value;
+    }
+}
 
 static void add_var(const char *name, volatile float *f, volatile int *i, float min, float max)
 {
     if (var_count < MON_VARS) {
-        vars[var_count++] = (var_t){name, f, i, min, max};
+        vars[var_count] = (var_t){name, f, i, min, max, 0, true};
+        vars[var_count].start = var_get(&vars[var_count]);
+        var_count++;
     }
 }
 
@@ -35,9 +57,92 @@ void mon_int(const char *name, volatile int *value, int min, int max)
     add_var(name, NULL, value, min, max);
 }
 
-static float var_get(const var_t *v)
+void mon_not_saved(const char *name)
 {
-    return v->f ? *v->f : (float)*v->i;
+    for (int k = 0; k < var_count; k++) {
+        if (!strcmp(name, vars[k].name)) {
+            vars[k].keep = false;
+        }
+    }
+}
+
+// ---- Values in flash ----
+//
+// One NVS entry per variable, under its name, so a firmware with more or
+// fewer variables still reads the ones it knows. NVS has no float type: the
+// entry holds the float's 32 bits.
+
+#define MON_SPACE "mon"
+
+int mon_load(void)
+{
+    nvs_handle_t nvs;
+    stored = 0;
+    if (nvs_open(MON_SPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return 0; // nothing saved yet
+    }
+    for (int k = 0; k < var_count; k++) {
+        uint32_t bits;
+        float v;
+        if (vars[k].keep && nvs_get_u32(nvs, vars[k].name, &bits) == ESP_OK) {
+            memcpy(&v, &bits, sizeof(v));
+            if (v == v) { // not NAN
+                var_set(&vars[k], v);
+                stored++;
+            }
+        }
+    }
+    nvs_close(nvs);
+    return stored;
+}
+
+bool mon_save(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(MON_SPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return false;
+    }
+    int count = 0;
+    bool ok = true;
+    for (int k = 0; k < var_count; k++) {
+        if (vars[k].keep) {
+            const float v = var_get(&vars[k]);
+            uint32_t bits;
+            memcpy(&bits, &v, sizeof(bits));
+            ok = nvs_set_u32(nvs, vars[k].name, bits) == ESP_OK && ok;
+            count++;
+        }
+    }
+    ok = nvs_commit(nvs) == ESP_OK && ok;
+    nvs_close(nvs);
+    if (ok) {
+        stored = count;
+    }
+    return ok;
+}
+
+bool mon_defaults(void)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(MON_SPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return false;
+    }
+    const bool ok = nvs_erase_all(nvs) == ESP_OK && nvs_commit(nvs) == ESP_OK;
+    nvs_close(nvs);
+    if (ok) {
+        stored = 0;
+        for (int k = 0; k < var_count; k++) {
+            if (vars[k].keep) {
+                var_set(&vars[k], vars[k].start);
+            }
+        }
+    }
+    return ok;
+}
+
+int mon_stored(void)
+{
+    return stored;
 }
 
 void mon_say(const char *fmt, ...)
@@ -92,12 +197,7 @@ bool mon_command(const char *line)
     }
     for (int k = 0; k < var_count; k++) {
         if (!strcmp(name, vars[k].name)) {
-            v = v < vars[k].min ? vars[k].min : v > vars[k].max ? vars[k].max : v;
-            if (vars[k].f) {
-                *vars[k].f = v;
-            } else {
-                *vars[k].i = (int)v;
-            }
+            var_set(&vars[k], v);
             mon_list();
             return true;
         }

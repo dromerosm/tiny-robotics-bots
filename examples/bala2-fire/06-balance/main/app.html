@@ -94,7 +94,10 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 <section>
   <h2>Tuning</h2>
   <div id="vars" class="vars"></div>
-  <p class="hint">Every number the firmware lets you change. Tap <i>i</i> to see what a number does. Type a value and press Enter. The robot keeps it inside its range, and it is back to the start value after a restart.</p>
+  <p class="hint">Every number the firmware lets you change. Tap <i>i</i> to see what a number does. Type a value and press Enter. The robot keeps it inside its range.</p>
+  <div class="row"><button id="save">Save</button><button id="defaults">Defaults</button></div>
+  <p class="hint" id="stored">–</p>
+  <p class="hint">A change lasts until the next restart. <b>Save</b> keeps the numbers of now in the robot, so it starts with them. <b>Defaults</b> deletes them and brings back the firmware's numbers. Both need the robot stopped. bp and servo are never saved.</p>
 </section>
 
 <section>
@@ -196,14 +199,17 @@ const ABOUT = {
   servo: 'Servo pulse in microseconds. 1500 is stop, less and more turn it one way or the other. The Servo card does the same.',
   bl: 'Screen backlight, in percent. The Screen card does the same.',
 };
-let dragging = false, dimming = false, misses = 0;
+let state = '', dragging = false, dimming = false, misses = 0;
 
 function send(line) {
   fetch('/cmd', {method: 'POST', headers: {'X-Bala2': '1'}, body: line}).catch(() => {});
 }
 
 function show(s) {
-  $('state').textContent = s.state;
+  $('state').textContent = state = s.state;
+  $('stored').textContent = s.stored
+    ? s.stored + ' numbers are saved in the robot. It starts with them.'
+    : 'Nothing is saved. The robot starts with the firmware\'s numbers.';
   $('state').style.color = s.state === 'balancing' ? 'var(--ok)'
                          : s.state === 'stopped' ? 'var(--bad)' : 'var(--warn)';
   $('reason').textContent = s.state === s.reason ? '' : s.reason;
@@ -298,6 +304,12 @@ async function poll() {
 }
 
 $('stop').onclick = () => send('stop');
+// The robot also says no while it balances. Here the page can say why.
+const resting = () => state !== 'balancing' && state !== 'fall test' ||
+                      alert('Stop the robot first.');
+$('save').onclick = () => resting() && send('save');
+$('defaults').onclick = () => resting() &&
+  confirm('Delete the saved numbers and go back to the firmware\'s?') && send('defaults');
 $('servostop').onclick = () => send('servo 1500');
 $('light').oninput = e => { dimming = true; $('bl').textContent = e.target.value + '%'; };
 $('light').onchange = e => { dimming = false; send('bl ' + e.target.value); };

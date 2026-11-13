@@ -66,8 +66,8 @@ Wi-Fi, the updates and the web server are not in this example. They are in the s
 
 - a big **STOP** button (it also stops the servo),
 - a slider for the servo, from -100% to +100%, and a button to stop it,
-- a box for every number you can change (the Tuning card), filled from the list the robot sends. The **i** next to a name tells what the number does,
-- a slider for the screen's backlight. It starts at 5%, which can still be read indoors and saves battery. `bl 50` sets it over UDP. The value is not saved.
+- a box for every number you can change (the Tuning card), filled from the list the robot sends. The **i** next to a name tells what the number does. **Save** keeps the numbers in the robot's flash, so it starts with them, and **Defaults** brings back the firmware's (see `save` below),
+- a slider for the screen's backlight. It starts at 5%, which can still be read indoors and saves battery. `bl 50` sets it over UDP. `save` keeps it, like the other numbers.
 
 Under the controls it shows what the robot reads, twice a second:
 
@@ -161,10 +161,12 @@ Start values, all can be changed while it runs:
 | `dv` | 0.15 | m/s | the most a `drive` order may ask for (at most 0.25) |
 | `dacc` | 0.2 | m/s² | how fast the driving speed changes |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And five more:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And seven more:
 
+- `save`: write the numbers of now to the robot's flash (NVS). The robot loads them at each start, so a good set needs no new firmware. They also stay after an update over Wi-Fi. `bp` and `servo` are left out: the balance point has its own place in flash, and a servo must not start by itself. The answer is `save: 26 values in flash`.
+- `defaults`: delete the saved numbers and go back to the firmware's. Use it when a saved set makes the robot fall. Both commands only work while the robot does not balance, because a flash write stops both cores for a few ms. Tested on the robot on 2026-11-13, lying down: `kd 0.08` and `bl 10` were saved and came back after two updates over Wi-Fi, a servo order was not saved, and `defaults` brought back 0.07 and 5. Not tested: that the robot says no while it balances.
 - `drive 0.1 30 2`: drive (see [Driving](#driving)).
-- `bp 9.4`: set the balance point in degrees (from -15 to 15). The telemetry shows it as the setpoint while the robot waits.
+- `bp 9.4`: set the balance point in degrees (from -25 to 25). The telemetry shows it as the setpoint while the robot waits.
 - `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
 - `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines (`tilt`, `rate`, `acc_tilt`, `x`, `v`, `u`, `v_model`, `shake`, `kp_eff`). They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).

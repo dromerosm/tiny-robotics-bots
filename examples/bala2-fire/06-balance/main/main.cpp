@@ -989,6 +989,7 @@ static bool pressed(gpio_num_t pin, int *last)
 }
 
 static void handle_command(const char *line);
+static bool can_update(void);
 
 // In the emulator: hold it upright, let go, and drive it forward as a server
 // would (one order every tick). Then check it is still up, 2 s after the
@@ -1022,9 +1023,9 @@ static void sim_script(int64_t ms)
 // keeps the Wi-Fi link alive.
 static void handle_command(const char *line)
 {
-    char name[8];
+    char name[12]; // "defaults" has 8 letters
     float v;
-    const int n = sscanf(line, "%7s %f", name, &v);
+    const int n = sscanf(line, "%11s %f", name, &v);
     if (n < 1 || !strcmp(name, "hb")) {
         return;
     }
@@ -1050,6 +1051,17 @@ static void handle_command(const char *line)
         const float seconds = fminf(fmaxf(v, 0), 60);
         mon_rec_start((int)(seconds * LOOP_HZ));
         mon_say("recording %.1f s at %d Hz\n", seconds, LOOP_HZ);
+    } else if (!strcmp(name, "save") || !strcmp(name, "defaults")) {
+        // To flash, or back to the firmware's values. A flash write stalls
+        // both cores, and new gains in one step are a jolt: not while it balances.
+        if (!can_update()) {
+            mon_say("%s: stop the robot first\n", name);
+        } else if (name[0] == 's' ? mon_save() : mon_defaults()) {
+            mon_say("%s: %d values in flash\n", name, mon_stored());
+            mon_list();
+        } else {
+            mon_say("%s: the flash did not take it\n", name);
+        }
     } else if (!mon_command(line)) {
         mon_say("unknown command: %s\n", line);
     }
@@ -1103,7 +1115,7 @@ static void state_json(char *buf, size_t size)
              "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
              "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
-             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"saved_bp\":%s,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"saved_bp\":%s,\"stored\":%d,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
@@ -1112,7 +1124,7 @@ static void state_json(char *buf, size_t size)
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
-             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, saved_text, raw.ax / 4096.0f,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, saved_text, mon_stored(), raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
              (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
@@ -1185,6 +1197,10 @@ extern "C" void app_main(void)
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
+    // "save" keeps all of them in flash but these two: the balance point has
+    // its own place there, and a servo must not start by itself.
+    mon_not_saved("bp");
+    mon_not_saved("servo");
     mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
@@ -1217,6 +1233,7 @@ extern "C" void app_main(void)
             ESP_LOGE(TAG, "no Wi-Fi link: the robot works, but only the buttons control it");
         }
         load_balance_point(); // after link_start: it opens the flash storage
+        mon_load();           // the same for the values of "save"
         printf("Wi-Fi %s %s, key %s, robot at %s (%s), UDP port %d\n",
                link_on_home() ? "home network" : "own network", link_ssid(), link_password(),
                link_ip(), LINK_HOST, LINK_UDP_PORT);

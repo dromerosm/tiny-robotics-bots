@@ -5,6 +5,7 @@ Watch and tune a BALA2 Fire firmware from a computer or a phone, while it runs. 
 It gives a firmware two things:
 
 - **Variables.** The firmware names the numbers it wants to show and change. After that, a command sets one, `?` lists them, and the phone page shows a box for each.
+- **Values that stay.** `mon_save()` writes the variables to flash (NVS) and `mon_load()` reads them at the next start, so a good set needs no new firmware.
 - **Fast samples.** The control loop hands in one sample per tick. They go out over UDP as they come, about 20 ms later.
 
 [06-balance](../../examples/bala2-fire/06-balance) uses it.
@@ -66,7 +67,9 @@ So a computer can close an outer loop over Wi-Fi, at 20 to 50 Hz: read the fast 
    mon_rec_send();
    ```
 
-6. For the phone page, put `mon_json()` in the state the firmware gives to `bala2_link`.
+6. To keep values over a restart, call `mon_load()` once after `link_start()`, and give the firmware two commands that call `mon_save()` and `mon_defaults()`. A flash write stops both cores for a few ms, so the firmware must refuse them while the robot balances. `mon_not_saved("servo")` leaves a variable out. Each value has its own entry in the NVS space `mon`, under its name, so a firmware with other variables still reads the ones it knows. `mon_defaults()` deletes them all and puts back the values the firmware started with. `mon_stored()` tells how many values are in flash.
+
+7. For the phone page, put `mon_json()` in the state the firmware gives to `bala2_link`.
 
 ## Over UDP
 

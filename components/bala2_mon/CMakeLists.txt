@@ -7,4 +7,5 @@ endif()
 
 idf_component_register(SRCS "bala2_mon.c"
                        INCLUDE_DIRS "include"
-                       REQUIRES bala2_link)
+                       REQUIRES bala2_link
+                       PRIV_REQUIRES nvs_flash)
