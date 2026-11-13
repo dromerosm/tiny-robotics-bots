@@ -12,3 +12,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../components/bala2_link/partition
 CONFIG_LWIP_IPV6=n
 # mDNS without its console commands: nobody types them here.
 CONFIG_MDNS_ENABLE_CONSOLE_CLI=n
+# Charge mode slows the CPU and lets it sleep while idle (cpu_rest in main.cpp).
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y

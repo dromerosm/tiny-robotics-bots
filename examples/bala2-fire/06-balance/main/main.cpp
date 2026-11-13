@@ -65,6 +65,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
@@ -216,15 +217,30 @@ static volatile int backlight = BACKLIGHT_PCT;
 // is shared with the Fire, so what the Fire does not use goes to the battery.
 // After CHARGE_WAIT_S like this, the loop drops to CHARGE_HZ, Wi-Fi sleeps
 // between beacons (the page and updates still work, a bit slower) and the
-// screen dims. After SCREEN_OFF_S the screen goes off: the light and the
-// panel (it sleeps). Standing the robot up, pulling the cable or an update
-// ends it.
+// screen dims, and the main task runs at 5 Hz and logs once a second. After
+// SCREEN_OFF_S the screen goes off (the light and the panel), and the CPU
+// drops to 80 MHz and sleeps while no task has work (light sleep). Standing
+// the robot up, pulling the cable or an update ends it.
 #define CHARGE_WAIT_S        10
 #define SCREEN_OFF_S         20
 #define CHARGE_HZ            10
 #define CHARGE_BACKLIGHT_PCT 2
 static volatile bool low_power;  // written by the control task
 static volatile bool screen_off; // written by the main task, for /state
+
+// The CPU at full speed and always awake (false), or slower and asleep while
+// idle (true). Only for charge mode: asleep, a task can wake a little late.
+static void cpu_rest(bool on)
+{
+    esp_pm_config_t pm = {};
+    pm.max_freq_mhz = on ? 80 : CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    pm.min_freq_mhz = pm.max_freq_mhz;
+    pm.light_sleep_enable = on;
+    const esp_err_t err = esp_pm_configure(&pm);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "cpu_rest(%d): %s", on, esp_err_to_name(err));
+    }
+}
 static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
 static M5GFX display;
@@ -1211,6 +1227,7 @@ extern "C" void app_main(void)
 {
     // Before anything else: a new app that keeps failing gives way to the old one.
     link_guard();
+    cpu_rest(false);
     // What a computer can see and change while the robot runs, with the range
     // each value is kept in. Start values and what they do: see `gain` above.
     mon_float("kp", &gain.kp, 0, 20);
@@ -1322,13 +1339,14 @@ extern "C" void app_main(void)
             }
         }
         mon_rec_send(); // the fast samples that are waiting, in one packet
-        { // 50 Hz log
+        const bool slow = low_set; // charge mode: this loop at 5 Hz
+        if (!slow || n % 5 == 0) { // 50 Hz log, or once a second
             mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d,%.3f,%.1f,%.2f\n",
                 ms, (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
                 st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging,
                 st.v_model, st.shake, st.kp_eff);
         }
-        if (n % 10 == 0) { // 5 Hz screen
+        if (slow || low_power || n % 10 == 0) { // 5 Hz screen
             const bool low = low_power;
             if (low != low_set) {
                 low_set = low;
@@ -1342,12 +1360,14 @@ extern "C" void app_main(void)
                     display.setBrightness(0);
                     display.sleep();
                     backlight_set = 0;
+                    cpu_rest(true);
                 } else {
+                    cpu_rest(false);
                     display.wakeup(); // the light comes back just below
                 }
             }
             if (off) {
-                vTaskDelay(pdMS_TO_TICKS(20));
+                vTaskDelay(pdMS_TO_TICKS(200));
                 continue; // nothing to draw
             }
             const int asked = backlight;
@@ -1375,6 +1395,6 @@ extern "C" void app_main(void)
                             link_alive() ? "" : "LINK LOST");
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(low_set ? 200 : 20));
     }
 }
