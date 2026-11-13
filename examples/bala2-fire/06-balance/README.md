@@ -218,7 +218,7 @@ The charger's current is shared. The Fire takes what it needs and the battery ge
 
 - Wi-Fi sleeps between the access point's beacons. The phone page and updates still work, a bit slower.
 - The control loop runs at 10 Hz, not 200 Hz. It only has to notice when you stand the robot up.
-- The screen dims to 2%.
+- The screen dims to 2%. After 10 s more (20 s lying down in all) it goes off: the light and the panel. The phone page still shows the state, and `GET /state` says if the screen is on (`screen`).
 
 Stand the robot up or send an update, and it goes back to normal at once. Pulling the cable ends it too, but then the robot restarts anyway (test 32).
 

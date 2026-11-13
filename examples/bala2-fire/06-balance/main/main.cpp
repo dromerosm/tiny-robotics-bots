@@ -216,11 +216,15 @@ static volatile int backlight = BACKLIGHT_PCT;
 // is shared with the Fire, so what the Fire does not use goes to the battery.
 // After CHARGE_WAIT_S like this, the loop drops to CHARGE_HZ, Wi-Fi sleeps
 // between beacons (the page and updates still work, a bit slower) and the
-// screen dims. Standing the robot up, pulling the cable or an update ends it.
+// screen dims. After SCREEN_OFF_S the screen goes off: the light and the
+// panel (it sleeps). Standing the robot up, pulling the cable or an update
+// ends it.
 #define CHARGE_WAIT_S        10
+#define SCREEN_OFF_S         20
 #define CHARGE_HZ            10
 #define CHARGE_BACKLIGHT_PCT 2
-static volatile bool low_power; // written by the control task
+static volatile bool low_power;  // written by the control task
+static volatile bool screen_off; // written by the main task, for /state
 static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
 static M5GFX display;
@@ -1157,7 +1161,7 @@ static void state_json(char *buf, size_t size)
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
              "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\","
-             "\"restart\":\"%s\",\"pwr\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]}",
+             "\"restart\":\"%s\",\"pwr\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],\"screen\":%s}",
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
@@ -1171,7 +1175,8 @@ static void state_json(char *buf, size_t size)
              (unsigned long)esp_get_minimum_free_heap_size(), app->date, app->time,
              esp_ota_get_running_partition()->label, link_last_restart(), pwr_raw[0],
              pwr_raw[1], pwr_raw[2], pwr_raw[3], pwr_raw[4], pwr_raw[5], pwr_raw[6], pwr_raw[7],
-             pwr_raw[8], pwr_raw[9], pwr_raw[10], pwr_raw[11], pwr_raw[12]);
+             pwr_raw[8], pwr_raw[9], pwr_raw[10], pwr_raw[11], pwr_raw[12],
+             screen_off ? "false" : "true");
 }
 
 // The learned balance point lives in flash (NVS), in hundredths of a degree.
@@ -1289,6 +1294,7 @@ extern "C" void app_main(void)
         "battery,charging,v_model,shake,kp_eff\n");
     int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
     bool low_set = false;
+    int64_t low_ms = 0; // when charge mode began
     for (int n = 0;; n++) {
         const int64_t ms = esp_timer_get_time() / 1000;
         read_serial();
@@ -1326,7 +1332,23 @@ extern "C" void app_main(void)
             const bool low = low_power;
             if (low != low_set) {
                 low_set = low;
+                low_ms = ms;
                 link_power_save(low);
+            }
+            const bool off = low && ms - low_ms >= (SCREEN_OFF_S - CHARGE_WAIT_S) * 1000;
+            if (off != screen_off) {
+                screen_off = off;
+                if (off) {
+                    display.setBrightness(0);
+                    display.sleep();
+                    backlight_set = 0;
+                } else {
+                    display.wakeup(); // the light comes back just below
+                }
+            }
+            if (off) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue; // nothing to draw
             }
             const int asked = backlight;
             const int light = low && asked > CHARGE_BACKLIGHT_PCT ? CHARGE_BACKLIGHT_PCT : asked;
