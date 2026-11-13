@@ -8,22 +8,44 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  examples:
     runs-on: ubuntu-latest
-    container: espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    outputs:
+      list: ${{ steps.list.outputs.examples }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build every example
+      - name: List examples
+        id: list
+        run: echo "examples=$(scripts/list-examples.sh | jq -R -s -c 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  # One job per example, in parallel, as in CI. publish only runs if all pass.
+  build:
+    name: Build ${{ matrix.example }}
+    needs: examples
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c
+    strategy:
+      fail-fast: false
+      matrix:
+        example: ${{ fromJSON(needs.examples.outputs.list) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
         shell: bash
+        env:
+          EXAMPLE: ${{ matrix.example }}
         run: |
           . "$IDF_PATH/export.sh"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          scripts/build-all.sh
+          scripts/build.sh "$EXAMPLE"
+          echo "ARTIFACT=firmware-$(echo "$EXAMPLE" | sed 's|^examples/||; s|/|-|g')" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: firmware
+          name: ${{ env.ARTIFACT }}
           path: out/*.bin
           if-no-files-found: error
 
@@ -54,8 +76,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: firmware
+          pattern: firmware-*
           path: out
+          merge-multiple: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: parts
