@@ -160,6 +160,7 @@ Start values, all can be changed while it runs:
 | `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
 | `dv` | 0.15 | m/s | the most a `drive` order may ask for (at most 0.25) |
 | `dacc` | 0.2 | m/s² | how fast the driving speed changes |
+| `dff` | 1 | share | how much of the driving speed goes straight to the wheels (0 = the robot only leans to move, test 36) |
 
 Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And seven more:
 
@@ -195,7 +196,9 @@ How it works: an order does not touch the motors. It moves the place and the hea
 
 M5Stack's own code does it another way. The Arduino app that comes on the robot cannot drive: both wheels always get the same value. The UiFlow2 driver drives by leaning: its example moves the angle target one degree every 0.1 s, up to 20 degrees, and turns by adding a fixed value to one motor and taking it from the other (`set_turn_speed`). It has no speed limit, no heading hold, and an order does not end by itself. With our law a lean would not work: the position loop would pull the robot back.
 
-**Not tested on the robot yet.** In the emulator the simulated robot drives forward (see [Expected output](#expected-output)), but it sways more and more. It did the same after a push, with no order at all. The simulated robot is too rough to say how the real one will drive. Start with `drive 0.05 0`, with 1 m free on each side.
+The driving speed also goes straight to the wheels (`dff`). Without it the robot leaned as asked and still moved at a third of the speed, because the command stayed in the motors' dead band (test 36).
+
+Tested on the robot on 2026-11-13 (test 36): forward and back at 0.10 and 0.15 m/s, turns of 90 degrees in place, and an arc. In the emulator the simulated robot drives forward too (see [Expected output](#expected-output)), but that model is too rough to set any value.
 
 ### Safety
 
@@ -451,6 +454,24 @@ Test 35, the same day: pushes by hand with the new start values, on the hard flo
 - **Second take, with `av`.** Two pushes of 0.31 and 0.32 m/s: the robot stood, moved 15 cm, and the command reached PWM 437 to 440 (the limit is 500). `kp` stayed between 2.2 and 2.5, where the hard floor had it before the pushes. Two harder pushes, 0.41 and 0.45 m/s, and the robot fell both times. That is over the 0.4 m/s stop. We did not read the stop reason, so we cannot say for sure that it was the stop and not a real fall.
 - The pushes of the second take were harder than those of the first, so the two takes do not compare well. A fixed push is still missing (see [Try next](#try-next)).
 
+Test 36, the same day: `drive` on the robot, over UDP from a script that sent the order 10 times a second. On the carpet, servo on the back, cable out, battery at 75%. `kp` stayed at 3.0 in all of it (the shake meter read 5 to 10). The numbers come from the 50 Hz telemetry. Each order ran once, so they show what works, not how exact it is.
+
+| Order | Asked | Got | Notes |
+| --- | --- | --- | --- |
+| `drive 0.05 0` for 1 s, then back, `dff` 0 | 5 cm each way | +1 cm, -4.5 cm | lost in the robot's own sway: it had moved 9 cm by itself before the order |
+| `drive 0.1 0` for 2 s, then back, `dff` 0 | 17.5 cm each way | +5 cm in the 2 s, +10 cm after 5 s more; -1 cm, then -9 cm | 0.03 to 0.04 m/s |
+| `drive 0.1 0` for 2 s, then back, `dff` 1 | 17.5 cm each way | +14 cm, -13 cm | up to 0.075 m/s, still within 1 s of the order's end |
+| `drive 0.15 0` for 2 s, then back, `dff` 1 | 30 cm each way | +27 cm, -23 cm | 0.14 m/s for 1 s, still within 1 s, no overshoot |
+| `drive 0 45` for 2 s, then `drive 0 -45` | 90 degrees each way | +90, then back to +2 | at the end of the order it was at 40 to 49 degrees; the rest took 3.5 s more. It stayed within 3 cm |
+| The same, `kh` 0.3 | 90 degrees each way | +93, then back to +2 | 52 degrees at the end of the first order, all of it 1.5 s later |
+| `drive 0.1 30` for 3 s, then `drive -0.1 -30`, `kh` 0.3 | 30 cm and 90 degrees each way | +26 cm and +92 degrees, then -20 cm and back to 0 | the turn kept up while the wheels rolled: 86 degrees at the end of the order |
+
+- **Without `dff` the robot leaned and did not go.** With `dff` 0 an order only moves the place the robot holds. The asked tilt went up by 2.9 degrees and the tilt followed it, but the robot moved at 0.03 to 0.04 m/s when 0.10 was asked. The mean command was PWM 60 to 90, under the least value that starts a still wheel (`ks` 90). So the motors pushed without turning the wheels, and that push held the lean. It stayed like that for seconds after the order, 8 cm short, leaning 2.5 degrees more than before.
+- **`dff` 1 fixes it.** The driving speed is added to the wheel command, so the command leaves the dead band. `dff` came with a new firmware in the middle of the test, sent over Wi-Fi.
+- **The first half second of an order does little.** The speed grows at `dacc`, and the wheels wait until the command is out of the dead band.
+- **A turn in place is slow and jerky.** 45 degrees per second is only 0.03 m/s on each wheel, inside the dead band. The wheels move when the heading error has grown enough, in steps (the turn rate jumps between 15 and 45 degrees per second). The final heading is right, to 2 or 3 degrees. A higher `kh` (0.3) gets there sooner and did not change the shake in 5 s of standing still. It is not the start value yet: one run.
+- The robot never stopped or fell in these runs. The heading stayed within 3 degrees while it drove straight.
+
 Test 26, on 2026-11-12: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
@@ -526,6 +547,7 @@ The simulated robot drives forward for 3 s at 0.1 m/s. The distance changes a li
 - Check `as` 11 with another load and with a low battery. The carpet reads 8 to 9, so there is little room.
 - The 6 to 9 Hz shake is still there. Looking ahead (`tp`, `mk`) made it worse, so the next idea goes the other way: less gain at those frequencies.
 - Test pushes with a fixed push (a pendulum or a weight on a string), so two settings get the same push.
-- Test `drive` on the robot: forward and back at 0.05, 0.10 and 0.15 m/s for 1 s, with `rec`. Then turns at 30 to 90 degrees per second. Look at the sway after each order, and lower `dacc` if it is too much.
+- `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
+- A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
 - Buttons on the phone page that drive while you hold them.
 - A ToF4M distance sensor on the servo, to stop before the robot hits something. The speed limit of `drive` is the place for it: the closer the wall, the lower the limit. The servo turns without end and does not say where it points, so the firmware must find that out first.

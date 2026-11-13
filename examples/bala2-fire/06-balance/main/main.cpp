@@ -322,6 +322,10 @@ static struct {
     volatile float kw = 0.0f;
     volatile float dv = 0.15f;  // m/s, most a drive order may ask for
     volatile float dacc = 0.2f; // m/s^2, how fast the asked speed changes
+    // Share of the driving speed that goes straight to the wheels. With 0 the
+    // robot only leans, and on our floors a lean of 3 degrees moved it at
+    // 0.03 m/s when 0.10 was asked: the command stayed in the dead band.
+    volatile float dff = 1.0f;
 } gain;
 
 static volatile bool stop_request;
@@ -968,7 +972,8 @@ static void control_task(void *arg)
                 // so it cannot wind up.
                 const float kw = gain.kw;
                 x_ref = x + clampf(x_ref + v_cmd * DT - x, KW_LIMIT / fmaxf(kw, 0.01f));
-                const float v_wheels = clampf(v_cmd + kw * (x_ref - x), vlim);
+                const float v_wheels =
+                    clampf(v_cmd + kw * (x_ref - x) + gain.dff * v_ref, vlim);
                 // Motor model: ask for more while the wheels are still on
                 // their way to the command (mk), then move the model.
                 const float v_out = clampf(v_wheels + gain.mk * (v_wheels - v_model), vlim);
@@ -1255,6 +1260,7 @@ extern "C" void app_main(void)
     mon_float("kw", &gain.kw, 0, 100);
     mon_float("dv", &gain.dv, 0, DRIVE_HARD_V);
     mon_float("dacc", &gain.dacc, 0.05f, 1);
+    mon_float("dff", &gain.dff, 0, 1.5f);
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
