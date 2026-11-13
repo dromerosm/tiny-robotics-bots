@@ -20,7 +20,7 @@ So stopping this tool (Ctrl+C) does not make the robot fall. To stop the
 robot, type "stop" or press its button B.
 
 Commands: a name and a value (kp, ki, kd, rf, kpos, kvel, kt, off, ramp, kh,
-vmax, max, gw, kw, bp, servo, bl), ? to list them, rec N (N seconds of 200 Hz
+vmax, max, gw, kw, tp, mt, mk, ks, kr, kst, as, amin, av, bp, servo, bl), ? to list them, rec N (N seconds of 200 Hz
 samples, sent as they come), fall, stop
 """
 import argparse
@@ -95,7 +95,7 @@ def main():
         quiet_since = time.time()
         while running:
             try:
-                data, _ = sock.recvfrom(256)
+                data, _ = sock.recvfrom(2048)
             except OSError:  # timeout, or the robot is restarting
                 if time.time() - quiet_since > 2:
                     print("(no data from the robot: is this Mac on the same Wi-Fi?)")

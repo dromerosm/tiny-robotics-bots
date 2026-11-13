@@ -20,7 +20,7 @@ extern "C" {
 #endif
 
 #define MON_VARS     32 // at most this many variables
-#define MON_REC_COLS 6  // at most this many numbers in a sample
+#define MON_REC_COLS 10 // at most this many numbers in a sample
 
 // Name a number, with the range a command may set it to. The name has up to
 // 7 characters. Call these at boot, before link_start().

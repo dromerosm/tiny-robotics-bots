@@ -67,7 +67,7 @@ static void write_vars(char *buf, size_t size, const char *open, const char *quo
 
 void mon_list(void)
 {
-    char line[256];
+    char line[512];
     write_vars(line, sizeof(line), "gains ", "", " ", " ", "\n");
     fputs(line, stdout);
     link_send(line);
@@ -196,7 +196,7 @@ void mon_rec_send(void)
     }
     // Up to 16 samples per call: at 50 calls a second that is 800 a second,
     // four times what a 200 Hz loop makes.
-    for (int k = 0; k < 16 && tail != head && at < sizeof(out) - 100; k++) {
+    for (int k = 0; k < 16 && tail != head && at < sizeof(out) - 180; k++) {
         const sample_t *s = &ring[tail];
         at += snprintf(out + at, sizeof(out) - at, "rec,%lu", (unsigned long)s->t_ms);
         for (int c = 0; c < cols; c++) {

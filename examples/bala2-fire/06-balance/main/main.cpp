@@ -43,6 +43,9 @@
 //
 // Buttons: B stops. A and C move the balance point by -/+0.25 degrees.
 //
+// "drive <m/s> <deg/s> [seconds]" moves the robot while it balances: it moves
+// the place and the heading the robot holds (see the README).
+//
 // A Servo Kit 360 servo on the base's S4 header takes "servo <pulse>" (see
 // the README). It is not part of the balance.
 //
@@ -123,6 +126,16 @@ static const char *TAG = "balance";
 #define HARD_MAX_V  0.55f  // m/s, never more
 #define KW_LIMIT    0.1f   // m/s, most the wheel position loop may add
 #define YAW_SIGN    -1.0f  // gyro Z has the opposite sign to the encoders (test 10)
+// Shake meter: the part of the rate between about 5 and 10 Hz (the gap of two
+// low-pass filters), then its mean size over about 1 s. The gap passes a third
+// of a 7 Hz wave, so SHAKE_GAIN brings it back to deg/s.
+#define SHAKE_FAST  0.27f  // share per tick, about 10 Hz
+#define SHAKE_SLOW  0.145f // share per tick, about 5 Hz
+#define SHAKE_GAIN  3.0f
+#define SHAKE_MEAN  0.005f // share per tick, about 1 s
+#define ADAPT_RATE  0.2f   // 1/s, how fast `as` moves the kp
+#define ADAPT_WAIT_S 2.0f  // no change this soon after the start
+#define ADAPT_HOLD_S 2.0f  // nor this soon after the robot moved fast (av)
 
 // Safety limits. MAX_PWM is the start value; "max" over serial can change it
 // up to HARD_MAX_PWM and never more.
@@ -158,6 +171,16 @@ static const char *TAG = "balance";
 #define LEARN_MAX_SPEED 0.15f // m/s
 #define BP_LIMIT        25.0f // degrees
 
+// Driving ("drive <m/s> <deg/s> [seconds]"). The order moves the place and
+// the heading the robot holds, so every balance rule stays as it is. It ends
+// by itself: a server must repeat it, or the robot stops and holds its place.
+#define DRIVE_HARD_V  0.25f // m/s, never more (the "too fast" stop is at 0.4)
+#define DRIVE_MAX_W   90.0f // deg/s
+#define DRIVE_W_ACC   180.0f // deg/s^2
+#define DRIVE_HOLD_S  0.5f   // an order lasts this long without a time
+#define DRIVE_MAX_S   5.0f   // and at most this long with one
+#define DRIVE_WAIT_S  2.0f   // no driving this soon after the start
+
 #define CAL_SAMPLES 1000
 
 typedef enum { ST_WAIT, ST_BALANCE, ST_STOPPED, ST_FALL } state_t;
@@ -171,6 +194,9 @@ typedef struct {
     volatile bool charging;
     volatile bool seen_lying;
     const char *volatile reason;
+    volatile float drive_v, drive_w; // m/s and deg/s the robot follows now
+    // To watch the motor model, the shake meter and the kp in use (see `gain`).
+    volatile float v_model, shake, kp_eff;
 } status_t;
 
 // The last raw readings, for the phone page only. The control task writes
@@ -180,10 +206,10 @@ static struct {
     volatile int32_t enc_l, enc_r;
     volatile uint32_t i2c_errors; // failed sensor reads since boot
 } raw;
-// Screen backlight in percent. 20 is easy to read indoors, and the light is
+// Screen backlight in percent. 5 can still be read indoors, and the light is
 // one of the larger loads when the motors rest. A command stores the value
 // and the main task applies it: the display is not safe to use from two tasks.
-#define BACKLIGHT_PCT 20
+#define BACKLIGHT_PCT 5
 static volatile int backlight = BACKLIGHT_PCT;
 static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
@@ -191,7 +217,7 @@ static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot"};
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0};
 static float gyro_offset, yaw_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
@@ -208,10 +234,46 @@ static struct {
     // delays the D term, and the robot shakes at 6-8 Hz. 0.45 shook least in
     // the sweep of test 13; 0.2 shook most.
     volatile float rf = 0.45f;
+    // Tilt prediction, s (0 = off). The P term uses the tilt the robot will
+    // have this much later: tilt + rate * tp, with the rate not filtered. The
+    // motors answer about 20 ms late, so 0.02 is the value to try. It is the
+    // same as more D (kp * tp) on the raw rate, so it can also bring back the
+    // 12 Hz shake that rf removes. It did: 0.02 and 0.03 shook more, at 9 to
+    // 10 Hz (test 34). So it is off.
+    volatile float tp = 0.0f;
+    // Motor model. We measured that a wheel follows the command with a lag of
+    // about 80 ms (test 11). v_model is the speed the wheels should have now,
+    // by that lag (mt, s). mk (0 = off) asks for more while the model is
+    // behind the command: v + mk * (v - v_model). The lag then acts as
+    // mt / (1 + mk), so mk 1 halves it. It also makes the noise of the D term
+    // (1 + mk) times larger. Every value shook more (test 34), so it is off.
+    volatile float mt = 0.08f;
+    volatile float mk = 0.0f;
+    // Dead band with two steps (example 05): a still wheel starts at PWM 90 to
+    // 100, and a turning one keeps going down to 50 to 60. ks is the least
+    // PWM for a wheel that stands still, kr for one that turns (0 = off). A
+    // wheel stands still when the encoders gave no count for kst seconds, so
+    // a wheel that only changes direction gets no kick. ks alone changed
+    // nothing; the two together shook a little less (test 34).
+    volatile float ks = 90.0f;
+    volatile float kr = 55.0f;
+    volatile float kst = 0.04f;
+    // kp by the floor. A hard floor wants a lower kp than a carpet (test 33).
+    // While the shake meter reads more than `as` deg/s (0 = off), kp goes
+    // down, to kp * amin at most. Under `as` it comes back. A push also
+    // shakes the robot, so it moves slowly. With kp 3 the meter reads 8 to 9
+    // on the carpet and 13 to 16 on the hard floor, so 11 is between them
+    // (test 34). A push shakes the robot too, and took kp down to its least
+    // value for 30 s (test 35). So kp does not change while the robot moves
+    // faster than av (m/s), nor for ADAPT_HOLD_S after that.
+    volatile float as = 11.0f;
+    volatile float amin = 0.6f;
+    volatile float av = 0.15f;
     // Position loop. It used to share the job with M5Stack's two terms on
     // v_cmd (kx 0.5, kv 0.3); 18 and 8 do the same without them (tests 22, 23).
     volatile float kpos = 18.0f; // lean back this many degrees per m ahead
-    volatile float kvel = 8.0f;  // and this many per m/s forward
+    // 16 halves the travel on both floors (test 34); it was 8.
+    volatile float kvel = 16.0f; // and this many per m/s forward
     volatile float kt = -0.05f;      // slow balance point trim, rad per (m*s); off
     volatile float off = PWM_OFFSET; // dead band jump, PWM
     volatile float ramp = 0.3f;      // m/s over which the jump grows from 0 (test 13)
@@ -228,6 +290,8 @@ static struct {
     // dead band), they get up to KW_LIMIT more speed. It cuts the slow sway
     // but adds to the fast shake (tests 20, 21), so it is off.
     volatile float kw = 0.0f;
+    volatile float dv = 0.15f;  // m/s, most a drive order may ask for
+    volatile float dacc = 0.2f; // m/s^2, how fast the asked speed changes
 } gain;
 
 static volatile bool stop_request;
@@ -240,6 +304,10 @@ static volatile float learned_bp = NAN;
 // Servo pulse asked for by a command. Only the control task talks to the
 // base, so it sends the value when it changes.
 static volatile int servo_us = SERVO_STOP_US;
+// The last drive order: speed (m/s, + = forward), turn rate (deg/s, + = left)
+// and the time it ends (ms since boot). The control task follows it.
+static volatile float drive_v, drive_w;
+static volatile uint32_t drive_end_ms;
 
 // --- Simulated robot (emulator only) --------------------------------------
 
@@ -516,6 +584,15 @@ static float pwm_for(float v)
     return v > 0 ? u : -u;
 }
 
+// The same PWM, but not smaller than `least`. A PWM of 0 stays 0.
+static float at_least(float u, float least)
+{
+    if (u == 0 || fabsf(u) >= least) {
+        return u;
+    }
+    return u > 0 ? least : -least;
+}
+
 static void stop(const char *reason)
 {
     set_speed(0);
@@ -563,6 +640,14 @@ static void control_task(void *arg)
     bool learn_calm = true;
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
     float x_ref = 0;                    // m, where the wheels should be (kw)
+    float v_model = 0;                  // m/s, wheel speed by the motor model (mt)
+    float shake_fast = 0, shake_slow = 0, shake = 0; // shake meter, deg/s
+    float kp_scale = 1;                 // share of kp in use (as)
+    int still_ticks = 0;                // ticks with no encoder count
+    int fast_hold = 0;                  // ticks left before kp may change again (av)
+    // Driving: the speed and turn rate followed now, and the place (m from
+    // the start) and heading (rad) they have moved the robot's goal to.
+    float v_ref = 0, w_ref = 0, x_goal = 0, h_goal = 0;
     read_position(&last_pos, &ahead);
     int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
         battery_ticks = 0;
@@ -605,6 +690,10 @@ static void control_task(void *arg)
         const float rate = (g - gyro_offset) / GYRO_LSB_PER_DPS;
         const float yaw_rate = YAW_SIGN * (yaw - yaw_offset) / GYRO_LSB_PER_DPS; // deg/s
         rate_f += gain.rf * (rate - rate_f);
+        shake_fast += SHAKE_FAST * (rate - shake_fast);
+        shake_slow += SHAKE_SLOW * (rate - shake_slow);
+        shake += SHAKE_MEAN * (SHAKE_GAIN * fabsf(shake_fast - shake_slow) - shake);
+        still_ticks = pos != last_pos ? 0 : (still_ticks < LOOP_HZ ? still_ticks + 1 : LOOP_HZ);
         const float gw = gain.gw;
         tilt = gw * (tilt + rate * DT) + (1 - gw) * acc;
         speed = (1 - SPEED_LPF) * speed + SPEED_LPF * (pos - last_pos) / DT;
@@ -616,6 +705,13 @@ static void control_task(void *arg)
         st.rate = rate;
         st.speed = speed;
         st.setpoint = setpoint;
+        st.shake = shake;
+        if (st.state != ST_BALANCE) {
+            v_model = 0;
+            kp_scale = 1;
+            st.v_model = 0;
+            st.kp_eff = gain.kp;
+        }
         if (fabsf(tilt) > LYING_DEG) {
             st.seen_lying = true;
         }
@@ -677,6 +773,8 @@ static void control_task(void *arg)
                     start_ahead = ahead;
                     heading = 0;
                     x_ref = 0;
+                    v_ref = w_ref = x_goal = h_goal = 0;
+                    drive_end_ms = 0; // an order from before the start does not count
                     speed = 0;
                     integral = 0;
                     trim = 0;
@@ -701,7 +799,22 @@ static void control_task(void *arg)
 
             case ST_BALANCE: {
                 balance_ticks++;
-                const float x = pos - start_pos;
+                // Drive: follow the order while it lasts, then go back to 0.
+                // The speed changes slowly, because the robot must lean first.
+                const bool driving = balance_ticks > DRIVE_WAIT_S * LOOP_HZ &&
+                                     (int32_t)(drive_end_ms - (uint32_t)(now / 1000)) > 0;
+                const float want_v = driving ? clampf(drive_v, fminf(gain.dv, DRIVE_HARD_V)) : 0;
+                const float want_w = driving ? clampf(drive_w, DRIVE_MAX_W) : 0;
+                v_ref += clampf(want_v - v_ref, gain.dacc * DT);
+                w_ref += clampf(want_w - w_ref, DRIVE_W_ACC * DT);
+                x_goal += v_ref * DT;
+                h_goal += w_ref / RAD_TO_DEG_F * DT;
+                st.drive_v = v_ref;
+                st.drive_w = w_ref;
+                const bool moving = v_ref != 0 || w_ref != 0;
+
+                const float x = pos - start_pos; // m from the start
+                const float xe = x - x_goal;     // m ahead of where it should be
                 st.position = x;
                 fast_ticks = fabsf(speed) > MAX_SPEED_MS ? fast_ticks + 1 : 0;
 
@@ -709,7 +822,7 @@ static void control_task(void *arg)
                     stop("button B");
                 } else if (fabsf(tilt - setpoint_trim) > FALL_DEG) {
                     stop("fell over");
-                } else if (fabsf(x) > MAX_DISTANCE_M) {
+                } else if (fabsf(xe) > MAX_DISTANCE_M) {
                     stop("moved too far");
                 } else if (fast_ticks > MAX_SPEED_TICKS) {
                     stop("too fast");
@@ -722,14 +835,17 @@ static void control_task(void *arg)
                 // The computer went quiet: keep balancing. Stopping the motors
                 // here made a healthy robot fall over. It holds its place by
                 // itself (the position loop), the servo stops (below), and
-                // every other stop rule still works. A speed or turn asked
-                // for over the link must go back to 0 here, when there is one.
+                // every other stop rule still works. A drive order ends by
+                // itself (above), so there is nothing to undo here.
                 st.reason = link_alive() ? "balancing" : "balancing, link lost";
 
                 // The balance point follows a slow drift (kt), up to 5 degrees.
-                trim = clampf(trim + gain.kt * x * DT * RAD_TO_DEG_F, TRIM_LIMIT);
+                // Not while it drives: being behind the goal is normal then.
+                if (!moving) {
+                    trim = clampf(trim + gain.kt * xe * DT * RAD_TO_DEG_F, TRIM_LIMIT);
+                }
                 learn_sum += tilt;
-                if (fabsf(speed) > LEARN_MAX_SPEED) {
+                if (fabsf(speed) > LEARN_MAX_SPEED || moving) {
                     learn_calm = false;
                 }
                 if (++learn_n >= LEARN_TICKS) {
@@ -742,7 +858,9 @@ static void control_task(void *arg)
                 }
                 // Position loop: when the robot is ahead, or rolls forward, ask
                 // it to lean back a little, so it comes back to where it started.
-                const float outer = clampf(-gain.kpos * x - gain.kvel * speed, OUTER_LIMIT);
+                // A drive order moves that place, at the speed it asks for.
+                const float outer =
+                    clampf(-gain.kpos * xe - gain.kvel * (speed - v_ref), OUTER_LIMIT);
                 st.setpoint = setpoint + outer;
 
                 // Heading: the gyro is good over short times and does not care
@@ -753,8 +871,12 @@ static void control_task(void *arg)
                 // Heading hold: the two motors are not the same (the left one is
                 // 3-5% faster, example 05), so the robot slowly turns. Give the
                 // right wheel a little more when it has turned right, and less
-                // when it has turned left.
-                const float turn = clampf(-gain.kh * heading, TURN_LIMIT);
+                // when it has turned left. A drive order turns the heading it
+                // holds, and the wheels get the speed difference of that turn
+                // directly: kh alone is too soft to follow it.
+                const float turn = clampf(-gain.kh * (heading - h_goal) +
+                                              w_ref / RAD_TO_DEG_F * TRACK_M / 2,
+                                          TURN_LIMIT);
                 st.heading_enc = heading_enc * RAD_TO_DEG_F;
                 st.heading = heading * RAD_TO_DEG_F;
                 st.yaw_rate = yaw_rate;
@@ -765,17 +887,42 @@ static void control_task(void *arg)
                 const float vlim = fminf(gain.vmax, HARD_MAX_V) * ramp;
                 const float th = (err - outer) / RAD_TO_DEG_F;
                 integral = clampf(integral + gain.ki * th * DT, vlim);
+                // kp by the floor: down while it shakes more than `as`, back
+                // up while it shakes less.
+                const float as = gain.as;
+                if (fabsf(speed) > gain.av) {
+                    fast_hold = (int)(ADAPT_HOLD_S * LOOP_HZ);
+                } else if (fast_hold > 0) {
+                    fast_hold--;
+                }
+                if (as <= 0) {
+                    kp_scale = 1;
+                } else if (balance_ticks > ADAPT_WAIT_S * LOOP_HZ && fast_hold == 0) {
+                    kp_scale += ADAPT_RATE * clampf(1 - shake / as, 1) * DT;
+                    kp_scale = fminf(1.0f, fmaxf(kp_scale, gain.amin));
+                }
+                const float kp = gain.kp * kp_scale;
+                // The I term keeps the tilt of now: only P looks ahead (tp).
+                const float th_p = th + gain.tp * rate / RAD_TO_DEG_F;
                 const float v_cmd =
-                    clampf(gain.kp * th + integral + gain.kd * rate_f / RAD_TO_DEG_F, vlim);
+                    clampf(kp * th_p + integral + gain.kd * rate_f / RAD_TO_DEG_F, vlim);
                 // Wheel position loop: push harder while the wheels are behind
                 // the place the command asked for. The error is kept small,
                 // so it cannot wind up.
                 const float kw = gain.kw;
                 x_ref = x + clampf(x_ref + v_cmd * DT - x, KW_LIMIT / fmaxf(kw, 0.01f));
-                const float v_out = clampf(v_cmd + kw * (x_ref - x), vlim);
+                const float v_wheels = clampf(v_cmd + kw * (x_ref - x), vlim);
+                // Motor model: ask for more while the wheels are still on
+                // their way to the command (mk), then move the model.
+                const float v_out = clampf(v_wheels + gain.mk * (v_wheels - v_model), vlim);
+                v_model += (v_out - v_model) * DT / fmaxf(gain.mt, DT);
+                st.v_model = v_model;
+                st.kp_eff = kp;
                 const float lim = fminf(gain.max, HARD_MAX_PWM);
-                const float ul = clampf(pwm_for(v_out - turn), lim);
-                const float ur = clampf(pwm_for(v_out + turn), lim);
+                // Dead band: a wheel that stands still needs more to start.
+                const float least = still_ticks >= gain.kst * LOOP_HZ ? gain.ks : gain.kr;
+                const float ul = clampf(at_least(pwm_for(v_out - turn), least), lim);
+                const float ur = clampf(at_least(pwm_for(v_out + turn), least), lim);
                 st.u = (ul + ur) / 2;
                 // Its own counter: "errors" goes back to 0 on every good read.
                 if (set_wheels((int16_t)ul, (int16_t)ur)) {
@@ -813,7 +960,8 @@ static void control_task(void *arg)
         }
 
         // Fast samples for bala2_mon. It takes them only while someone asked.
-        const float sample[MON_REC_COLS] = {tilt, rate, acc, st.position, speed, st.u};
+        const float sample[MON_REC_COLS] = {tilt,  rate,       acc,      st.position, speed,
+                                            st.u,  st.v_model, shake,    st.kp_eff};
         mon_rec_add((uint32_t)(now / 1000), sample);
     }
 }
@@ -840,21 +988,29 @@ static bool pressed(gpio_num_t pin, int *last)
     return down;
 }
 
-// In the emulator: hold it upright, let go, push it, and check it stays up.
+static void handle_command(const char *line);
+
+// In the emulator: hold it upright, let go, and drive it forward as a server
+// would (one order every tick). Then check it is still up, 2 s after the
+// order ends. The drive takes the place of the push this script used to give:
+// the simulated robot sways more and more after either, so it gets only one.
 static void sim_script(int64_t ms)
 {
     static int64_t start_ms = -1;
-    static bool pushed, done;
+    static bool done;
     if (st.state == ST_BALANCE && start_ms < 0) {
         start_ms = ms;
     }
-    if (start_ms >= 0 && !pushed && ms - start_ms > 3000) {
-        pushed = true;
-        sm.thd += 0.5f; // a push forward: 29 deg/s
-        printf("sim: push\n");
+    if (start_ms < 0) {
+        return;
     }
-    if (pushed && !done && ms - start_ms > 6000) {
+    const int64_t t = ms - start_ms;
+    if (t > 2500 && t < 5500) {
+        handle_command("drive 0.1 0");
+    }
+    if (!done && t > 7500) {
         done = true;
+        printf("sim: drove %.2f m\n", st.position);
         printf("sim: done, %s\n", st.reason);
     }
 }
@@ -875,6 +1031,17 @@ static void handle_command(const char *line)
     if (!strcmp(name, "stop")) {
         stop_request = true;
         servo_us = SERVO_STOP_US;
+        drive_end_ms = 0;
+    } else if (!strcmp(name, "drive")) {
+        // "drive 0.1 30 2": 0.1 m/s forward, turning left at 30 deg/s, for 2 s.
+        // "drive 0 0", or "drive" alone, ends the order: the robot holds its place.
+        float speed = 0, turn = 0, seconds = DRIVE_HOLD_S;
+        sscanf(line, "%*s %f %f %f", &speed, &turn, &seconds);
+        // Not NAN, and inside the limits (the control task has the last word).
+        drive_v = isnan(speed) ? 0 : clampf(speed, DRIVE_HARD_V);
+        drive_w = isnan(turn) ? 0 : clampf(turn, DRIVE_MAX_W);
+        seconds = seconds > 0 ? fminf(seconds, DRIVE_MAX_S) : 0;
+        drive_end_ms = (uint32_t)(esp_timer_get_time() / 1000) + (uint32_t)(seconds * 1000);
     } else if (!strcmp(name, "fall")) {
         fall_request = true;
         mon_say("fall test: lay it down, then hold it upright and still, and let go\n");
@@ -929,14 +1096,14 @@ static void state_json(char *buf, size_t size)
             *c = '?';
         }
     }
-    static char vars[400]; // one server task, so one call at a time
+    static char vars[640]; // one server task, so one call at a time
     mon_json(vars, sizeof(vars));
     // MPU6886: 4096 counts per g at +-8 g, and 326.8 counts per degree C.
     snprintf(buf, size,
              "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
              "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
-             "\"yaw\":%.1f,\"turn\":%.3f,\"saved_bp\":%s,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"saved_bp\":%s,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
@@ -945,7 +1112,7 @@ static void state_json(char *buf, size_t size)
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
-             st.setpoint, st.heading, st.yaw_rate, st.turn, saved_text, raw.ax / 4096.0f,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, saved_text, raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
              (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
@@ -994,6 +1161,15 @@ extern "C" void app_main(void)
     mon_float("ki", &gain.ki, 0, 100);
     mon_float("kd", &gain.kd, 0, 1);
     mon_float("rf", &gain.rf, 0.05f, 1);
+    mon_float("tp", &gain.tp, 0, 0.05f);
+    mon_float("mt", &gain.mt, 0.01f, 0.3f);
+    mon_float("mk", &gain.mk, 0, 3);
+    mon_float("ks", &gain.ks, 0, 120);
+    mon_float("kr", &gain.kr, 0, 80);
+    mon_float("kst", &gain.kst, 0.01f, 0.5f);
+    mon_float("as", &gain.as, 0, 100);
+    mon_float("amin", &gain.amin, 0.3f, 1);
+    mon_float("av", &gain.av, 0.02f, 1);
     mon_float("kpos", &gain.kpos, 0, 100);
     mon_float("kvel", &gain.kvel, 0, 50);
     mon_float("kt", &gain.kt, -1, 1);
@@ -1004,10 +1180,12 @@ extern "C" void app_main(void)
     mon_float("max", &gain.max, 0, HARD_MAX_PWM);
     mon_float("gw", &gain.gw, 0.9f, 0.999f);
     mon_float("kw", &gain.kw, 0, 100);
+    mon_float("dv", &gain.dv, 0, DRIVE_HARD_V);
+    mon_float("dacc", &gain.dacc, 0.05f, 1);
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
-    mon_rec_columns("tilt,rate,acc_tilt,x,v,u");
+    mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
     display.init();
@@ -1052,7 +1230,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0));
     mon_list();
     mon_say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
-        "battery,charging\n");
+        "battery,charging,v_model,shake,kp_eff\n");
     int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
     for (int n = 0;; n++) {
         const int64_t ms = esp_timer_get_time() / 1000;
@@ -1063,6 +1241,7 @@ extern "C" void app_main(void)
             if (pressed(BTN_B, &last_b)) {
                 stop_request = true;
                 servo_us = SERVO_STOP_US;
+                drive_end_ms = 0;
             }
             if (pressed(BTN_A, &last_a)) {
                 setpoint_trim -= 0.25f;
@@ -1081,9 +1260,10 @@ extern "C" void app_main(void)
         }
         mon_rec_send(); // the fast samples that are waiting, in one packet
         { // 50 Hz log
-            mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d\n", ms,
-                (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
-                st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging);
+            mon_say("%lld,%d,%.2f,%.1f,%.3f,%.3f,%.0f,%.2f,%.1f,%.1f,%.1f,%.3f,%d,%d,%.3f,%.1f,%.2f\n",
+                ms, (int)st.state, st.tilt, st.rate, st.speed, st.position, st.u, st.setpoint,
+                st.heading_enc, st.heading, st.yaw_rate, st.turn, st.battery, (int)st.charging,
+                st.v_model, st.shake, st.kp_eff);
         }
         if (n % 10 == 0) { // 5 Hz screen
             const int light = backlight;

@@ -65,14 +65,13 @@ Wi-Fi, the updates and the web server are not in this example. They are in the s
 **From a phone.** Open `http://bala2.local/` (or the address on the robot's screen) in the phone's browser, on the same network. The page shows the state, the tilt, the speed and the battery, and it has:
 
 - a big **STOP** button (it also stops the servo),
-- **−** and **+** to move the balance point by 0.25 degrees,
 - a slider for the servo, from -100% to +100%, and a button to stop it,
-- a box for every number you can change (the Tuning card), filled from the list the robot sends,
-- a slider for the screen's backlight. It starts at 20%, which is easy to read indoors and saves battery. `bl 50` sets it over UDP. The value is not saved.
+- a box for every number you can change (the Tuning card), filled from the list the robot sends. The **i** next to a name tells what the number does,
+- a slider for the screen's backlight. It starts at 5%, which can still be read indoors and saves battery. `bl 50` sets it over UDP. The value is not saved.
 
 Under the controls it shows what the robot reads, twice a second:
 
-- **Balance:** tilt rate, asked tilt, the balance point saved in flash, motor command, position, heading and turn rate.
+- **Balance:** the balance point, tilt rate, asked tilt, the balance point saved in flash, motor command, position, heading and turn rate.
 - **Motion sensor (MPU6886):** acceleration and rotation on the three axes, raw, and the chip's temperature.
 - **Wheels:** both encoder counts, and how many sensor reads failed since the start.
 - **Buttons:** A, B and C light up while you press them.
@@ -106,22 +105,31 @@ The tilt comes from a complementary filter (gyro plus accelerometer, as in [03](
 The base's motors behave as a **speed** command: the wheels reach the speed we ask for almost at once ([05](../05-speed-sweep)). So the law gives a wheel speed in m/s:
 
 ```
-setpoint = -(kpos * position + kvel * speed) + trim   degrees, at most 5
+goal    += v_drive * dt                                 m, where it should be
+setpoint = -(kpos * (position - goal) + kvel * (speed - v_drive)) + trim   degrees, at most 5
 trim    += kt * position * dt                           slow, at most 5
 e        = tilt - setpoint                              rad
-v_cmd    = kp*e + ki*SUM(e*dt) + kd*rate
-turn     = -kh * heading                                m/s, at most 0.1
+v_cmd    = kp*(e + tp*rate) + ki*SUM(e*dt) + kd*rate      kp goes down while it shakes (as)
+v_cmd   += mk * (v_cmd - v_model)                       v_model follows v_cmd with a lag of mt
+turn     = -kh * (heading - heading_goal) + w_drive * 0.077 / 2   m/s, at most 0.1
 PWM      = (v_cmd -+ turn) / 0.00118 + off * min(1, |v| / ramp)   left, right
+PWM      = at least ks for a still wheel, kr for a turning one
 ```
 
 - **PID on the tilt.** P and D catch the fall. I keeps the wheels speeding up while the robot still leans, until they get under it.
 - **Position loop (`kpos`, `kvel`, `kt`).** When the robot is ahead of where it started, or rolls forward, it is asked to lean back a little, so it comes back. The slow `kt` part removes what is left, so it returns to its start point.
 - **Heading hold (`kh`).** The heading mixes the gyro Z axis (good over short times, does not care if a wheel slips) with the difference between the two encoders (does not drift). The left motor is a little faster, and pushes turn the robot too, so the right wheel gets a little more or less speed to keep the start heading. On our unit, gyro Z has the opposite sign to the encoders (test 10).
 - **Motor line.** 0.00118 m/s per PWM unit is the slope we measured. `off` (31) jumps the motors' dead band. It grows from 0 over `ramp` m/s, so the gain near 0 stays low.
-- **Balance point.** It is not 0, and it moves a lot with the load: -1.5 degrees for the bare robot, +8 to +9.4 with the servo on the back, and -3.5 to +0.7 with it on top (test 24). So the robot takes it from your hand: the mean tilt of the second you hold it still before the start becomes the balance point. A person feels where the robot stops pulling, and in test 27 that was within 0.3 degrees of the true point. The position loop takes care of the rest. No saved value and no buttons are needed after the load changes. Buttons A and C, `bp` and the phone page still move it while it runs. The robot also learns the point while it balances (the mean tilt of each calm 10 s block, from the third block on) and saves the last one to flash when the run ends. That value is the start value after a restart and shows on the phone page, but the hand's angle replaces it at each start.
+- **Balance point.** It is not 0, and it moves a lot with the load: -1.5 degrees for the bare robot, +8 to +9.4 with the servo on the back, and -3.5 to +0.7 with it on top (test 24). So the robot takes it from your hand: the mean tilt of the second you hold it still before the start becomes the balance point. A person feels where the robot stops pulling, and in test 27 that was within 0.3 degrees of the true point. The position loop takes care of the rest. No saved value and no buttons are needed after the load changes. Buttons A and C and `bp` (also in the Tuning card of the phone page) still move it while it runs. The page has no − and + for it any more: the robot finds the point by itself. The robot also learns the point while it balances (the mean tilt of each calm 10 s block, from the third block on) and saves the last one to flash when the run ends. That value is the start value after a restart and shows on the phone page, but the hand's angle replaces it at each start.
 - **Tilt filter (`gw`).** The gyro's share of the tilt, per tick. The accelerometer also feels the wheels speed up, and a low `gw` lets that into the tilt. 0.995 shook less than 0.98 in tests 20 and 21, but not in test 22.
 - **Wheel position loop (`kw`).** Off by default. It adds up the command into the place where the wheels should be, and pushes harder while they are behind. It cuts the slow sway but adds to the fast shake (tests 20 and 21).
 - The rate for the D term goes through a low-pass filter (`rf`, 0.45, about 19 Hz).
+- **Tilt prediction (`tp`).** Off. The P term uses the tilt the robot will have `tp` seconds later: the tilt plus the rate times `tp`. The rate here is not filtered. In the math it is the same as more D (`kp` × `tp`) on the raw rate. It made the shake worse (test 34).
+- **Motor model (`mt`, `mk`).** Off. `v_model` is the speed the wheels should have now, if they follow the command with a lag of `mt` (80 ms, from test 11). With `mk` above 0 the law asks for more while the model is behind the command: the lag acts as `mt` / (1 + `mk`). It made the shake worse at every value (test 34). `v_model` is still worked out, to compare it with the real speed `v`.
+- **Dead band with two steps (`ks`, `kr`, `kst`).** A still wheel starts at PWM 90 to 100, and a turning wheel keeps going down to 50 to 60 ([05](../05-speed-sweep)). `ks` (90) is the least PWM for a wheel that stands still, and `kr` (55) for one that turns. A wheel stands still when the encoders gave no count for `kst` seconds (0.04). So a wheel that only changes direction gets no kick, but one that sticks in the dead band does. `ks` alone changed nothing. The two together shook a little less (test 34).
+- **`kp` by the floor (`as`, `amin`).** A shake meter runs all the time: the part of the rate between about 5 and 10 Hz, as a mean over about 1 s, in deg/s. While it reads more than `as` (11), `kp` goes down slowly, to `kp` × `amin` at most. Under `as` it comes back. With `kp` 3.0 the meter reads 8 to 9 on the carpet and 13 to 16 on the hard floor. So `kp` stays at 3.0 on the carpet and goes down to about 2.5 on the hard floor (test 34). A push shakes the robot too. So `kp` does not change while the robot moves faster than `av` (0.15 m/s), nor in the 2 s after that. `as` 0 turns it off.
+
+The telemetry and the 200 Hz samples show `v_model`, `shake` (the meter) and `kp_eff` (the `kp` in use).
 
 Start values, all can be changed while it runs:
 
@@ -131,8 +139,17 @@ Start values, all can be changed while it runs:
 | `ki` | 10 | m/s per rad·s | I on the tilt |
 | `kd` | 0.07 | m/s per rad/s | D on the tilt |
 | `rf` | 0.45 | share per tick | low-pass filter on the rate for D (0.32 is about 12 Hz, 0.45 about 19 Hz) |
+| `tp` | 0 | s | tilt prediction for the P term (0 = off, at most 0.05). Off: it shook more |
+| `mt` | 0.08 | s | motor lag in the motor model |
+| `mk` | 0 | | ask for more while the model is behind the command (0 = off, at most 3). Off: it shook more |
+| `ks` | 90 | PWM | least PWM for a wheel that stands still (0 = off) |
+| `kr` | 55 | PWM | least PWM for a wheel that turns (0 = off) |
+| `kst` | 0.04 | s | no encoder count for this long: the wheel stands still |
+| `as` | 11 | deg/s | `kp` goes down while the shake meter reads more (0 = off) |
+| `amin` | 0.6 | share | the least share of `kp` that `as` may leave |
+| `av` | 0.15 | m/s | `as` does not change `kp` while the robot moves faster than this, nor for 2 s after |
 | `kpos` | 18 | degrees per m | position loop |
-| `kvel` | 8 | degrees per m/s | position loop, speed part |
+| `kvel` | 16 | degrees per m/s | position loop, speed part. It was 8 until test 34 |
 | `kt` | -0.05 | rad per m·s | slow return to the start point (with `kpos` and `kvel`; alone it fought the PID, test 6) |
 | `kh` | 0.1 | m/s per rad | heading hold |
 | `off` | 31 | PWM | dead band jump |
@@ -141,15 +158,42 @@ Start values, all can be changed while it runs:
 | `max` | 500 | PWM | PWM limit (at most 600) |
 | `gw` | 0.995 | share per tick | gyro share in the tilt filter (0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s) |
 | `kw` | 0 | 1/s | wheel position loop (0 = off): up to 0.1 m/s more when the wheels are behind the command |
+| `dv` | 0.15 | m/s | the most a `drive` order may ask for (at most 0.25) |
+| `dacc` | 0.2 | m/s² | how fast the driving speed changes |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And four more:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And five more:
 
+- `drive 0.1 30 2`: drive (see [Driving](#driving)).
 - `bp 9.4`: set the balance point in degrees (from -15 to 15). The telemetry shows it as the setpoint while the robot waits.
 - `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
-- `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines. They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
+- `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines (`tilt`, `rate`, `acc_tilt`, `x`, `v`, `u`, `v_model`, `shake`, `kp_eff`). They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
 
 The gains came from a search on a simulated robot. We kept the sets that worked for many guesses of the center of mass height (5 to 16 cm), motor lag (30 to 150 ms) and extra delay (0 to 40 ms). Then we tuned them on the robot.
+
+### Driving
+
+`drive <speed> <turn> [seconds]` moves the robot while it balances. It comes over UDP or `POST /cmd`, like every command.
+
+| Order | What the robot does |
+| --- | --- |
+| `drive 0.1 0` | forward at 0.1 m/s |
+| `drive -0.1 0` | back at 0.1 m/s |
+| `drive 0 45` | turns left in place at 45 degrees per second (a negative value turns right) |
+| `drive 0.1 30 2` | forward and left, for 2 seconds |
+| `drive 0 0` | ends the order: the robot holds the place where it is |
+
+- The speed is in m/s, at most `dv`. The turn is in degrees per second, at most 90.
+- **An order ends by itself.** Without a time it lasts 0.5 s. With one, at most 5 s. A server that drives the robot sends the order again a few times a second. If the server or the link dies, the robot stops in 0.5 s and holds its place.
+- `stop` is still the emergency stop: it cuts the motors and the robot falls over. To stop driving, send `drive 0 0`.
+- The robot does not drive in the first 2 seconds after the start.
+- `GET /state` has `"drive":[speed, turn]`: what the robot follows right now.
+
+How it works: an order does not touch the motors. It moves the place and the heading that the robot holds. The position loop and the heading hold do the rest, so every balance and stop rule still works. The speed changes slowly (`dacc`), because the robot must lean before it can speed up. For a turn, the wheels also get the speed difference of that turn directly, because `kh` alone is too soft to follow it. While it drives, the slow trim and the learning of the balance point wait.
+
+M5Stack's own code does it another way. The Arduino app that comes on the robot cannot drive: both wheels always get the same value. The UiFlow2 driver drives by leaning: its example moves the angle target one degree every 0.1 s, up to 20 degrees, and turns by adding a fixed value to one motor and taking it from the other (`set_turn_speed`). It has no speed limit, no heading hold, and an order does not end by itself. With our law a lean would not work: the position loop would pull the robot back.
+
+**Not tested on the robot yet.** In the emulator the simulated robot drives forward (see [Expected output](#expected-output)), but it sways more and more. It did the same after a push, with no order at all. The simulated robot is too rough to say how the real one will drive. Start with `drive 0.05 0`, with 1 m free on each side.
 
 ### Safety
 
@@ -157,7 +201,7 @@ The robot should rather fall over than drive away.
 
 - Speed limit 0.5 m/s and PWM limit 500. Over Wi-Fi they can go up to 0.55 m/s and 600, never more.
 - It only starts after it was lying down, and then held upright and still for 1 second. Then the speed limit ramps up over 1 second.
-- It stops, and stays stopped, if the tilt goes past 25 degrees, if it moves more than 0.3 m from where it started, if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, or on button B.
+- It stops, and stays stopped, if the tilt goes past 25 degrees, if it is more than 0.3 m from where it should be (where it started, or where a `drive` order has moved that place to), if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, or on button B.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
 - If the computer goes quiet for 1 second, or the home Wi-Fi drops, the robot keeps balancing in place and the screen says `balancing, link lost`. It used to cut the motors, and a healthy robot fell over for it. The position loop holds it where it started, and the stop rules above still work. The robot joins the network again by itself.
@@ -353,7 +397,43 @@ The same sweep on the carpet, right after, with the same load:
 - Each number here is two takes of 8 s. Pushes were only tested with 3.5 (test 23).
 - In these sweeps the balance point was 9.2 degrees (8.3 on the carpet), not 15.3, on the same floor an hour apart. We do not know what moved. One guess: the sensor sits on the servo's arm, so each turn of the servo moves its weight.
 
-Test 26, the same day: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
+Test 34, on 2026-11-13: four new parts of the law, on a hard floor and then on the carpet. Servo on the back, cable out. Each setting had two takes of 8 s at 200 Hz, in the order A to E and back. The last comparisons had two takes of 20 s. "Shake" is the spread (sd) of the rate. "5 to 10 Hz" is the share of the shake's power in that band.
+
+- **Tilt prediction (`tp`): worse.** The shake moved from 8 Hz to 9.6 Hz and grew: 19 to 20 deg/s with 0, 19 to 21 with 0.01, 24 to 31 with 0.02, 38 to 45 with 0.03.
+- **Motor model (`mk`): worse.** 20 deg/s with 0, 28 with 0.3, 36 to 39 with 0.6, 57 to 65 with 1. A shorter `mt` (0.04) did not help. While the robot balances, the model explains only half of the wheels' real speed, so we could not set `mt` from these takes.
+- **Dead band (`ks`, `kr`): a little better, only with both.** `ks` 60 or 90 alone changed nothing. `ks` 90 with `kr` 55 shook a little less in the two sweeps that compared them (17 to 18 deg/s against 20 to 21 without them, with `kp` 2.5 and `kvel` 16).
+- **`off`:** 45 and 58 changed nothing we could measure. In the takes, a wheel under load follows about 0.00118 × (PWM − 47), not − 31.
+- **`kvel` 16 halves the travel**, on both floors. Alone it adds some shake on the hard floor (26 to 29 deg/s). With a lower `kp` it does not.
+
+The hard floor, takes of 20 s:
+
+| Setting | Shake (deg/s) | 5 to 10 Hz | Tilt sd (degrees) | Travel (cm) |
+| --- | --- | --- | --- | --- |
+| `kp` 3.0, `kvel` 8 (the old start values) | 19.4, 22.2 | 68%, 73% | 1.47, 1.55 | 9.9, 12.1 |
+| `kp` 2.5, `kvel` 16, `ks` 90, `kr` 55 | 18.0, 17.5 | 33%, 35% | 1.40, 1.38 | 6.6, 6.8 |
+
+The carpet, takes of 20 s:
+
+| Setting | Shake (deg/s) | 5 to 10 Hz | Tilt sd (degrees) | Travel (cm) |
+| --- | --- | --- | --- | --- |
+| `kp` 3.0, `kvel` 8 (the old start values) | 15.7, 14.4 | 32%, 35% | 1.23, 1.17 | 3.5, 2.4 |
+| `kp` 2.5, `kvel` 16, `ks` 90, `kr` 55 | 15.8, 15.8 | 18%, 17% | 1.39, 1.38 | 2.1, 2.4 |
+| `kp` 3.0, `kvel` 16, `ks` 90, `kr` 55 | 14.9, 16.4 | 26%, 25% | 1.10, 1.15 | 1.8, 1.9 |
+| The same with `as` 11 | 15.5, 13.8 | 24%, 21% | 1.14, 1.06 | 1.7, 1.7 |
+
+- The two floors still want a different `kp`: 3.0 on the carpet, 2.5 on the hard floor, as in test 33.
+- **`as` 11 gives each floor its `kp`.** With `kp` 3.0 the shake meter reads 8 to 9 on the carpet and 13 to 16 on the hard floor. On the hard floor `as` 11 took `kp` down to 2.5 to 2.6 in about 12 s, with the same result as a fixed 2.5 (two takes of 8 s). On the carpet `kp` stayed between 2.95 and 3.0 for 40 s.
+- **New start values:** `kvel` 16, `ks` 90, `kr` 55, `as` 11. `tp` and `mk` stay at 0.
+- Two takes of the same setting differ by up to 3 deg/s and 4 cm, so we trust the small gains (`ks`, `kr`) less than the large ones (`kp`, `kvel`). No pushes in this test. The battery went from 100% to 50%.
+
+Test 35, the same day: pushes by hand with the new start values, on the hard floor. Servo on the back, cable out, battery at 50%. Two takes of 60 s at 200 Hz.
+
+- **First take, pushes up to 0.25 m/s.** The robot stood, and moved 10 cm at most. But `as` took the pushes for a shaking floor: `kp` went down to 1.8, its least value, and stayed there. It was back at 3.0 about 30 s after the last push. With the low `kp` the robot swayed more (tilt sd 2.0 degrees over the take, against 1.2 to 1.4 at rest).
+- **The fix: `av`.** `kp` no longer changes while the robot moves faster than 0.15 m/s, nor in the 2 s after that.
+- **Second take, with `av`.** Two pushes of 0.31 and 0.32 m/s: the robot stood, moved 15 cm, and the command reached PWM 437 to 440 (the limit is 500). `kp` stayed between 2.2 and 2.5, where the hard floor had it before the pushes. Two harder pushes, 0.41 and 0.45 m/s, and the robot fell both times. That is over the 0.4 m/s stop. We did not read the stop reason, so we cannot say for sure that it was the stop and not a real fall.
+- The pushes of the second take were harder than those of the first, so the two takes do not compare well. A fixed push is still missing (see [Try next](#try-next)).
+
+Test 26, on 2026-11-12: the lights. Two small green LEDs are lit on the lower part of the robot. We tried to drive them as SK6812 LEDs on GPIO 15, where a normal Fire has its two LED bars (10 LEDs), with state colors and a brightness command. They stayed green. So they are not those LEDs. The BALA2 base takes the place of the Fire's LED base, and the green lights belong to the base itself: its schematic shows a system LED on the base's own chip (STM32 pin PA15). The base's firmware is not published and no register for the lights is known, so this firmware cannot change them. The LED code is not in the repo.
 
 Removed from the code on 2026-11-12, to keep the control loop small: the factory law (`law 1`, test 13), the notch filter (`nf` and `nq`, test 12), the gains `khr` and `ys`, which never changed, and M5Stack's two terms `kx` and `kv` (tests 22 and 23). They are in the git history, up to commit 17b83ac.
 
@@ -364,6 +444,7 @@ What we learned:
 - Two slow integrators (the PID's I and the balance point trim) fight each other. A position loop with a P part is calmer.
 - The simulated robot was good enough to show the problem in test 1, but not to set the final gains. The robot and live tuning over Wi-Fi did that.
 - The shake (tests 14 to 18) is a mode of the loop: its frequency follows `kp` and `kd`. Every change that lowers the gain near zero speed (`kp`, `ramp`) or cuts the delay (`rf`) helps a little, but none removes it. Near zero, the dead band jump adds about 37% gain, and that is where the motors reverse 10 to 15 times per second.
+- Looking ahead does not fix a shake that comes from too much gain. The tilt prediction and the motor model both add gain at 6 to 10 Hz, where the loop already shakes, and both made it worse (test 34). A lower `kp` on the hard floor did help.
 - From test 11 data: the wheel follows the command with about 20 ms delay and an 80 ms lag, and with the robot's weight it reaches about 20% less speed than with no load (about 0.44 m/s at PWM 500). To stop after a push, the robot must first lean back. With 5 degrees of lean it can brake at about 0.86 m/s², so from 0.3 m/s the best stop is about 0.5 s and 5 to 8 cm.
 
 ## A physical model
@@ -397,9 +478,9 @@ What it means for the control: a tilt grows e times every 96 ms and doubles ever
 On the robot (serial or Wi-Fi), lying down and then balancing:
 
 ```
-gains kp 3 ki 10 kd 0.07 rf 0.45 kpos 18 kvel 8 kt -0.05 off 31 ramp 0.3 kh 0.1 vmax 0.5 max 500 gw 0.995 kw 0 bp -1.5 servo 1500 bl 20
-t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging
-9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1
+gains kp 3 ki 10 kd 0.07 rf 0.45 tp 0 mt 0.08 mk 0 ks 90 kr 55 kst 0.04 as 11 amin 0.6 av 0.15 kpos 18 kvel 16 kt -0.05 off 31 ramp 0.3 kh 0.1 vmax 0.5 max 500 gw 0.995 kw 0 dv 0.15 dacc 0.2 bp -1.5 servo 1500 bl 5
+t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,battery,charging,v_model,shake,kp_eff
+9677,0,84.75,-0.3,0.000,0.000,0,0.00,0.0,0.0,0.0,0.000,0,1,0.000,0.1,3.00
 ```
 
 State: 0 waiting, 1 balancing, 2 stopped.
@@ -409,19 +490,24 @@ In QEMU, with the simulated robot:
 ```
 W (...) balance: no IMU or base (emulator?), using a simulated robot
 I (...) balance: start
-sim: push
+sim: drove 0.39 m
 sim: done, balancing
 ```
+
+The simulated robot drives forward for 3 s at 0.1 m/s. The distance changes a little from run to run. Some seconds after `sim: done` it sways too far and a stop rule ends the run: the gains were set on the real robot, not on this model.
 
 ## Try next
 
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
-- Stop faster after a push: raise `kvel` in small steps (10, 12) and check the shaking at each step.
-- Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 8, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
+- Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 16, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
 - The slow sway (about 1 degree, under 2 Hz) is most of the robot's movement, and it comes from the motors' dead band. `kw` cuts it but adds shake (tests 20 to 22). Find a way to get one without the other.
 - Check `gw` again with more recordings: 0.995 was better in tests 20 and 21 and the same in test 22.
 - Before test 23 the robot restarted once while it was handled (its clock went from 548 s back to 10 s). Nobody saw why. If it happens again, read the serial port to see if it was a crash or the watchdog.
-- Cut the loop's delay at 6 to 8 Hz: predict the tilt about 20 ms ahead from the rate, or model the motor lag in the law. Small gain changes are done (tests 14 to 18).
+- Check `av` with a fixed push: the same push with `av` 0.15 and with `av` 1 (which never holds `kp`). Test 35 only had pushes by hand. Read the stop reason after each fall.
+- Check `as` 11 with another load and with a low battery. The carpet reads 8 to 9, so there is little room.
+- The 6 to 9 Hz shake is still there. Looking ahead (`tp`, `mk`) made it worse, so the next idea goes the other way: less gain at those frequencies.
 - Test pushes with a fixed push (a pendulum or a weight on a string), so two settings get the same push.
-- Move: add a speed setpoint to drive forward, and a turn term (left and right wheels get `v_cmd ± turn`).
+- Test `drive` on the robot: forward and back at 0.05, 0.10 and 0.15 m/s for 1 s, with `rec`. Then turns at 30 to 90 degrees per second. Look at the sway after each order, and lower `dacc` if it is too much.
+- Buttons on the phone page that drive while you hold them.
+- A ToF4M distance sensor on the servo, to stop before the robot hits something. The speed limit of `drive` is the place for it: the closer the wall, the lower the limit. The servo turns without end and does not say where it points, so the firmware must find that out first.

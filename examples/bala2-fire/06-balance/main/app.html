@@ -52,6 +52,13 @@ dd.long { white-space:normal; overflow-wrap:anywhere; max-width:55vw; }
 .vars input { flex:1; min-width:0; width:0; font:inherit; font-variant-numeric:tabular-nums; text-align:right;
               color:var(--text); background:var(--key); border:1px solid var(--line);
               border-radius:8px; padding:8px; }
+.vars { grid-auto-flow:dense; }
+.vars button { flex:none; width:28px; min-height:28px; padding:0; border-radius:50%;
+               font:italic 700 15px Georgia, serif; color:var(--dim); }
+.vars button[aria-expanded=true] { background:var(--text); border-color:var(--text); color:var(--card); }
+.vars p { grid-column:1 / -1; margin:0; padding:10px 12px; font-size:14px;
+          background:var(--key); border-radius:8px; }
+.vars p b { font-variant-numeric:tabular-nums; }
 ul { margin:0; padding-left:20px; color:var(--dim); }
 </style>
 
@@ -71,16 +78,6 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 </section>
 
 <section>
-  <h2>Balance point</h2>
-  <div class="row">
-    <button id="bpdn">−</button>
-    <div class="val" id="bp">–</div>
-    <button id="bpup">+</button>
-  </div>
-  <p class="hint">The robot takes it from the angle you hold it at before it starts. Move it if the robot rolls away.</p>
-</section>
-
-<section>
   <h2>Servo</h2>
   <div class="val" id="servo">–</div>
   <input id="spin" type="range" min="-100" max="100" step="5" value="0">
@@ -90,20 +87,21 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 <section>
   <h2>Screen</h2>
   <div class="val" id="bl">–</div>
-  <input id="light" type="range" min="0" max="100" step="5" value="20">
-  <p class="hint">A dim screen saves battery. It goes back to 20% at each start.</p>
+  <input id="light" type="range" min="0" max="100" step="5" value="5">
+  <p class="hint">A dim screen saves battery. It goes back to 5% at each start.</p>
 </section>
 
 <section>
   <h2>Tuning</h2>
   <div id="vars" class="vars"></div>
-  <p class="hint">Every number the firmware lets you change. Type a value and press Enter. The robot keeps it inside its range, and it is back to the start value after a restart.</p>
+  <p class="hint">Every number the firmware lets you change. Tap <i>i</i> to see what a number does. Type a value and press Enter. The robot keeps it inside its range, and it is back to the start value after a restart.</p>
 </section>
 
 <section>
   <h2>Balance</h2>
   <dl>
     <dt>Tilt rate</dt><dd id="rate">–</dd>
+    <dt>Balance point (automatic)</dt><dd id="bp">–</dd>
     <dt>Asked tilt</dt><dd id="setpoint">–</dd>
     <dt>Saved balance point</dt><dd id="saved">–</dd>
     <dt>Motor command</dt><dd id="u">–</dd>
@@ -167,7 +165,38 @@ ul { margin:0; padding-left:20px; color:var(--dim); }
 
 <script>
 const $ = id => document.getElementById(id);
-let bp = null, dragging = false, dimming = false, misses = 0;
+// What each number of the Tuning card does. A number with no text here gets no button.
+const ABOUT = {
+  kp: 'The main gain: how hard the wheels push for each degree of tilt. More holds the robot tighter. Too much makes it shake, and a hard floor takes less than a carpet.',
+  ki: 'Adds up the tilt error over time, so a small lean does not stay. Too much gives a slow sway.',
+  kd: 'A brake on how fast the tilt changes. It calms the robot. Too much gives a fast shake.',
+  rf: 'Filter on the tilt rate that kd uses. 1 is no filter. Lower is smoother but later: 0.45 is about 19 Hz.',
+  tp: 'Tilt prediction, in seconds. The robot acts on the tilt it will have this much later. 0 is off.',
+  mt: 'How late the wheels follow a command, in seconds. We measured 0.08. It only counts when mk is not 0.',
+  mk: 'Asks the motors for more while the wheels are behind the command. 1 halves the lag, and doubles the noise. 0 is off.',
+  ks: 'The least motor power (PWM) for a wheel that stands still, so it starts to turn. 0 is off.',
+  kr: 'The least motor power (PWM) for a wheel that already turns. 0 is off.',
+  kst: 'A wheel counts as still after this many seconds with no movement.',
+  as: 'Shake limit, in degrees per second. While the robot shakes more than this, kp goes down by itself. Under it, kp comes back. 0 is off.',
+  amin: 'The least share of kp that "as" may leave. 0.6 is 60%.',
+  av: 'Speed in m/s. While the robot moves faster than this, "as" does not change kp.',
+  kpos: 'Holds the place: the robot leans back this many degrees for each metre it is ahead.',
+  kvel: 'Brakes the travel: the robot leans back this many degrees for each m/s of speed.',
+  kt: 'Slow trim of the balance point while the robot stays away from its place. 0 is off.',
+  off: 'Motor power (PWM) added to every command, to get over the dead band of the motors.',
+  ramp: 'Speed in m/s over which "off" comes in. Higher is smoother near zero.',
+  kh: 'Heading hold: how hard the robot turns back when it points away from its heading.',
+  vmax: 'The most wheel speed the balance may ask for, in m/s. Never more than 0.55.',
+  max: 'The most motor power (PWM). Never more than 600.',
+  gw: 'Share of the gyro in the tilt reading. Higher trusts the gyro longer: 0.98 follows the accelerometer in about 0.25 s, 0.995 in about 1 s.',
+  kw: 'Wheel position loop. It gives a little more speed when the wheels are behind where the command puts them. 0 is off.',
+  dv: 'The most speed a drive order may ask for, in m/s. Never more than 0.25.',
+  dacc: 'How fast the driving speed changes, in m/s².',
+  bp: 'Balance point, in degrees: the tilt at which the robot stands. The robot takes it from the angle you hold it at before it starts, and learns it while it balances.',
+  servo: 'Servo pulse in microseconds. 1500 is stop, less and more turn it one way or the other. The Servo card does the same.',
+  bl: 'Screen backlight, in percent. The Screen card does the same.',
+};
+let dragging = false, dimming = false, misses = 0;
 
 function send(line) {
   fetch('/cmd', {method: 'POST', headers: {'X-Bala2': '1'}, body: line}).catch(() => {});
@@ -181,8 +210,6 @@ function show(s) {
   $('tilt').textContent = s.tilt.toFixed(1) + '°';
   $('speed').textContent = s.speed.toFixed(2) + ' m/s';
   $('bat').textContent = s.battery < 0 ? '?' : s.battery + '%' + (s.charging ? ' ⚡' : '');
-  bp = s.vars.bp;
-  $('bp').textContent = bp.toFixed(2) + '°';
   const pct = Math.round((s.vars.servo - 1500) / 10);
   $('servo').textContent = pct === 0 ? 'stopped' : (pct > 0 ? '+' : '') + pct + '%';
   if (!dragging) $('spin').value = pct;
@@ -200,8 +227,31 @@ function show(s) {
       input.type = 'number';
       input.step = 'any';
       input.onchange = () => { send(name + ' ' + input.value); input.blur(); };
-      label.appendChild(input);
       box.appendChild(label);
+      if (ABOUT[name]) {
+        const info = document.createElement('button');
+        info.type = 'button';
+        info.textContent = 'i';
+        info.setAttribute('aria-label', 'About ' + name);
+        info.setAttribute('aria-expanded', 'false');
+        const text = document.createElement('p');
+        text.hidden = true;
+        const b = document.createElement('b');
+        b.textContent = name + '. ';
+        text.append(b, ABOUT[name]);
+        info.onclick = e => {
+          e.preventDefault();
+          const open = text.hidden;
+          // One text at a time.
+          box.querySelectorAll('p').forEach(p => { p.hidden = true; });
+          box.querySelectorAll('button').forEach(k => k.setAttribute('aria-expanded', 'false'));
+          text.hidden = !open;
+          info.setAttribute('aria-expanded', String(open));
+        };
+        label.appendChild(info);
+        label.after(text);
+      }
+      label.appendChild(input);
     }
     if (document.activeElement !== input) input.value = value;
   }
@@ -209,6 +259,7 @@ function show(s) {
   const set = (id, text) => { $(id).textContent = text; };
   const three = (v, digits) => v.map(n => n.toFixed(digits)).join('  ');
   set('rate', s.rate.toFixed(1) + ' °/s');
+  set('bp', s.vars.bp.toFixed(2) + '°');
   set('setpoint', s.setpoint.toFixed(2) + '°');
   set('saved', s.saved_bp === null ? 'none yet' : s.saved_bp.toFixed(2) + '°');
   set('u', s.u.toFixed(0) + ' of 500');
@@ -247,8 +298,6 @@ async function poll() {
 }
 
 $('stop').onclick = () => send('stop');
-$('bpdn').onclick = () => bp !== null && send('bp ' + (bp - 0.25).toFixed(2));
-$('bpup').onclick = () => bp !== null && send('bp ' + (bp + 0.25).toFixed(2));
 $('servostop').onclick = () => send('servo 1500');
 $('light').oninput = e => { dimming = true; $('bl').textContent = e.target.value + '%'; };
 $('light').onchange = e => { dimming = false; send('bl ' + e.target.value); };
