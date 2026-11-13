@@ -207,10 +207,24 @@ The robot should rather fall over than drive away.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
 - If the computer goes quiet for 1 second, or the home Wi-Fi drops, the robot keeps balancing in place and the screen says `balancing, link lost`. It used to cut the motors, and a healthy robot fell over for it. The position loop holds it where it started, and the stop rules above still work. The robot joins the network again by itself.
-- Wi-Fi power saving is off. With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
+- Wi-Fi power saving is off, except in charge mode (see below). With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
 - Updates need the token and are refused while it balances or runs a fall test. The robot does not start while an update runs. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
 - On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
+
+### Charge mode
+
+The charger's current is shared. The Fire takes what it needs and the battery gets the rest. So the robot uses less power while it charges. When it has been lying down, waiting and charging for 10 s, it goes into charge mode and the screen says "charging, low power":
+
+- Wi-Fi sleeps between the access point's beacons. The phone page and updates still work, a bit slower.
+- The control loop runs at 10 Hz, not 200 Hz. It only has to notice when you stand the robot up.
+- The screen dims to 2%.
+
+Stand the robot up or send an update, and it goes back to normal at once. Pulling the cable ends it too, but then the robot restarts anyway (test 32).
+
+The power chip's setting is not the limit. On our unit it may take up to 2.25 A from USB (register `0x24` reads `0xD6`). It lowers the charge by itself if the USB voltage falls to about 4.55 V (register `0x21`). The chip does not report the real current. `GET /state` gives its raw registers as `pwr`.
+
+First check, 2026-11-13: the level read 50% for 8 minutes, then jumped to 75% a few seconds after charge mode began. The level comes from the battery voltage, so this shows the lower load, not a faster charge. We have not measured the charge time yet.
 
 ### The servo
 

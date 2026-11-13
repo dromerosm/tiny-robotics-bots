@@ -124,6 +124,11 @@ const char *link_last_restart(void)
     }
 }
 
+void link_power_save(bool on)
+{
+    esp_wifi_set_ps(on ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+}
+
 bool link_updating(void)
 {
     return updating;

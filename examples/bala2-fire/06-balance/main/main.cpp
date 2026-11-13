@@ -211,6 +211,16 @@ static struct {
 // and the main task applies it: the display is not safe to use from two tasks.
 #define BACKLIGHT_PCT 5
 static volatile int backlight = BACKLIGHT_PCT;
+
+// Charge mode: the robot lies down, waits and charges. The charger's current
+// is shared with the Fire, so what the Fire does not use goes to the battery.
+// After CHARGE_WAIT_S like this, the loop drops to CHARGE_HZ, Wi-Fi sleeps
+// between beacons (the page and updates still work, a bit slower) and the
+// screen dims. Standing the robot up, pulling the cable or an update ends it.
+#define CHARGE_WAIT_S        10
+#define CHARGE_HZ            10
+#define CHARGE_BACKLIGHT_PCT 2
+static volatile bool low_power; // written by the control task
 static volatile float saved_bp = NAN; // the balance point in flash, NAN if none
 
 static M5GFX display;
@@ -497,6 +507,13 @@ static bool read_position(float *pos, float *right_ahead)
 // Battery level in 25% steps and charging state, from the IP5306 (registers
 // from example 02). Under load the battery voltage drops, so the level reads
 // lower while the motors work.
+// Raw IP5306 registers, to see how it charges: system (0x00 to 0x02), charger
+// (0x20 to 0x24) and status (0x70 to 0x78). -1 = not read yet. In /state as "pwr".
+static const uint8_t PWR_REGS[] = {0x00, 0x01, 0x02, 0x20, 0x21, 0x22, 0x23,
+                                   0x24, 0x70, 0x71, 0x72, 0x77, 0x78};
+static volatile int16_t pwr_raw[sizeof(PWR_REGS)] = {-1, -1, -1, -1, -1, -1, -1,
+                                                     -1, -1, -1, -1, -1, -1};
+
 static void read_battery(void)
 {
     if (sim) {
@@ -515,6 +532,14 @@ static void read_battery(void)
     if (i2c_master_transmit_receive(power, &reg, 1, &r3, 1, I2C_TIMEOUT) != ESP_OK) {
         return;
     }
+    // One more register each second, in turn, so the 200 Hz loop loses no time.
+    static size_t next;
+    reg = PWR_REGS[next];
+    uint8_t v;
+    if (i2c_master_transmit_receive(power, &reg, 1, &v, 1, I2C_TIMEOUT) == ESP_OK) {
+        pwr_raw[next] = v;
+    }
+    next = (next + 1) % sizeof(PWR_REGS);
     st.charging = r0 & 0x08;
     switch (r3 & 0xF0) {
         case 0x00:
@@ -651,11 +676,13 @@ static void control_task(void *arg)
     read_position(&last_pos, &ahead);
     int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
         battery_ticks = 0;
+    int rest_ticks = 0; // ticks lying down, waiting and charging
     int64_t last_us = esp_timer_get_time();
     TickType_t wake = xTaskGetTickCount();
 
     for (;;) {
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000 / LOOP_HZ));
+        const bool low = low_power;
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000 / (low ? CHARGE_HZ : LOOP_HZ)));
         esp_task_wdt_reset();
         const int64_t now = esp_timer_get_time();
         const bool late = now - last_us > LATE_US;
@@ -665,7 +692,7 @@ static void control_task(void *arg)
         }
 
         // Sense. The battery once a second.
-        if (++battery_ticks >= LOOP_HZ) {
+        if (++battery_ticks >= (low ? CHARGE_HZ : LOOP_HZ)) {
             battery_ticks = 0;
             read_battery();
         }
@@ -695,7 +722,9 @@ static void control_task(void *arg)
         shake += SHAKE_MEAN * (SHAKE_GAIN * fabsf(shake_fast - shake_slow) - shake);
         still_ticks = pos != last_pos ? 0 : (still_ticks < LOOP_HZ ? still_ticks + 1 : LOOP_HZ);
         const float gw = gain.gw;
-        tilt = gw * (tilt + rate * DT) + (1 - gw) * acc;
+        // The slow loop of charge mode does not fit the filter (DT), and the
+        // robot is still: the accelerometer alone gives the angle.
+        tilt = low ? acc : gw * (tilt + rate * DT) + (1 - gw) * acc;
         speed = (1 - SPEED_LPF) * speed + SPEED_LPF * (pos - last_pos) / DT;
         last_pos = pos;
         const float setpoint = setpoint_trim + trim;
@@ -714,6 +743,14 @@ static void control_task(void *arg)
         }
         if (fabsf(tilt) > LYING_DEG) {
             st.seen_lying = true;
+        }
+        if (st.state == ST_WAIT && st.charging && fabsf(tilt) > LYING_DEG && !link_updating()) {
+            if (!low && ++rest_ticks >= CHARGE_WAIT_S * LOOP_HZ) {
+                low_power = true;
+            }
+        } else {
+            rest_ticks = 0;
+            low_power = false;
         }
 
         if (!imu_ok) {
@@ -745,7 +782,7 @@ static void control_task(void *arg)
                     upright_ticks = 0;
                     break;
                 }
-                st.reason = "stand me up";
+                st.reason = low_power ? "charging, low power" : "stand me up";
                 // Start only after it was lying down, then held upright and still:
                 // within HOLD_DEG of where this hold began. A fall test still
                 // needs the known balance point, so it keeps the old check.
@@ -1120,7 +1157,7 @@ static void state_json(char *buf, size_t size)
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
              "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\","
-             "\"restart\":\"%s\"}",
+             "\"restart\":\"%s\",\"pwr\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]}",
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
@@ -1132,7 +1169,9 @@ static void state_json(char *buf, size_t size)
              link_on_home() ? "true" : "false", link_ip(), link_rssi(),
              esp_timer_get_time() / 1000000, (unsigned long)esp_get_free_heap_size(),
              (unsigned long)esp_get_minimum_free_heap_size(), app->date, app->time,
-             esp_ota_get_running_partition()->label, link_last_restart());
+             esp_ota_get_running_partition()->label, link_last_restart(), pwr_raw[0],
+             pwr_raw[1], pwr_raw[2], pwr_raw[3], pwr_raw[4], pwr_raw[5], pwr_raw[6], pwr_raw[7],
+             pwr_raw[8], pwr_raw[9], pwr_raw[10], pwr_raw[11], pwr_raw[12]);
 }
 
 // The learned balance point lives in flash (NVS), in hundredths of a degree.
@@ -1249,6 +1288,7 @@ extern "C" void app_main(void)
     mon_say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
         "battery,charging,v_model,shake,kp_eff\n");
     int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
+    bool low_set = false;
     for (int n = 0;; n++) {
         const int64_t ms = esp_timer_get_time() / 1000;
         read_serial();
@@ -1283,7 +1323,13 @@ extern "C" void app_main(void)
                 st.v_model, st.shake, st.kp_eff);
         }
         if (n % 10 == 0) { // 5 Hz screen
-            const int light = backlight;
+            const bool low = low_power;
+            if (low != low_set) {
+                low_set = low;
+                link_power_save(low);
+            }
+            const int asked = backlight;
+            const int light = low && asked > CHARGE_BACKLIGHT_PCT ? CHARGE_BACKLIGHT_PCT : asked;
             if (light != backlight_set) {
                 backlight_set = light;
                 display.setBrightness(light * 255 / 100);

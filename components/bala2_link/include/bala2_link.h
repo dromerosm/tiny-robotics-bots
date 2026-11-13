@@ -73,6 +73,11 @@ void link_send(const char *line);
 // Cheap, and safe to call from a fast control loop.
 bool link_alive(void);
 
+// Let Wi-Fi sleep between the access point's beacons (true), or keep it awake
+// (false, the default). Asleep it uses less power but answers late, so use it
+// only while the robot rests. It does nothing on the robot's own network.
+void link_power_save(bool on);
+
 // True while an update is being written. A robot must not start moving then:
 // the flash writes stall both cores for a few milliseconds at a time.
 bool link_updating(void);
