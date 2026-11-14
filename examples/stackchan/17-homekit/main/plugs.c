@@ -9,7 +9,8 @@
 //
 // The IP is only where to look first. Each device says where it is in a UDP
 // broadcast every few seconds, so the find task follows it when the router
-// gives it a new address.
+// gives it a new address. A broadcast is trusted only for a device that no
+// longer answers, and only after a read at the new address works.
 //
 // ":ap" marks the outlet that feeds the Wi-Fi access point. Off for that
 // outlet is refused while the robot is on CONFIG_HOME_AP_SSID: the robot
@@ -184,9 +185,12 @@ static void worker_task(void *arg)
     for (int i = 0; i < ndev; i++) {
         refresh(i);
     }
-    static char text[512];
-    plugs_text(text, sizeof(text));
-    ESP_LOGI(TAG, "first read:\n%s", text);
+    // No states or addresses here: GET /log has no token.
+    int answering = 0;
+    for (int i = 0; i < ndev; i++) {
+        answering += devs[i].err == 0;
+    }
+    ESP_LOGI(TAG, "first read: %d of %d devices answer", answering, ndev);
     job_t job;
     for (;;) {
         // A device that did not answer gets its next try sooner: a power
@@ -207,10 +211,23 @@ static void worker_task(void *arg)
             ESP_LOGI(TAG, "%s %s %s: %s", d->name, d->sw[job.sw].name, job.on ? "on" : "off",
                      tr_tuya_err_text(r));
         } else if (job.kind == JOB_MOVED) {
-            ESP_LOGI(TAG, "%s moved from %s to %s", d->name, d->ip, job.ip);
+            // A broadcast is not proof. The new address is kept only if the
+            // device there answers a read, which takes the local key.
+            char old[sizeof(d->ip)];
+            copy(old, sizeof(old), d->ip);
             xSemaphoreTake(mu, portMAX_DELAY);
             copy(d->ip, sizeof(d->ip), job.ip);
             xSemaphoreGive(mu);
+            refresh(job.dev);
+            if (d->err == 0) {
+                ESP_LOGI(TAG, "%s moved from %s to %s", d->name, old, d->ip);
+            } else {
+                ESP_LOGW(TAG, "%s: no answer at %s either, staying at %s", d->name, job.ip, old);
+                xSemaphoreTake(mu, portMAX_DELAY);
+                copy(d->ip, sizeof(d->ip), old);
+                xSemaphoreGive(mu);
+            }
+            continue;
         }
         refresh(job.dev);
     }
@@ -245,7 +262,11 @@ static void find_task(void *arg)
             xSemaphoreTake(mu, portMAX_DELAY);
             job.dev = -1;
             for (int i = 0; i < ndev; i++) {
-                if (strcmp(devs[i].id, id) == 0 && strcmp(devs[i].ip, job.ip) != 0) {
+                // Only for a device that has stopped answering where it was:
+                // anyone on the network can send a broadcast with our
+                // device's id, and must not be able to move a healthy device.
+                if (strcmp(devs[i].id, id) == 0 && devs[i].err != 0 &&
+                    strcmp(devs[i].ip, job.ip) != 0) {
                     job.dev = i;
                 }
             }

@@ -13,7 +13,7 @@
 // itself off after SCREEN_S seconds. A touch on the screen or on the head
 // switches it on again, and that touch does nothing else.
 //
-//   GET  /home            the bridge and the plugs, as text
+//   GET  /home            the bridge and the plugs, as text (token needed)
 //   POST /home?unpair=1   forget every pairing and restart (token needed)
 #include <stdio.h>
 #include <string.h>
@@ -308,8 +308,13 @@ static void screen_task(void *arg)
     }
 }
 
+// The plugs, their addresses and what is on say a lot about a home, so this
+// needs the token too, like everything else here that is not tr_ota's.
 static esp_err_t home_get(httpd_req_t *req)
 {
+    if (!tr_ota_token_ok(req)) {
+        return ESP_OK;
+    }
     static char text[640];
     const int n = snprintf(text, sizeof(text), "homekit: %d paired\n", bridge_paired());
     plugs_text(text + n, sizeof(text) - (size_t)n);
@@ -318,12 +323,12 @@ static esp_err_t home_get(httpd_req_t *req)
 
 static esp_err_t home_post(httpd_req_t *req)
 {
-    if (!tr_ota_token_ok(req)) {
-        return ESP_OK;
-    }
     char query[32], value[4];
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
         httpd_query_key_value(query, "unpair", value, sizeof(value)) == ESP_OK) {
+        if (!tr_ota_token_ok(req)) {
+            return ESP_OK;
+        }
         bridge_unpair();
         return httpd_resp_sendstr(req, "pairings forgotten, restarting\n");
     }

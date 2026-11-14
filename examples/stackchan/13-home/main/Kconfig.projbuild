@@ -12,5 +12,5 @@ menu "13-home"
         default "$(TUYA_DEVICES)"
     config HOME_AP_SSID
         string "Wi-Fi network fed by the :ap outlet (switching it off asks first)"
-        default "home-ap"
+        default "$(HOME_AP_SSID)"
 endmenu

@@ -36,11 +36,13 @@ One device per `;`: name, protocol version (33 or 34), IP, device ID, local key 
 
 ### The IP is only a first guess
 
-Each device says where it is in a UDP broadcast on port 6667, every few seconds. The robot listens. When a device of ours shows a new address, the robot uses it from then on. So you do not need fixed addresses in the router.
+Each device says where it is in a UDP broadcast on port 6667, every few seconds. The robot listens. When a device of ours stops answering and a broadcast shows it at a new address, the robot tries a read there. If it works, the robot uses that address from then on. So you do not need fixed addresses in the router.
+
+A broadcast alone is not trusted: anyone on the network can send one. The read needs the device's local key, so only the real device passes.
 
 ### The access point outlet
 
-`:ap` marks the outlet that powers the Wi-Fi access point. While the robot is on `CONFIG_HOME_AP_SSID` (`home-ap` by default), off for that outlet is refused: the robot would lose its network, and nobody could switch the outlet on again from Home. On any other network, that outlet behaves like the rest.
+`:ap` marks the outlet that powers the Wi-Fi access point. While the robot is on that network (`HOME_AP_SSID` in the env file, next to `TUYA_DEVICES`), off for that outlet is refused: the robot would lose its network, and nobody could switch the outlet on again from Home. On any other network, that outlet behaves like the rest.
 
 ## Build
 
@@ -86,7 +88,7 @@ The robot looks for Apple TVs only while the Info tab is open, once a minute.
 
 | Endpoint | What |
 | --- | --- |
-| `GET /home` | How many controllers are paired, and every device: its IP now, each outlet on or off, and the power |
+| `GET /home` | How many controllers are paired, and every device: its IP now, each outlet on or off, and the power (token needed) |
 | `POST /home?unpair=1` | Forget every pairing and restart (token needed). Then remove the bridge in Home and add it again |
 
 In the emulator, build with no env file, so the robot joins esp-emu's own network:
@@ -164,7 +166,7 @@ Not checked yet:
 - Switching an outlet from the Home app.
 - The Apple TV as home hub: Siri, automations, and control from outside.
 - The 30 s screen timeout and the head's rest move: nobody reported on them.
-- Discovery from the other home network. The tests ran with the robot on `home-ap`.
+- Discovery from the other home network. The tests ran with the robot on the access point's network.
 - A whole day running: memory, and the power strip with the phone app open.
 
 ## Try next

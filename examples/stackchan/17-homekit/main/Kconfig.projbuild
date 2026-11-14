@@ -6,5 +6,5 @@ menu "17-homekit"
         default "$(TUYA_DEVICES)"
     config HOME_AP_SSID
         string "Wi-Fi network fed by the :ap outlet (off for it is refused on that network)"
-        default "home-ap"
+        default "$(HOME_AP_SSID)"
 endmenu

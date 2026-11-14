@@ -34,7 +34,7 @@ One device per `;`: name, protocol version (33 or 34), IP, device ID, local key 
 
 ### The access point outlet
 
-`:ap` marks the outlet that powers the Wi-Fi access point. If the robot is on `CONFIG_HOME_AP_SSID` (`home-ap` by default, `SSID_01` in `wifi.env`) and you switch that outlet off, the robot loses its own network. So, only while it is on that network, it asks first:
+`:ap` marks the outlet that powers the Wi-Fi access point. If the robot is on `CONFIG_HOME_AP_SSID` (`HOME_AP_SSID` in the env file, next to `TUYA_DEVICES`) and you switch that outlet off, the robot loses its own network. So, only while it is on that network, it asks first:
 
 - **Screen:** the first tap turns the button yellow ("Sure?"). A second tap within 4 s switches it off.
 - **Voice:** the tool answers `needs_confirmation`. The model asks you, and calls again with `confirmed=true` only after a clear yes.

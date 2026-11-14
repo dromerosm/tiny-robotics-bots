@@ -60,11 +60,11 @@ looking around: off
 head: yaw 0.9, pitch 5.0 degrees
 last view asked: wifi
 Wi-Fi: 8 networks, 2 s ago
-  home-wifi                      -55 dBm  ch  1  WPA2
-  home-wifi-2                     -79 dBm  ch  1  WPA2
-  neighbour-1                               -82 dBm  ch  6  WPA2
+  home-wifi                         -55 dBm  ch  1  WPA2
+  home-wifi-2                       -79 dBm  ch  1  WPA2
+  neighbour-1                       -82 dBm  ch  6  WPA2
   ...
-  neighbour-2                     -91 dBm  ch  1  WPA/2
+  neighbour-2                       -91 dBm  ch  1  WPA/2
 ```
 
 ## Power
