@@ -52,6 +52,15 @@ int tr_tuya_value(const tr_tuya_dp_t *dps, int count, int dp);
 // A short text for an error code.
 const char *tr_tuya_err_text(int err);
 
+// Devices say where they are every few seconds, in a UDP broadcast: port 6667
+// (AES with a key that is the same for everyone) or 6666 (plain). Give one
+// datagram: it writes the device id and its IP now. Returns 0, or an error
+// when the datagram is not a broadcast we can read.
+#define TR_TUYA_UDP_PORT 6667
+#define TR_TUYA_UDP_MAX  512 // room for one datagram
+int tr_tuya_broadcast(const uint8_t *in, size_t len, char *id, size_t id_size, char *ip,
+                      size_t ip_size);
+
 // --- The protocol pieces, for the host tests -------------------------------
 
 // A frame: 0x000055AA, seq, cmd, length, payload, CRC32 (or HMAC-SHA256 when

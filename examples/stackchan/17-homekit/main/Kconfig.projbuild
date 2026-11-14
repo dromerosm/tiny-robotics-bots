@@ -1,0 +1,10 @@
+menu "17-homekit"
+    # From environment variables, as the Wi-Fi settings: scripts/build.sh
+    # passes them from the file in WIFI_ENV. Never in git.
+    config HOME_DEVICES
+        string "The plugs: name,version,ip,id,key-hex,dp:label:name[:ap],... separated by ;"
+        default "$(TUYA_DEVICES)"
+    config HOME_AP_SSID
+        string "Wi-Fi network fed by the :ap outlet (off for it is refused on that network)"
+        default "home-ap"
+endmenu

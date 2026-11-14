@@ -279,6 +279,64 @@ bool tr_tuya_key_from_hex(const char *hex, uint8_t key[16])
     return true;
 }
 
+// --- Broadcasts ----------------------------------------------------------------
+
+// The text value of "key" in a flat JSON object. False when it is not there
+// or does not fit.
+static bool json_text(const char *json, const char *key, char *out, size_t size)
+{
+    char find[16];
+    snprintf(find, sizeof(find), "\"%s\"", key);
+    const char *p = strstr(json, find);
+    if (!p) {
+        return false;
+    }
+    p += strlen(find);
+    while (*p == ' ' || *p == ':') {
+        p++;
+    }
+    if (*p++ != '"') {
+        return false;
+    }
+    const char *end = strchr(p, '"');
+    if (!end || (size_t)(end - p) >= size) {
+        return false;
+    }
+    memcpy(out, p, (size_t)(end - p));
+    out[end - p] = 0;
+    return true;
+}
+
+int tr_tuya_broadcast(const uint8_t *in, size_t len, char *id, size_t id_size, char *ip,
+                      size_t ip_size)
+{
+    // MD5 of "yGAdlopoPVldABfn": the same key in every device, so it only
+    // hides the broadcast from a plain look.
+    static const uint8_t udp_key[16] = {0x6c, 0x1e, 0xc8, 0xe2, 0xbb, 0x9b, 0xb5, 0x9a,
+                                        0xb5, 0x0b, 0x0d, 0xaf, 0x64, 0x9b, 0x41, 0x0a};
+    uint32_t cmd;
+    const uint8_t *payload;
+    size_t plen;
+    char json[TR_TUYA_UDP_MAX + 1];
+    if (len > TR_TUYA_UDP_MAX || tr_tuya_unframe(in, len, NULL, &cmd, &payload, &plen) <= 0 ||
+        plen == 0) {
+        return TR_TUYA_ERR_FRAME;
+    }
+    int n = (int)plen;
+    if (payload[0] == '{') {
+        memcpy(json, payload, plen);
+    } else {
+        n = tr_tuya_decrypt(udp_key, payload, plen, (uint8_t *)json);
+        if (n < 0) {
+            return TR_TUYA_ERR_FRAME;
+        }
+    }
+    json[n] = 0;
+    return json_text(json, "gwId", id, id_size) && json_text(json, "ip", ip, ip_size)
+               ? 0
+               : TR_TUYA_ERR_FRAME;
+}
+
 const char *tr_tuya_err_text(int err)
 {
     switch (err) {

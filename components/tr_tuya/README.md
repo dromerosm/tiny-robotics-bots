@@ -17,7 +17,7 @@ printf("%s\n", tr_tuya_err_text(r));
 
 ## What each device needs
 
-- **id** (gwId), **IP** and **version**: the devices broadcast them on UDP 6667 every few seconds.
+- **id** (gwId), **IP** and **version**: the devices broadcast them on UDP 6667 every few seconds. `tr_tuya_broadcast()` reads one of those datagrams and gives the id and the IP, so a robot can follow a device when its address changes ([17-homekit](../../examples/stackchan/17-homekit) does).
 - **local key**: 16 bytes, from Tuya's cloud. It changes when the device is paired again.
 
 Both come from `~/GitHub/home-iot` (`scripts/discover.py`, `scripts/get_local_keys.py`). Keys never go into this repo.

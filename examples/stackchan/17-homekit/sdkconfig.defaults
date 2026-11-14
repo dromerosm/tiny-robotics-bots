@@ -1,0 +1,28 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_LOG_COLORS=y
+# 16 MB flash and two app slots, for updates over Wi-Fi.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../components/tr_ota/partitions.csv"
+# A new app must mark itself valid, or the bootloader goes back to the old one.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# No camera: no /camera.jpg.
+CONFIG_TR_WEB_CAMERA=n
+# 8 MB PSRAM on the CoreS3, for HomeKit's pairing math, TLS-size buffers and
+# the plugs' calls. A board without PSRAM still starts.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# An IPv6 link-local address (tr_ota), so stackchan.local resolves at once on
+# macOS. Skip the duplicate check: with it the address never became valid.
+CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0
+# HomeKit has its own web server. Port 80 is the robot's page (tr_ota).
+CONFIG_HAP_HTTP_SERVER_PORT=8080
+# Up to 8 HomeKit connections (iPhones, the home hub), next to the robot's
+# page, the plugs and the broadcasts.
+CONFIG_LWIP_MAX_SOCKETS=16
+# The HomeKit SDK calls mbedTLS's own SHA-512. With hardware SHA, ESP-IDF 6
+# does not build it.
+CONFIG_MBEDTLS_HARDWARE_SHA=n

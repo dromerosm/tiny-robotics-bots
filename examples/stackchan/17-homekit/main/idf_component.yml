@@ -1,0 +1,25 @@
+dependencies:
+  # Makes the QR code for the Home app (the screen draws it).
+  espressif/qrcode: "^0.2.0"
+  # Espressif's HomeKit SDK (HAP), not in the component registry: taken from
+  # GitHub, pinned to one commit.
+  esp_hap_core:
+    git: https://github.com/espressif/esp-homekit-sdk.git
+    path: components/homekit/esp_hap_core
+    version: 2985547b3ebb99e1e31350d369bc543327fe7e49
+  esp_hap_platform:
+    git: https://github.com/espressif/esp-homekit-sdk.git
+    path: components/homekit/esp_hap_platform
+    version: 2985547b3ebb99e1e31350d369bc543327fe7e49
+  esp_hap_apple_profiles:
+    git: https://github.com/espressif/esp-homekit-sdk.git
+    path: components/homekit/esp_hap_apple_profiles
+    version: 2985547b3ebb99e1e31350d369bc543327fe7e49
+  hkdf-sha:
+    git: https://github.com/espressif/esp-homekit-sdk.git
+    path: components/homekit/hkdf-sha
+    version: 2985547b3ebb99e1e31350d369bc543327fe7e49
+  mu_srp:
+    git: https://github.com/espressif/esp-homekit-sdk.git
+    path: components/homekit/mu_srp
+    version: 2985547b3ebb99e1e31350d369bc543327fe7e49

@@ -118,6 +118,31 @@ static void test_parse(void)
     CHECK(!tr_tuya_key_from_hex("3031", key));
 }
 
+// A broadcast as a device sends it on UDP 6667: a frame with a return code,
+// then the JSON under the key every device shares.
+static void test_broadcast(void)
+{
+    static const uint8_t udp_key[16] = {0x6c, 0x1e, 0xc8, 0xe2, 0xbb, 0x9b, 0xb5, 0x9a,
+                                        0xb5, 0x0b, 0x0d, 0xaf, 0x64, 0x9b, 0x41, 0x0a};
+    const char *json = "{\"ip\":\"192.168.1.77\",\"gwId\":\"bf00112233445566778899\","
+                       "\"active\":2,\"encrypt\":true,\"version\":\"3.4\"}";
+    uint8_t body[256] = {0}, frame[300];
+    const int n = tr_tuya_encrypt(udp_key, (const uint8_t *)json, strlen(json), body + 4);
+    size_t len = tr_tuya_frame(frame, sizeof(frame), 0, 19, body, (size_t)n + 4, NULL);
+    char id[24], ip[16];
+    CHECK(tr_tuya_broadcast(frame, len, id, sizeof(id), ip, sizeof(ip)) == 0);
+    CHECK(strcmp(id, "bf00112233445566778899") == 0 && strcmp(ip, "192.168.1.77") == 0);
+    // Port 6666 sends the same without AES.
+    memcpy(body + 4, json, strlen(json));
+    len = tr_tuya_frame(frame, sizeof(frame), 0, 19, body, strlen(json) + 4, NULL);
+    CHECK(tr_tuya_broadcast(frame, len, id, sizeof(id), ip, sizeof(ip)) == 0);
+    CHECK(strcmp(ip, "192.168.1.77") == 0);
+    // An id that does not fit, and bytes that are not a frame.
+    CHECK(tr_tuya_broadcast(frame, len, id, 8, ip, sizeof(ip)) == TR_TUYA_ERR_FRAME);
+    CHECK(tr_tuya_broadcast((const uint8_t *)json, strlen(json), id, sizeof(id), ip, sizeof(ip)) ==
+          TR_TUYA_ERR_FRAME);
+}
+
 int main(void)
 {
     test_frame_33();
@@ -125,6 +150,7 @@ int main(void)
     test_session_key();
     test_answer_33();
     test_parse();
+    test_broadcast();
     printf("%s: %s\n", __FILE__, failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

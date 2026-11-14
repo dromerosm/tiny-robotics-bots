@@ -53,6 +53,7 @@ Examples are numbered per robot, from simplest to most advanced. Start with `01`
 | 14 | [record](examples/stackchan/14-record) | 12's talk plus a recording mode: tap the right eye and the robot records the room (36 dB gain, 90 Hz high-pass) and uploads it to R2 in pieces of 10 s, through a Cloudflare Worker. The face turns orange if the uploads fall behind. The Mac app [Scribe](tools/scribe) turns it into text with speakers | ✅ (no screen or audio in esp-emu) |
 | 15 | [follow](examples/stackchan/15-follow) | 14 plus 11's face tracking, by turns: the head follows your face while nobody talks, and for a talk or a recording the camera, the face model and the servos stop. The echo canceller works on one microphone, so it all fits in internal RAM. The speaker is louder, with less microphone gain | ✅ (no screen, camera, servos or audio in esp-emu) |
 | 16 | [servos](examples/stackchan/16-servos) | The head servos from the console, with the real driver: serial bus packets on UART1 and power through the PY32 | ✅ (in the browser a virtual body answers, so the head moves) |
+| 17 | [homekit](examples/stackchan/17-homekit) | The robot as a HomeKit bridge for the Tuya plugs at home: each outlet shows up in Apple's Home app, and the robot follows a plug when its IP changes | ✅ (Wi-Fi and HomeKit start; pairing needs the real robot) |
 
 ### BALA2 Fire
 
