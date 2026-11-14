@@ -73,7 +73,16 @@ The screen goes off after 30 seconds. Touch the screen or the head to switch it 
 
 ### The screen
 
-One tab per device, and the QR tab. A device's tab has one button per outlet: green is on, grey is off. Tap a button to switch the outlet. It stays dark until the plug answers, and Home shows the change too. The line at the bottom has the device's IP and its power, or the reason it does not answer.
+One tab per device, then **Info** and **QR**. A device's tab has one button per outlet: green is on, grey is off. Tap a button to switch the outlet. It stays dark until the plug answers, and Home shows the change too. The line at the bottom has the device's IP and its power, or the reason it does not answer.
+
+The Info tab has what is not a plug:
+
+- The bridge's IP and how many controllers are paired.
+- The HomeKit clients connected now, by IP. An iPhone connects while the Home app is in use. A home hub keeps its connection open.
+- The Apple TVs on the network, with name and IP. HomeKit does not say which client is the home hub, so the robot looks for devices that announce AirPlay (`_airplay._tcp`) with a model that starts with `AppleTV`. One that is also a HomeKit client now is marked `hub`.
+- The robot's status, the same lines as `GET /`: firmware, uptime, memory, Wi-Fi and battery.
+
+The robot looks for Apple TVs only while the Info tab is open, once a minute.
 
 | Endpoint | What |
 | --- | --- |
@@ -125,7 +134,10 @@ plug's UDP broadcast --------> find task -- new IP ---> queue --> worker task
 - **Only the worker changes the device table.** The find task sends a new IP to the worker through the queue.
 - **Two web servers.** The robot's page stays on port 80 (`tr_ota`). HomeKit has its own on port 8080.
 - **`stackchan.local` still works.** The SDK sets the mDNS name to "MyHost". The bridge sets it back.
-- **No sleep.** A bridge must answer at any time, also on the battery.
+- **No sleep, and no robot page.** A bridge must answer at any time, also on the battery. The example does not use `tr_web`, so the sleep task never starts and `/app` is not there. The page on port 80 is only `tr_ota`'s: status, log and updates.
+- **The screen draws only what changed.** A new tab gets a clean background once. After that a device's tab is painted again only when a state or its bottom line changes, and the Info tab paints each line over the old one. Nothing flickers.
+- **Less work while nobody looks.** With the screen off, the robot checks the touch screen 5 times a second, not 20. The Info tab looks at the network once a second, and only while it is open.
+- **Built for speed (`-O2`) at 160 MHz.** HomeKit does its key math each time a controller connects. The CPU does not go to 240 MHz, because a bridge is on all day.
 
 ### The SDK on ESP-IDF 6
 
@@ -145,7 +157,7 @@ The SDK is written for ESP-IDF 5. Three settings in `CMakeLists.txt` and one in 
 - `tr_tuya_broadcast()` against the real broadcasts, from a Mac, and in the host tests.
 - In esp-emu: Wi-Fi and HomeKit start (the smoke test).
 - Pairing: the Home app added the bridge on 2026-11-14 (`GET /home` says `1 paired`), and the pairing stayed after two updates over Wi-Fi.
-- The screen on the robot, by its owner on 2026-11-14: the tabs show well and the buttons switch the outlets.
+- The screen on the robot, by its owner on 2026-11-14: the tabs show well, the buttons switch the outlets, nothing flickers, and the Info tab shows the Apple TV.
 
 Not checked yet:
 

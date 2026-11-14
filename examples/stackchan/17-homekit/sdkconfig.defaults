@@ -6,8 +6,11 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../components/tr_ota/partitions.csv"
 # A new app must mark itself valid, or the bootloader goes back to the old one.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-# No camera: no /camera.jpg.
+# tr_web is not used, but the build still compiles it: without its camera.
 CONFIG_TR_WEB_CAMERA=n
+# Built for speed (-O2): HomeKit does its key math each time a controller
+# connects. The CPU stays at 160 MHz, because a bridge is on all day.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # 8 MB PSRAM on the CoreS3, for HomeKit's pairing math, TLS-size buffers and
 # the plugs' calls. A board without PSRAM still starts.
 CONFIG_SPIRAM=y

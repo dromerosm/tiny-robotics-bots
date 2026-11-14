@@ -7,8 +7,9 @@
 //
 // While it is a bridge the robot does little else. At boot the head goes to
 // its rest position and the servos switch off. The screen has one tab per
-// device, with a button per outlet (green is on; a tap switches it), and a
-// last tab with the QR code to add the bridge in the Home app. It switches
+// device, with a button per outlet (green is on; a tap switches it), an Info
+// tab (the bridge's IP, HomeKit's clients, the Apple TVs, the robot's status)
+// and a last tab with the QR code to add the bridge in the Home app. It switches
 // itself off after SCREEN_S seconds. A touch on the screen or on the head
 // switches it on again, and that touch does nothing else.
 //
@@ -22,18 +23,18 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "info.h"
 #include "plugs.h"
 #include "qrcode.h"
 #include "tr_board.h"
 #include "tr_ota.h"
-#include "tr_screen.h"
-#include "tr_web.h"
 
 static const char *TAG = "main";
 
-#define SCREEN_S   30 // seconds with no touch before the screen goes off
-#define BRIGHTNESS 20 // screen backlight, in %
-#define FRAME_MS   50
+#define SCREEN_S   30  // seconds with no touch before the screen goes off
+#define BRIGHTNESS 20  // screen backlight, in %
+#define FRAME_MS   50  // between two looks at the touch screen while it is on
+#define IDLE_MS    200 // and while it is off: enough to wake it
 
 // The head to its rest position (looking ahead), then the servos off: a
 // bridge does not move, and servos that hold a position use power and hum.
@@ -60,11 +61,13 @@ static void rest_head(void)
 #define ON_BG   TR_LCD_RGB(40, 150, 70)
 #define OFF_BG  TR_LCD_RGB(50, 50, 60)
 #define BUSY_BG TR_LCD_RGB(25, 25, 30)
+#define FG      TR_LCD_WHITE
+#define GREEN   TR_LCD_RGB(80, 220, 100)
 
-// One tab per device, and a last one with the QR code.
+// One tab per device, then Info and the QR code.
 static int tab_count(void)
 {
-    return plugs_count() + 1;
+    return plugs_count() + 2;
 }
 
 // Text in the middle of a box w pixels wide: large when it fits, small when
@@ -84,8 +87,10 @@ static void draw_tabs(int selected)
     for (int i = 0; i < tab_count(); i++) {
         const uint16_t bg = i == selected ? SEL_BG : TAB_BG;
         tr_lcd_fill_rect(i * w, 0, w - 1, TAB_H, bg);
-        text_center(i * w, w - 1, 8, TR_SCREEN_FG, bg,
-                    i < plugs_count() ? plugs_dev_name(i) : "QR");
+        text_center(i * w, w - 1, 8, FG, bg,
+                    i < plugs_count()    ? plugs_dev_name(i)
+                    : i == plugs_count() ? "Info"
+                                         : "QR");
     }
 }
 
@@ -103,24 +108,63 @@ static void button_box(int dev, int sw, int *x, int *y, int *h)
 
 // A device's tab: one button per outlet (green is on), then its IP and power.
 // busy is the outlet that waits for the plug's answer after a tap, or -1.
+// It paints over what was there, with no clearing first, so nothing flickers.
 static void draw_device(int dev, int busy)
 {
     char info[54];
-    tr_lcd_fill_rect(0, TAB_H, TR_LCD_W, TR_LCD_H - TAB_H, TR_LCD_BLACK);
     for (int sw = 0; sw < plugs_switches(dev); sw++) {
         int x, y, h;
         button_box(dev, sw, &x, &y, &h);
         const int on = sw == busy ? -1 : plugs_state(dev, sw);
         const uint16_t bg = on == 1 ? ON_BG : on == 0 ? OFF_BG : BUSY_BG;
         tr_lcd_fill_rect(x, y, BTN_W, h, bg);
-        text_center(x, BTN_W, y + h / 2 - 18, TR_SCREEN_FG, bg, plugs_sw_name(dev, sw));
-        text_center(x, BTN_W, y + h / 2 + 2, TR_SCREEN_FG, bg,
-                    on == 1   ? "ON"
-                    : on == 0 ? "OFF"
-                              : "...");
+        text_center(x, BTN_W, y + h / 2 - 18, FG, bg, plugs_sw_name(dev, sw));
+        text_center(x, BTN_W, y + h / 2 + 2, FG, bg, on == 1 ? "ON" : on == 0 ? "OFF" : "...");
     }
     plugs_info(dev, info, sizeof(info));
-    text_center(0, TR_LCD_W, TR_LCD_H - INFO_H + 4, TR_SCREEN_FG, TR_LCD_BLACK, info);
+    tr_lcd_fill_rect(0, TR_LCD_H - INFO_H, TR_LCD_W, INFO_H, TR_LCD_BLACK);
+    text_center(0, TR_LCD_W, TR_LCD_H - INFO_H + 4, FG, TR_LCD_BLACK, info);
+}
+
+// What draw_device() would show, as text: the tab is drawn again only when
+// this changes.
+static void device_shown(int dev, int busy, char *out, size_t size)
+{
+    size_t n = 0;
+    for (int sw = 0; sw < plugs_switches(dev) && n + 1 < size; sw++) {
+        out[n++] = sw == busy ? 'b' : (char)('1' + plugs_state(dev, sw));
+    }
+    plugs_info(dev, out + n, size - n);
+}
+
+// The Info tab: what is not a plug. First the bridge, HomeKit's clients and
+// the Apple TVs, in large text (info.c). Then the robot's own status, the
+// same lines as GET /, in small text. Each line is padded to the full width
+// and painted over the old one, so nothing flickers.
+static void draw_info(void)
+{
+    static char text[768];
+    char row[54];
+    int y = TAB_H + 4;
+    info_text(text, sizeof(text));
+    char *save = NULL;
+    for (char *line = strtok_r(text, "\n", &save); line && y + 16 <= TR_LCD_H;
+         line = strtok_r(NULL, "\n", &save)) {
+        snprintf(row, sizeof(row), "%-26.26s", line);
+        tr_lcd_text(4, y, 2, line[0] == ' ' ? GREEN : FG, TR_LCD_BLACK, row);
+        y += 18;
+    }
+    y += 4;
+    tr_ota_status_text(text, sizeof(text));
+    save = NULL;
+    for (char *line = strtok_r(text, "\n", &save); line && y + 8 <= TR_LCD_H;
+         line = strtok_r(NULL, "\n", &save)) {
+        snprintf(row, sizeof(row), "%-52.52s", line);
+        tr_lcd_text(4, y, 1, FG, TR_LCD_BLACK, row);
+        y += 11;
+    }
+    // The list may be shorter than the last time.
+    tr_lcd_fill_rect(0, y, TR_LCD_W, TR_LCD_H - y, TR_LCD_BLACK);
 }
 
 // The last tab: the QR code for the Home app, black on white, and under it
@@ -179,12 +223,13 @@ static void screen_task(void *arg)
         vTaskDelete(NULL);
     }
     tr_lcd_brightness(BRIGHTNESS);
-    bool on = true, was_down = false, redraw = true;
+    bool on = true, was_down = false, new_tab = true;
     int tap_x = 0, tap_y = 0, drawn_paired = -1, busy = -1;
     // Not paired yet: start on the QR code. Paired: on the first device.
-    int tab = bridge_paired() || plugs_count() == 0 ? 0 : plugs_count();
-    int64_t off_at = esp_timer_get_time() + SCREEN_S * 1000000LL;
-    unsigned drawn_reads = 0, busy_reads = 0;
+    int tab = bridge_paired() ? 0 : tab_count() - 1;
+    int64_t off_at = esp_timer_get_time() + SCREEN_S * 1000000LL, next_poll = 0, next_info = 0;
+    unsigned busy_reads = 0, drawn_info = 0;
+    char shown[64], drawn[64] = "";
     for (;;) {
         // A tap is a touch that ends: act on where the finger was last.
         int x, y;
@@ -203,7 +248,7 @@ static void screen_task(void *arg)
                 tap = false; // this touch only wakes the screen
                 was_down = false;
                 tr_lcd_power(true);
-                redraw = true;
+                new_tab = true; // draw it all again
             }
         } else if (on && now >= off_at) {
             on = false;
@@ -213,7 +258,7 @@ static void screen_task(void *arg)
             tab = tap_x / (TR_LCD_W / tab_count());
             tab = tab < tab_count() ? tab : tab_count() - 1;
             busy = -1;
-            redraw = true;
+            new_tab = true;
         } else if (on && tap && tab < plugs_count()) {
             const int sw = button_at(tab, tap_x, tap_y);
             const int state = sw < 0 ? -1 : plugs_state(tab, sw);
@@ -221,23 +266,44 @@ static void screen_task(void *arg)
             if (state >= 0 && plugs_set(tab, sw, state == 0)) {
                 busy = sw;
                 busy_reads = plugs_reads();
-                redraw = true;
             }
         }
         if (busy >= 0 && plugs_reads() != busy_reads) {
             busy = -1;
         }
-        if (on && (redraw || plugs_reads() != drawn_reads || bridge_paired() != drawn_paired)) {
-            redraw = false;
-            drawn_reads = plugs_reads();
-            drawn_paired = bridge_paired();
-            draw_tabs(tab);
-            if (tab < plugs_count()) {
-                draw_device(tab, busy);
-            } else {
-                draw_setup();
-            }
+        if (!on) {
+            vTaskDelay(pdMS_TO_TICKS(IDLE_MS));
+            continue;
         }
+        // The tabs and a clean background only for a new tab. After that each
+        // tab draws itself again only when what it shows has changed.
+        if (new_tab) {
+            draw_tabs(tab);
+            tr_lcd_fill_rect(0, TAB_H, TR_LCD_W, TR_LCD_H - TAB_H, TR_LCD_BLACK);
+        }
+        if (tab < plugs_count()) {
+            device_shown(tab, busy, shown, sizeof(shown));
+            if (new_tab || strcmp(shown, drawn) != 0) {
+                memcpy(drawn, shown, sizeof(drawn));
+                draw_device(tab, busy);
+            }
+        } else if (tab == plugs_count()) {
+            // Look at the network once a second, and only while someone can
+            // see this tab. The robot's own numbers: every 5 s.
+            if (now >= next_poll) {
+                next_poll = now + 1000000;
+                info_poll();
+            }
+            if (new_tab || info_version() != drawn_info || now >= next_info) {
+                drawn_info = info_version();
+                next_info = now + 5000000;
+                draw_info();
+            }
+        } else if (new_tab || bridge_paired() != drawn_paired) {
+            drawn_paired = bridge_paired();
+            draw_setup();
+        }
+        new_tab = false;
         vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
     }
 }
@@ -268,9 +334,12 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(tr_ota_add_status(tr_board_status));
     ESP_ERROR_CHECK(tr_ota_start());
-    ESP_ERROR_CHECK(tr_web_start());
-    // A bridge must answer Home at any time: no sleep, also on the battery.
-    tr_sleep_set_after(0);
+    // No tr_web: a bridge needs no robot page. Without it the robot never
+    // sleeps, so it answers Home at any time. The touch screen and the head
+    // touch are part of the sensors, so those start here.
+    if (tr_sensors_init() != ESP_OK) {
+        ESP_LOGW(TAG, "no sensors: no touch (as in the emulator)");
+    }
     const httpd_uri_t get = {.uri = "/home", .method = HTTP_GET, .handler = home_get};
     const httpd_uri_t post = {.uri = "/home", .method = HTTP_POST, .handler = home_post};
     ESP_ERROR_CHECK(tr_ota_add_uri(&get));
