@@ -2,7 +2,7 @@
 
 12-talk's spoken conversation, plus the smart plugs on the home network. Tap the robot's left eye and you get a Home screen with one button per outlet and the power each device draws. In a talk you can ask for it out loud: "apaga la tele", "¿cuánto está gastando el trabajo?". The robot talks to the plugs directly over the local network, with no cloud, through [`tr_tuya`](../../../components/tr_tuya).
 
-The face, the audio, the echo canceller and the talk are 12-talk's as of commit `d193c00`: GPT-Live (gpt-live-1) through our Worker, gpt-6-luna for searches, and the face's color for the talk's state.
+The face, the audio, the echo canceller and the talk are 12-talk's as of commit `7ef1dae`: GPT-Live (gpt-live-1) through our Worker, gpt-6-luna for searches, and the face's color for the talk's state.
 
 | | |
 | --- | --- |
@@ -64,7 +64,7 @@ The robot opens `TALK_URL?profile=home` (`TALK_URL` is the Worker's `wss://.../l
 - passes to the robot luna's finished function calls: `response.event` with a `response.output_item.done` whose item is a `function_call`. Every other `response.event` is still dropped;
 - takes from the robot `response.item.create` (only with a `function_call_output`) and `response.create`.
 
-Without the profile, the Worker does what it did for 12-talk. The change is in `worker-home.patch`, against the Worker of `d193c00`:
+Without the profile, the Worker does what it did for 12-talk. The change is in `worker-home.patch`, against the Worker of `7ef1dae`:
 
 ```bash
 git apply examples/stackchan/13-home/worker-home.patch

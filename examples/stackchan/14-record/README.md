@@ -4,7 +4,7 @@
 
 The face turns orange while the uploads fall behind: no network, or the Worker fails. It turns red again once they catch up. Red means "I record", orange means "I record, but the sound is not reaching R2 now". Later, the Mac app [Scribe](../../../tools/scribe) turns the recording into text and says who spoke when, all on the Mac.
 
-The face, the audio, the echo canceller and the talk are 12-talk's as of commit `d193c00`. There is no talk while it records: a touch on the head does nothing.
+The face, the audio, the echo canceller and the talk are 12-talk's as of commit `7ef1dae`. There is no talk while it records: a touch on the head does nothing.
 
 | | |
 | --- | --- |
