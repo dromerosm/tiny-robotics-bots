@@ -361,10 +361,20 @@ static esp_err_t start_wifi(void)
 
 bool tr_ota_token_ok(httpd_req_t *req)
 {
+    // Check the length first: the server cuts a longer value to fit the
+    // buffer and still says ESP_OK, so "<token>x" would pass. Then compare
+    // every byte, so the time taken does not tell how much of it was right.
     char given[sizeof(token)] = "";
-    if (httpd_req_get_hdr_value_str(req, "X-Token", given, sizeof(given)) == ESP_OK &&
-        strcmp(given, token) == 0) {
-        return true;
+    const size_t len = strlen(token);
+    if (httpd_req_get_hdr_value_len(req, "X-Token") == len &&
+        httpd_req_get_hdr_value_str(req, "X-Token", given, sizeof(given)) == ESP_OK) {
+        unsigned char diff = 0;
+        for (size_t i = 0; i < len; i++) {
+            diff |= (unsigned char)(given[i] ^ token[i]);
+        }
+        if (diff == 0) {
+            return true;
+        }
     }
     ESP_LOGW(TAG, "%s: 403, wrong or missing X-Token", req->uri);
     tr_ota_send_error(req, "403 Forbidden", "wrong or missing X-Token\n");
