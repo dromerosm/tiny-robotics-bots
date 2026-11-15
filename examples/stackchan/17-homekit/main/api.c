@@ -94,7 +94,10 @@ static esp_err_t plugs_get(httpd_req_t *req)
             const int on = plugs_state(i, k);
             jw_raw(&w, k ? ",{\"name\":" : "{\"name\":");
             jw_str(&w, plugs_sw_name(i, k));
-            jw_fmt(&w, ",\"on\":%s,\"ap\":%s}", on < 0 ? "null" : on ? "true" : "false",
+            jw_fmt(&w, ",\"on\":%s,\"ap\":%s}",
+                   on < 0 ? "null"
+                   : on   ? "true"
+                          : "false",
                    plugs_sw_ap(i, k) ? "true" : "false");
         }
         jw_raw(&w, "]}");
@@ -108,8 +111,8 @@ static esp_err_t plugs_get(httpd_req_t *req)
 static int query_digit(const char *query, const char *key)
 {
     char value[4];
-    if (httpd_query_key_value(query, key, value, sizeof(value)) != ESP_OK ||
-        value[0] < '0' || value[0] > '9' || value[1]) {
+    if (httpd_query_key_value(query, key, value, sizeof(value)) != ESP_OK || value[0] < '0' ||
+        value[0] > '9' || value[1]) {
         return -1;
     }
     return value[0] - '0';

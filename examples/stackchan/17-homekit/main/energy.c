@@ -45,8 +45,8 @@ static const char *TAG = "energy";
 
 typedef struct {
     uint32_t magic;
-    uint32_t hour[HOURS]; // the local hour number in each slot (0: empty)
-    uint32_t day[DAYS];   // the local day number in each slot
+    uint32_t hour[HOURS];                    // the local hour number in each slot (0: empty)
+    uint32_t day[DAYS];                      // the local day number in each slot
     uint32_t hour_dwh[HOURS][PLUGS_MAX_DEV]; // in 0.1 Wh
     uint32_t day_dwh[DAYS][PLUGS_MAX_DEV];
     uint64_t total_dwh[PLUGS_MAX_DEV];
@@ -107,8 +107,8 @@ static bool local_now(uint32_t *hour, uint32_t *day)
     const time_t t = time(NULL);
     struct tm tm;
     localtime_r(&t, &tm);
-    *day = (uint32_t)days_from_civil(tm.tm_year + 1900, (unsigned)tm.tm_mon + 1,
-                                     (unsigned)tm.tm_mday);
+    *day =
+        (uint32_t)days_from_civil(tm.tm_year + 1900, (unsigned)tm.tm_mon + 1, (unsigned)tm.tm_mday);
     *hour = *day * 24 + (uint32_t)tm.tm_hour;
     return true;
 }
