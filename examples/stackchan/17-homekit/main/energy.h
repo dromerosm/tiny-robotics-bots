@@ -13,5 +13,6 @@ void energy_fresh(int dev);
 bool energy_clock_ok(void);
 // The local time now as "2026-11-15T17:42:10", or "" before the clock is set.
 void energy_clock_text(char *out, size_t size);
-// The history as one JSON object: totals, the last 48 hours and the last 62 days.
+// The history as one JSON object: totals, the last 48 hours and the last 62 days,
+// in Wh and in euros (CONFIG_HOME_PRICE_UEUR_KWH).
 void energy_json(jw_t *w);

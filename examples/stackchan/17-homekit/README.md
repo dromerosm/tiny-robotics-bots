@@ -105,7 +105,7 @@ Everything here needs the token in the header `X-Token`, except `/panel`. The to
 | `GET /api/status` | JSON: firmware, uptime, memory, clock, paired controllers, HomeKit clients now, Apple TVs (with `hub`), and the lines of `GET /` |
 | `GET /api/plugs` | JSON: every device with its IP, error, watts, volts, mA and outlets (`on` is true, false or null; `ap` marks the access point outlet) |
 | `POST /api/plugs?dev=0&sw=1&on=1` | Switch an outlet. `dev`, `sw` and `on` are one digit each. 202 when the order is queued, 400 for bad values, 409 when it is refused (the access point outlet, or a full queue). `reads` in `GET /api/plugs` grows once the plug has been read again |
-| `GET /api/energy` | JSON: Wh per device since the first boot, for each of the last 48 hours and for each of the last 62 days |
+| `GET /api/energy` | JSON: Wh and euros per device since the first boot, for each of the last 48 hours and for each of the last 62 days, and the price used |
 | `GET /home` | The same as text: paired controllers and every device |
 | `POST /home?unpair=1` | Forget every pairing and restart. Then remove the bridge in Home and add it again |
 
@@ -126,6 +126,8 @@ The plugs report their power now (dp 19), but no total we can use. On the SP112,
 - One slot per hour (the last 48) and one per day (the last 62), plus a total, all in one 2.3 KB blob in NVS. It is saved at most every 15 minutes, so a power cut or an update loses up to that much. Each column is kept with its device's ID, so a new build with other devices does not mix them.
 
 The numbers are estimates. They leave out what the USB ports draw, because the plugs do not report it (see `home-iot`'s README).
+
+The euros use one price per kWh, `CONFIG_HOME_PRICE_UEUR_KWH`, in millionths of a euro. The default, 163463, is 0.163463 EUR/kWh: the energy term of a real bill (98.925 kWh for 16.17 EUR). It has no taxes. The power term (5.75 kW at about 0.163 EUR per kW and day, so about 0.94 EUR a day) is left out on purpose: you pay it for the contract, whatever the plugs draw. To change the price, set it in `sdkconfig` or with `idf.py menuconfig` and build again.
 
 ## Expected output
 

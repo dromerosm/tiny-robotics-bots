@@ -3,7 +3,7 @@
 //   GET  /api/status                 the bridge, HomeKit's clients, the Apple TVs, the robot
 //   GET  /api/plugs                  every device: outlets, power, voltage, current
 //   POST /api/plugs?dev=&sw=&on=0|1  switch an outlet
-//   GET  /api/energy                 Wh per device: total, last 48 hours, last 62 days
+//   GET  /api/energy                 Wh and euros per device: total, last 48 hours, last 62 days
 //   GET  /panel                      a page that shows all of it
 #pragma once
 

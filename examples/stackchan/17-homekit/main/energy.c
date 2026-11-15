@@ -256,12 +256,27 @@ void energy_start(void)
 
 // --- JSON ---------------------------------------------------------------------
 
+// Euros for dwh tenths of a Wh at CONFIG_HOME_PRICE_UEUR_KWH, with 4 decimals.
+static void eur(jw_t *w, uint64_t dwh)
+{
+    // (dwh / 10^4 kWh) * (price / 10^6 EUR) = dwh * price / 10^10 EUR. In units of
+    // 10^-4 EUR that is dwh * price / 10^6, rounded.
+    const uint64_t e4 = (dwh * (uint64_t)CONFIG_HOME_PRICE_UEUR_KWH + 500000) / 1000000;
+    jw_fmt(w, "%llu.%04llu", e4 / 10000, e4 % 10000);
+}
+
+// The Wh of each device, then the euros of each device.
 static void dwh_list(jw_t *w, const uint32_t *dwh)
 {
     jw_raw(w, "[");
     for (int i = 0; i < plugs_count(); i++) {
         jw_raw(w, i ? "," : "");
         jw_tenths(w, (long)dwh[i]);
+    }
+    jw_raw(w, "],\"eur\":[");
+    for (int i = 0; i < plugs_count(); i++) {
+        jw_raw(w, i ? "," : "");
+        eur(w, dwh[i]);
     }
     jw_raw(w, "]");
 }
@@ -282,13 +297,16 @@ void energy_json(jw_t *w)
     energy_clock_text(clock, sizeof(clock));
     jw_raw(w, "{\"clock\":");
     jw_str(w, clock_ok ? clock : NULL);
-    jw_raw(w, ",\"devices\":[");
+    jw_fmt(w, ",\"price_eur_kwh\":%d.%06d,\"devices\":[", CONFIG_HOME_PRICE_UEUR_KWH / 1000000,
+           CONFIG_HOME_PRICE_UEUR_KWH % 1000000);
     for (int i = 0; i < plugs_count(); i++) {
         jw_raw(w, i ? "," : "");
         jw_raw(w, "{\"name\":");
         jw_str(w, plugs_dev_name(i));
         jw_raw(w, ",\"total_wh\":");
         jw_fmt(w, "%llu.%llu", copy.total_dwh[i] / 10, copy.total_dwh[i] % 10);
+        jw_raw(w, ",\"total_eur\":");
+        eur(w, copy.total_dwh[i]);
         jw_raw(w, "}");
     }
     // Only the slots of the last 48 hours and 62 days, oldest first. An hour

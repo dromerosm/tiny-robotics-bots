@@ -10,4 +10,10 @@ menu "17-homekit"
     config HOME_TZ
         string "Time zone (POSIX TZ) for the energy per hour and per day"
         default "CET-1CEST,M3.5.0,M10.5.0/3"
+    config HOME_PRICE_UEUR_KWH
+        int "Energy price, in millionths of a euro per kWh (163463 = 0.163463 EUR/kWh)"
+        default 163463
+        help
+            The energy term of the bill, with no taxes. The power term is a
+            fixed cost of the contract, not of the plugs, so it is left out.
 endmenu

@@ -74,6 +74,8 @@ async function api(path, opts) {
 
 const n1 = v => v == null ? "?" : (Math.round(v * 10) / 10).toString();
 const wh = v => v >= 1000 ? n1(v / 1000) + " kWh" : n1(v) + " Wh";
+const eur = v => (v < 0.995 ? (v * 100).toFixed(1) + " c" : v.toFixed(2) + " €");
+const sum = a => a.reduce((x, y) => x + y, 0);
 
 let plugData = null, busy = null;
 
@@ -159,18 +161,20 @@ async function loadEnergy() {
   box.className = "";
   const names = e.devices.map(d => d.name);
   if (!e.clock) { box.replaceChildren(el("p", { class: "mute" }, "Waiting for the clock (SNTP).")); return; }
-  const today = e.days.length && e.days[e.days.length - 1].d === e.clock.slice(0, 10) ? e.days[e.days.length - 1].wh : names.map(() => 0);
+  const last = e.days.length && e.days[e.days.length - 1].d === e.clock.slice(0, 10) ? e.days[e.days.length - 1] : null;
+  const today = last ? last.wh : names.map(() => 0), todayEur = last ? last.eur : names.map(() => 0);
   const rows = e.devices.map((d, i) => el("tr", {},
     el("td", {}, el("i", { style: `display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(${COLORS[i % 4]})` }), d.name),
-    el("td", {}, wh(today[i] || 0)), el("td", {}, wh(d.total_wh))));
+    el("td", {}, wh(today[i] || 0)), el("td", {}, eur(todayEur[i] || 0)),
+    el("td", {}, wh(d.total_wh)), el("td", {}, eur(d.total_eur))));
   const days = e.days.slice(-14).reverse().map(d => el("tr", {}, el("td", {}, d.d),
-    ...d.wh.map(v => el("td", {}, wh(v))), el("td", {}, wh(d.wh.reduce((a, b) => a + b, 0)))));
+    ...d.wh.map(v => el("td", {}, wh(v))), el("td", {}, wh(sum(d.wh))), el("td", {}, eur(sum(d.eur)))));
   box.replaceChildren(
-    el("table", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Today"), el("th", {}, "Since start")), ...rows),
+    el("table", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Today"), el("th", {}, "€"), el("th", {}, "Since start"), el("th", {}, "€")), ...rows),
     el("p", { class: "mute" }, "Last 48 hours"), chart(e.hours, names),
     el("p", { class: "mute" }, "Per day"),
-    el("table", {}, el("tr", {}, el("th", {}, "Day"), ...names.map(n => el("th", {}, n)), el("th", {}, "All")), ...days),
-    el("p", { class: "mute" }, "Added up on the bridge from each plug's power reading. Clock: " + e.clock));
+    el("table", {}, el("tr", {}, el("th", {}, "Day"), ...names.map(n => el("th", {}, n)), el("th", {}, "All"), el("th", {}, "€")), ...days),
+    el("p", { class: "mute" }, `Added up on the bridge from each plug's power reading. Euros at ${e.price_eur_kwh} €/kWh, the bill's energy term with no taxes or power term. Clock: ${e.clock}`));
 }
 
 async function loadStatus() {
