@@ -77,7 +77,7 @@ The screen goes off after 30 seconds. Touch the screen or the head to switch it 
 
 One tab per device, then **Info** and **QR**. A device's tab has one button per outlet: green is on, grey is off. Tap a button to switch the outlet. It stays dark until the plug answers, and Home shows the change too. The line at the bottom has the device's IP and its power, or the reason it does not answer.
 
-The Info tab has what is not a plug:
+The Info tab has what is not a plug, split into pages. Tap **NEXT** at the bottom for the next page. After the last page it goes back to the first. The number on the left says which page this is (`1/3`). The bridge is on the first page, and the robot's status starts on a new one. An item is never cut between two pages: when it does not fit in what is left of a page, it starts on the next one.
 
 - The bridge's IP and how many controllers are paired.
 - The HomeKit clients connected now, by IP. An iPhone connects while the Home app is in use. A home hub keeps its connection open.
@@ -137,7 +137,7 @@ plug's UDP broadcast --------> find task -- new IP ---> queue --> worker task
 - **Two web servers.** The robot's page stays on port 80 (`tr_ota`). HomeKit has its own on port 8080.
 - **`stackchan.local` still works.** The SDK sets the mDNS name to "MyHost". The bridge sets it back.
 - **No sleep, and no robot page.** A bridge must answer at any time, also on the battery. The example does not use `tr_web`, so the sleep task never starts and `/app` is not there. The page on port 80 is only `tr_ota`'s: status, log and updates.
-- **The screen draws only what changed.** A new tab gets a clean background once. After that a device's tab is painted again only when a state or its bottom line changes, and the Info tab paints each line over the old one. Nothing flickers.
+- **The screen draws only what changed.** A new tab gets a clean background once. After that a device's tab is painted again only when a state or its bottom line changes, and the Info tab paints each row over the old one. Its rows sit on a fixed grid, the same on every page, so no text is left behind when a list gets shorter. Nothing flickers.
 - **Less work while nobody looks.** With the screen off, the robot checks the touch screen 5 times a second, not 20. The Info tab looks at the network once a second, and only while it is open.
 - **Built for speed (`-O2`) at 160 MHz.** HomeKit does its key math each time a controller connects. The CPU does not go to 240 MHz, because a bridge is on all day.
 

@@ -69,6 +69,33 @@ static int clients(char *out, size_t size)
     return count;
 }
 
+// A name as the screen can show it. The screen's font has only ASCII, and a
+// name comes in UTF-8 ("Salón"), where a letter with an accent is two bytes.
+// Those letters lose the accent ("Salon"), a curly apostrophe becomes a plain
+// one, and any other letter the font does not have becomes one '?'.
+static void ascii_name(char *out, size_t size, const char *name)
+{
+    // U+00C0 to U+00FF, in order: the byte after 0xC3 picks one.
+    static const char plain[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTs"
+                                "aaaaaaaceeeeiiiidnooooo/ouuuuyty";
+    const unsigned char *in = (const unsigned char *)name;
+    size_t n = 0;
+    while (*in && n + 1 < size) {
+        if (*in < 0x80) {
+            out[n++] = (char)*in++;
+        } else if (in[0] == 0xC3 && in[1] >= 0x80 && in[1] <= 0xBF) {
+            out[n++] = plain[in[1] - 0x80];
+            in += 2;
+        } else {
+            out[n++] = in[0] == 0xE2 && in[1] == 0x80 && in[2] == 0x99 ? '\'' : '?';
+            // Skip the rest of this letter: its bytes all start with bits 10.
+            for (in++; (*in & 0xC0) == 0x80; in++) {
+            }
+        }
+    }
+    out[n] = 0;
+}
+
 static void keep_results(mdns_result_t *results)
 {
     tv_t found[MAX_TV];
@@ -82,8 +109,8 @@ static void keep_results(mdns_result_t *results)
         }
         for (mdns_ip_addr_t *a = r->addr; apple_tv && a; a = a->next) {
             if (a->addr.type == ESP_IPADDR_TYPE_V4) {
-                snprintf(found[n].name, sizeof(found[n].name), "%s",
-                         r->instance_name ? r->instance_name : "Apple TV");
+                ascii_name(found[n].name, sizeof(found[n].name),
+                           r->instance_name ? r->instance_name : "Apple TV");
                 snprintf(found[n].ip, sizeof(found[n].ip), IPSTR, IP2STR(&a->addr.u_addr.ip4));
                 n++;
                 break;

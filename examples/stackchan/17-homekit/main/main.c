@@ -8,10 +8,11 @@
 // While it is a bridge the robot does little else. At boot the head goes to
 // its rest position and the servos switch off. The screen has one tab per
 // device, with a button per outlet (green is on; a tap switches it), an Info
-// tab (the bridge's IP, HomeKit's clients, the Apple TVs, the robot's status)
-// and a last tab with the QR code to add the bridge in the Home app. It switches
-// itself off after SCREEN_S seconds. A touch on the screen or on the head
-// switches it on again, and that touch does nothing else.
+// tab (the bridge's IP, HomeKit's clients, the Apple TVs and the robot's
+// status, in pages with a NEXT button) and a last tab with the QR code to add
+// the bridge in the Home app. It switches itself off after SCREEN_S seconds. A
+// touch on the screen or on the head switches it on again, and that touch does
+// nothing else.
 //
 //   GET  /home            the bridge and the plugs, as text (token needed)
 //   POST /home?unpair=1   forget every pairing and restart (token needed)
@@ -137,34 +138,135 @@ static void device_shown(int dev, int busy, char *out, size_t size)
     plugs_info(dev, out + n, size - n);
 }
 
-// The Info tab: what is not a plug. First the bridge, HomeKit's clients and
-// the Apple TVs, in large text (info.c). Then the robot's own status, the
-// same lines as GET /, in small text. Each line is padded to the full width
-// and painted over the old one, so nothing flickers.
-static void draw_info(void)
+// The Info tab: what is not a plug, in pages. First the bridge, HomeKit's
+// clients and the Apple TVs (info.c). Then, on a new page, the robot's own
+// status, the same lines as GET /. All of it in large text: a line that is too
+// long goes on in the next row. An item is never cut between two pages. The
+// NEXT button at the bottom goes to the next page, and from the last one back
+// to the first.
+//
+// The rows sit on a fixed grid, the same on every page, and each one is padded
+// to the full width. So a row paints over the old one, nothing is left behind
+// and nothing flickers.
+#define ROW_H     18 // a row of large text, with its gap
+#define ROW_COLS  26 // letters in a row
+#define FOOT_H    36 // the page number and the NEXT button
+#define INFO_TOP  (TAB_H + 4)
+#define INFO_ROWS ((TR_LCD_H - FOOT_H - INFO_TOP) / ROW_H)
+#define NEXT_W    104
+
+// Row number `row` of the whole list: drawn only when it is on this page.
+static void info_row(int row, int page, unsigned *drawn, uint16_t fg, const char *text, int len)
+{
+    char padded[ROW_COLS + 1];
+    if (row / INFO_ROWS != page) {
+        return;
+    }
+    snprintf(padded, sizeof(padded), "%-*.*s", ROW_COLS, len, text);
+    tr_lcd_text(4, INFO_TOP + row % INFO_ROWS * ROW_H, 2, fg, TR_LCD_BLACK, padded);
+    *drawn |= 1u << (row % INFO_ROWS);
+}
+
+// How many letters of a line go in a row of cols letters. A long line breaks
+// at a space when it can: skip is then 1, for the space that is not drawn.
+static int row_len(const char *line, int len, int cols, int *skip)
+{
+    *skip = 0;
+    if (len <= cols) {
+        return len;
+    }
+    for (int i = cols; i > cols / 2; i--) {
+        if (line[i] == ' ') {
+            *skip = 1;
+            return i;
+        }
+    }
+    return cols;
+}
+
+// One line of text as rows, from row number `row` on, and how many rows it
+// takes. A line that starts with a space is a detail: green. What does not fit
+// in a row goes on in the next one, as a detail. With draw false it only counts.
+static int info_line(const char *line, int len, int row, int page, unsigned *drawn, bool draw)
+{
+    bool detail = len > 0 && line[0] == ' ';
+    int rows = 0;
+    line += detail;
+    len -= detail;
+    do {
+        int skip;
+        const int n = row_len(line, len, detail ? ROW_COLS - 1 : ROW_COLS, &skip);
+        if (draw) {
+            char one[ROW_COLS + 1];
+            snprintf(one, sizeof(one), "%s%.*s", detail ? " " : "", n, line);
+            info_row(row + rows, page, drawn, detail ? GREEN : FG, one, ROW_COLS);
+        }
+        rows++;
+        line += n + skip;
+        len -= n + skip;
+        detail = true;
+    } while (len > 0);
+    return rows;
+}
+
+// A block of text as rows: the block is a line and the detail lines after it
+// (a TV and its IP, the clients and their list). With draw false it only
+// counts. Returns the rows it takes, and in *end where the next block starts.
+static int info_block(const char *text, const char **end, int row, int page, unsigned *drawn,
+                      bool draw)
+{
+    int rows = 0;
+    do {
+        const int len = (int)strcspn(text, "\n");
+        rows += info_line(text, len, row + rows, page, drawn, draw);
+        text += len + (text[len] == '\n');
+    } while (*text == ' ');
+    *end = text;
+    return rows;
+}
+
+// The text as rows, from row number `row` on. A block never goes from one
+// page to the next: when it does not fit in what is left of the page, it
+// starts on a new one. Only a block longer than a whole page is split.
+// Returns the next free row.
+static int info_lines(const char *text, int row, int page, unsigned *drawn)
+{
+    while (*text) {
+        const char *end;
+        const int rows = info_block(text, &end, row, page, drawn, false);
+        if (rows <= INFO_ROWS && row % INFO_ROWS + rows > INFO_ROWS) {
+            row = (row / INFO_ROWS + 1) * INFO_ROWS;
+        }
+        row += info_block(text, &end, row, page, drawn, true);
+        text = end;
+    }
+    return row;
+}
+
+// Draws one page of the Info tab and returns how many pages there are. A page
+// past the end draws as an empty one: the caller goes back to the first.
+static int draw_info(int page)
 {
     static char text[768];
-    char row[54];
-    int y = TAB_H + 4;
+    unsigned drawn = 0;
     info_text(text, sizeof(text));
-    char *save = NULL;
-    for (char *line = strtok_r(text, "\n", &save); line && y + 16 <= TR_LCD_H;
-         line = strtok_r(NULL, "\n", &save)) {
-        snprintf(row, sizeof(row), "%-26.26s", line);
-        tr_lcd_text(4, y, 2, line[0] == ' ' ? GREEN : FG, TR_LCD_BLACK, row);
-        y += 18;
-    }
-    y += 4;
+    int row = info_lines(text, 0, page, &drawn);
+    row = (row + INFO_ROWS - 1) / INFO_ROWS * INFO_ROWS; // the robot: on a new page
     tr_ota_status_text(text, sizeof(text));
-    save = NULL;
-    for (char *line = strtok_r(text, "\n", &save); line && y + 8 <= TR_LCD_H;
-         line = strtok_r(NULL, "\n", &save)) {
-        snprintf(row, sizeof(row), "%-52.52s", line);
-        tr_lcd_text(4, y, 1, FG, TR_LCD_BLACK, row);
-        y += 11;
+    row = info_lines(text, row, page, &drawn);
+    const int pages = (row + INFO_ROWS - 1) / INFO_ROWS;
+    // The page may have fewer rows than the last time: empty the rest.
+    for (int i = 0; i < INFO_ROWS; i++) {
+        if (!(drawn >> i & 1)) {
+            info_row(page * INFO_ROWS + i, page, &drawn, FG, "", 0);
+        }
     }
-    // The list may be shorter than the last time.
-    tr_lcd_fill_rect(0, y, TR_LCD_W, TR_LCD_H - y, TR_LCD_BLACK);
+    char count[28];
+    snprintf(count, sizeof(count), "%d/%d  ", page + 1, pages);
+    tr_lcd_text(GAP, TR_LCD_H - FOOT_H + 10, 2, FG, TR_LCD_BLACK, count);
+    tr_lcd_fill_rect(TR_LCD_W - GAP - NEXT_W, TR_LCD_H - FOOT_H + 2, NEXT_W, FOOT_H - 6, SEL_BG);
+    text_center(TR_LCD_W - GAP - NEXT_W, NEXT_W, TR_LCD_H - FOOT_H + 9, FG, SEL_BG, "NEXT");
+    return pages;
 }
 
 // The last tab: the QR code for the Home app, black on white, and under it
@@ -224,7 +326,7 @@ static void screen_task(void *arg)
     }
     tr_lcd_brightness(BRIGHTNESS);
     bool on = true, was_down = false, new_tab = true;
-    int tap_x = 0, tap_y = 0, drawn_paired = -1, busy = -1;
+    int tap_x = 0, tap_y = 0, drawn_paired = -1, busy = -1, page = 0;
     // Not paired yet: start on the QR code. Paired: on the first device.
     int tab = bridge_paired() ? 0 : tab_count() - 1;
     int64_t off_at = esp_timer_get_time() + SCREEN_S * 1000000LL, next_poll = 0, next_info = 0;
@@ -258,7 +360,14 @@ static void screen_task(void *arg)
             tab = tap_x / (TR_LCD_W / tab_count());
             tab = tab < tab_count() ? tab : tab_count() - 1;
             busy = -1;
+            page = 0;
             new_tab = true;
+        } else if (on && tap && tab == plugs_count() && tap_y >= TR_LCD_H - FOOT_H &&
+                   tap_x >= TR_LCD_W - 2 * GAP - NEXT_W) {
+            // NEXT, with some room around it for a finger. No clean background:
+            // the new page paints over the old one.
+            page++;
+            next_info = 0;
         } else if (on && tap && tab < plugs_count()) {
             const int sw = button_at(tab, tap_x, tap_y);
             const int state = sw < 0 ? -1 : plugs_state(tab, sw);
@@ -297,7 +406,10 @@ static void screen_task(void *arg)
             if (new_tab || info_version() != drawn_info || now >= next_info) {
                 drawn_info = info_version();
                 next_info = now + 5000000;
-                draw_info();
+                if (page >= draw_info(page)) {
+                    page = 0; // after the last page, or the list got shorter
+                    draw_info(page);
+                }
             }
         } else if (new_tab || bridge_paired() != drawn_paired) {
             drawn_paired = bridge_paired();
