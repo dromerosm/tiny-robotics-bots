@@ -18,6 +18,16 @@ const char *plugs_dev_name(int dev);
 const char *plugs_dev_id(int dev);
 const char *plugs_sw_name(int dev, int sw);
 int plugs_sw_dp(int dev, int sw);
+// The outlet that feeds the access point (":ap").
+bool plugs_sw_ap(int dev, int sw);
+// The device's IP now (it follows the broadcasts).
+void plugs_dev_ip(int dev, char *out, size_t size);
+// Why the device does not answer, or NULL when it does.
+const char *plugs_error(int dev);
+// The last reading: power in tenths of a watt, voltage in tenths of a volt
+// and current in mA, each -1 when not known. False when the device does not
+// answer (then all three are -1).
+bool plugs_power(int dev, int *watts10, int *volts10, int *ma);
 
 // 1 on, 0 off, -1 when the device does not answer.
 int plugs_state(int dev, int sw);

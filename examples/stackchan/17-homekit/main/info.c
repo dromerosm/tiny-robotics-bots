@@ -19,6 +19,8 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "hap_platform_httpd.h"
 #include "lwip/sockets.h"
 #include "mdns.h"
@@ -40,6 +42,7 @@ static int64_t next_search;
 static unsigned version;
 static char last_clients[MAX_CLIENTS * 16];
 static int nclients;
+static SemaphoreHandle_t mu; // the screen task and the web server both call in
 
 // The IPv4 addresses of HomeKit's open connections, separated by spaces.
 static int clients(char *out, size_t size)
@@ -112,7 +115,13 @@ static void keep_results(mdns_result_t *results)
                 ascii_name(found[n].name, sizeof(found[n].name),
                            r->instance_name ? r->instance_name : "Apple TV");
                 snprintf(found[n].ip, sizeof(found[n].ip), IPSTR, IP2STR(&a->addr.u_addr.ip4));
-                n++;
+                // The same TV can answer twice (once per interface or
+                // address): keep it once.
+                bool seen = false;
+                for (int k = 0; k < n; k++) {
+                    seen = seen || strcmp(found[k].ip, found[n].ip) == 0;
+                }
+                n += !seen;
                 break;
             }
         }
@@ -128,8 +137,14 @@ static void keep_results(mdns_result_t *results)
     }
 }
 
+void info_init(void)
+{
+    mu = xSemaphoreCreateMutex();
+}
+
 void info_poll(void)
 {
+    xSemaphoreTake(mu, portMAX_DELAY);
     const int64_t now = esp_timer_get_time();
     if (search) {
         mdns_result_t *results = NULL;
@@ -150,6 +165,7 @@ void info_poll(void)
         memcpy(last_clients, now_clients, sizeof(last_clients));
         version++;
     }
+    xSemaphoreGive(mu);
 }
 
 unsigned info_version(void)
@@ -157,10 +173,45 @@ unsigned info_version(void)
     return version;
 }
 
+// An Apple TV is "hub" when it has a HomeKit connection to the robot now.
+static bool is_hub(const tv_t *tv)
+{
+    char spaced[20], all[sizeof(last_clients) + 2];
+    snprintf(spaced, sizeof(spaced), " %s ", tv->ip);
+    snprintf(all, sizeof(all), " %s ", last_clients);
+    return strstr(all, spaced) != NULL;
+}
+
+void info_json(jw_t *w)
+{
+    char list[sizeof(last_clients)];
+    xSemaphoreTake(mu, portMAX_DELAY);
+    memcpy(list, last_clients, sizeof(list));
+    jw_raw(w, "{\"clients\":[");
+    bool first = true;
+    for (char *save = NULL, *one = strtok_r(list, " ", &save); one;
+         one = strtok_r(NULL, " ", &save)) {
+        jw_raw(w, first ? "" : ",");
+        jw_str(w, one);
+        first = false;
+    }
+    jw_fmt(w, "],\"looking\":%s,\"apple_tvs\":[", search ? "true" : "false");
+    for (int i = 0; i < ntv; i++) {
+        jw_raw(w, i ? ",{\"name\":" : "{\"name\":");
+        jw_str(w, tvs[i].name);
+        jw_raw(w, ",\"ip\":");
+        jw_str(w, tvs[i].ip);
+        jw_fmt(w, ",\"hub\":%s}", is_hub(&tvs[i]) ? "true" : "false");
+    }
+    jw_raw(w, "]}");
+    xSemaphoreGive(mu);
+}
+
 void info_text(char *out, size_t size)
 {
     char list[sizeof(last_clients)];
     size_t n = 0;
+    xSemaphoreTake(mu, portMAX_DELAY);
     esp_netif_ip_info_t ip = {0};
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta) {
@@ -180,12 +231,8 @@ void info_text(char *out, size_t size)
                       search ? "looking..." : "none found");
     }
     for (int i = 0; i < ntv; i++) {
-        // "hub": this Apple TV has a HomeKit connection to the robot now.
-        char spaced[20];
-        snprintf(spaced, sizeof(spaced), " %s ", tvs[i].ip);
-        char all[sizeof(last_clients) + 2];
-        snprintf(all, sizeof(all), " %s ", last_clients);
         n += snprintf(out + n, n < size ? size - n : 0, "TV %s\n %s%s\n", tvs[i].name, tvs[i].ip,
-                      strstr(all, spaced) ? " hub" : "");
+                      is_hub(&tvs[i]) ? " hub" : "");
     }
+    xSemaphoreGive(mu);
 }

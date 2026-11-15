@@ -7,4 +7,7 @@ menu "17-homekit"
     config HOME_AP_SSID
         string "Wi-Fi network fed by the :ap outlet (off for it is refused on that network)"
         default "$(HOME_AP_SSID)"
+    config HOME_TZ
+        string "Time zone (POSIX TZ) for the energy per hour and per day"
+        default "CET-1CEST,M3.5.0,M10.5.0/3"
 endmenu

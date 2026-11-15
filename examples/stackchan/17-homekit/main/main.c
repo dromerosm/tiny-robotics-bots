@@ -16,11 +16,14 @@
 //
 //   GET  /home            the bridge and the plugs, as text (token needed)
 //   POST /home?unpair=1   forget every pairing and restart (token needed)
+//   /api/... and /panel   the same and more as JSON, and a page (api.h)
 #include <stdio.h>
+#include "api.h"
 #include <string.h>
 #include "bridge.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "energy.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -270,10 +273,13 @@ static int draw_info(int page)
 }
 
 // The last tab: the QR code for the Home app, black on white, and under it
-// the same code as text. A phone needs the white border to read the QR code.
+// the same code as text, then the update token. The token is on the screen
+// because only someone who holds the robot can see it (the same as 08-face):
+// it is never logged or sent over the network. It is what /panel asks for.
+// A phone needs the white border to read the QR code.
 static void draw_qr_modules(esp_qrcode_handle_t qr)
 {
-    const int size = esp_qrcode_get_size(qr), area = TR_LCD_H - TAB_H - INFO_H;
+    const int size = esp_qrcode_get_size(qr), area = TR_LCD_H - TAB_H - 2 * INFO_H;
     const int scale = area / (size + 2); // one module of border on each side
     const int x0 = (TR_LCD_W - size * scale) / 2, y0 = TAB_H + (area - size * scale) / 2;
     for (int y = 0; y < size; y++) {
@@ -300,6 +306,8 @@ static void draw_setup(void)
     } else {
         snprintf(line, sizeof(line), "%s  not paired", bridge_code());
     }
+    text_center(0, TR_LCD_W, TR_LCD_H - 2 * INFO_H + 4, TR_LCD_BLACK, TR_LCD_WHITE, line);
+    snprintf(line, sizeof(line), "token %s", tr_ota_token());
     text_center(0, TR_LCD_W, TR_LCD_H - INFO_H + 4, TR_LCD_BLACK, TR_LCD_WHITE, line);
 }
 
@@ -447,6 +455,13 @@ static esp_err_t home_post(httpd_req_t *req)
     return home_get(req);
 }
 
+// A device was read: tell Home, and add up its energy.
+static void fresh(int dev)
+{
+    bridge_fresh(dev);
+    energy_fresh(dev);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(tr_ota_add_status(tr_board_status));
@@ -461,9 +476,12 @@ void app_main(void)
     const httpd_uri_t post = {.uri = "/home", .method = HTTP_POST, .handler = home_post};
     ESP_ERROR_CHECK(tr_ota_add_uri(&get));
     ESP_ERROR_CHECK(tr_ota_add_uri(&post));
-    if (plugs_start(bridge_fresh) != ESP_OK) {
+    info_init();
+    if (plugs_start(fresh) != ESP_OK) {
         ESP_LOGW(TAG, "no plugs (set TUYA_DEVICES in the env file)");
     }
+    energy_start();
+    ESP_ERROR_CHECK(api_start());
     if (bridge_start() != ESP_OK) {
         ESP_LOGE(TAG, "HomeKit did not start");
     }

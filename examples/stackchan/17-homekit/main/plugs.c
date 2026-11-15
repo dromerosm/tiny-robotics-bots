@@ -55,6 +55,8 @@ typedef struct {
     sw_t sw[PLUGS_MAX_SW];
     int nsw;
     int watts10; // dp 19, in tenths of a watt (-1: not known)
+    int volts10; // dp 20, in tenths of a volt (-1: not known)
+    int ma;      // dp 18, in mA (-1: not known)
     int err;     // the last tr_tuya result, 0 when fine
 } plug_t;
 
@@ -124,7 +126,7 @@ static void parse_devices(void)
         d->dev.id = d->id;
         d->dev.ip = d->ip;
         d->dev.version = atoi(version);
-        d->watts10 = -1;
+        d->watts10 = d->volts10 = d->ma = -1;
         d->err = TR_TUYA_ERR_CONNECT; // not read yet
         for (char *spec = strtok_r(NULL, ",", &save); spec; spec = strtok_r(NULL, ",", &save)) {
             if (!parse_switch(d, spec)) {
@@ -156,6 +158,8 @@ static void refresh(int i)
         d->sw[k].on = n < 0 ? -1 : tr_tuya_value(dps, n, d->sw[k].dp);
     }
     d->watts10 = n < 0 ? -1 : tr_tuya_value(dps, n, 19);
+    d->volts10 = n < 0 ? -1 : tr_tuya_value(dps, n, 20);
+    d->ma = n < 0 ? -1 : tr_tuya_value(dps, n, 18);
     xSemaphoreGive(mu);
     if (n < 0 && d->err != was) { // say it once, not on every read
         ESP_LOGW(TAG, "%s at %s: %s", d->name, d->ip, tr_tuya_err_text(n));
@@ -330,6 +334,36 @@ const char *plugs_sw_name(int dev, int sw)
 int plugs_sw_dp(int dev, int sw)
 {
     return devs[dev].sw[sw].dp;
+}
+
+bool plugs_sw_ap(int dev, int sw)
+{
+    return devs[dev].sw[sw].ap;
+}
+
+void plugs_dev_ip(int dev, char *out, size_t size)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    copy(out, size, devs[dev].ip);
+    xSemaphoreGive(mu);
+}
+
+const char *plugs_error(int dev)
+{
+    const int err = devs[dev].err;
+    return err ? tr_tuya_err_text(err) : NULL;
+}
+
+bool plugs_power(int dev, int *watts10, int *volts10, int *ma)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const plug_t *d = &devs[dev];
+    const bool ok = d->err == 0;
+    *watts10 = ok ? d->watts10 : -1;
+    *volts10 = ok ? d->volts10 : -1;
+    *ma = ok ? d->ma : -1;
+    xSemaphoreGive(mu);
+    return ok;
 }
 
 int plugs_state(int dev, int sw)
