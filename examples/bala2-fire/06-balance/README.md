@@ -6,7 +6,7 @@ Keep BALA2 upright and move as little as possible. It starts from M5Stack's bala
 | --- | --- |
 | **Robot** | BALA2 Fire (M5Stack Fire, ESP32) |
 | **Level** | Advanced |
-| **Emulator** | Yes, with a rough simulated robot, in the [browser](https://robotics.diegoromero.es/emulator/) (pick **ESP32**) or with Espressif QEMU. It checks the start and the safety stops, not the gains. No Wi-Fi there. |
+| **Emulator** | Yes, with a rough simulated robot, in the [browser](https://robotics.diegoromero.es/emulator/) (pick **ESP32**) or with Espressif QEMU. It checks the start and the safety stops, not the gains. No Wi-Fi there, but a build for QEMU has a network over Ethernet (see [The explorer against the firmware in QEMU](#the-explorer-against-the-firmware-in-qemu)). |
 | **Hardware used** | MPU6886 IMU, BALA2 base (motors, encoders), IP5306 power chip, buttons, screen, Wi-Fi. Optional: a Unit ToF4M distance sensor on port A |
 
 > **Safety:** the robot can move fast. Test it on the floor with at least 1 m free in front and behind, away from table edges. It is built to fall over rather than drive away (see [Safety](#safety)).
@@ -279,7 +279,10 @@ python3 examples/bala2-fire/06-balance/tools/explorer.py scan
 | `turn 90` | Turns left 90 degrees. A negative angle turns right. `--to 0` turns to a heading |
 | `forward 0.4` | Goes 0.4 m ahead. A negative distance goes back, 0.15 m at most, because nothing looks that way |
 | `halt` | Ends the order now. The robot keeps balancing |
-| `map` | Draws what the scans have seen, the path and the robot |
+| `goto 1.0 0.5` | Drives to a place (metres ahead and to the left of the start), through cells the map says are free |
+| `explore --steps 3` | Scans, goes to the nearest edge of what the map knows, and does it again. `"done"` is true when no edge is left |
+| `map` | Draws the map: `#` taken, `.` free, blank not seen yet, the path and the robot |
+| `calibrate spin` | Measures the robot's model with its own sensors: degrees (`spin`), metres (`wall`), drift (`still`). `--apply` keeps the result |
 | `origin` | Forgets the map. The place where the robot is becomes (0, 0) |
 | `params` | Every value you can change: the tool's own, with what each one is, and the robot's |
 | `set scan_rate 20` | Changes a value. If the name is one of the robot's (`set ts 0.25`), it goes to the robot |
@@ -289,6 +292,10 @@ python3 examples/bala2-fire/06-balance/tools/explorer.py scan
 - **When the way is closed.** `forward` ends early and says why in `"stopped"`: `tof` (the sensor stopped the robot before a wall), `stall` (the robot is more than `stall_lag` behind its goal and hardly moves, or more than `stall_hard` behind at any speed, so something the sensor did not see holds it; the tool then moves the goal back, before the robot's own 0.30 m stop makes it fall), `tilt` or `rssi` (the Wi-Fi got weak). The exit code is 3.
 - **A scan.** Each direction is 10 degrees wide (`scan_bin`) and keeps the nearest distance it saw. A direction where the sensor sees nothing counts as `free_mm`. Samples taken while the robot leaned more than usual are dropped, because then the sensor may see the floor. A sector is free when nothing is closer than `clear_mm`, and passable when it is wide enough for `robot_w_mm` plus `margin_mm` on each side.
 - **The pose.** The tool adds up what the wheels did, with the heading, to get x and y. It keeps them, the path and the points the scans saw in `~/.bala2-explorer`. The robot counts its place and heading from each start, so the map begins again when the robot starts again. If you stood it up between two commands and the tool did not see it, run `origin`.
+- **The map.** A grid of cells of 10 cm (`map_cell`). The sensor does not see a line, it sees a cone, 27 degrees wide with the wide zone, and gives the nearest thing in it. So one reading says: every cell of the cone that is nearer is free, and something sits somewhere on the arc at that distance. One reading cannot say where on the arc. A turn can: the cones of the next readings pass over the arc and clear the cells where nothing is. That is why a `scan` marks taken cells, and a straight run only marks free ones. A stall puts a taken cell right in front of the robot, so the map also learns the things the sensor misses.
+- **Finding a way.** `goto` looks for the shortest way through free cells, and keeps the robot's middle `robot_w_mm`/2 + `margin_mm` away from taken cells. It never drives through cells nobody has seen. It drives one stretch (`leg_max` at most), looks where it is, and plans again. If the sensor stops it, it scans and looks for another way.
+- **Exploring.** An edge is a free cell the robot can get to, next to a cell nobody has seen. `explore` goes to the nearest one and scans there. It tries each edge twice at most.
+- **The robot's model.** The pose is only as good as two numbers: how many real metres one reported metre is (`odo_dist`), and how many real degrees one reported degree is (`odo_head`). The robot can measure both by itself. `calibrate spin` turns more than twice on the spot and reads the distance all the way: the room is the same after one real turn, so the distances repeat, and that gives the reported degrees of one real turn. `calibrate wall` drives at a wall and back, and compares what the wheels say with what the sensor says. `calibrate still` stands and measures the drift. `GET /state` has `"head":[wheels, gyro]`, the heading from the wheels alone and from the gyro alone, so `spin` also says which of the two is closer to the truth.
 - **Values for one call.** `--set name=value` changes one of the tool's values for that call only.
 
 First run on the robot, 2026-11-13 (test 38), on the floor with a box 25 cm ahead:
@@ -323,6 +330,92 @@ Fourth run, the same day (test 41), with the rectangle zone (`tzr`) and the box 
 - The robot sways all the time (tilt from 3.9 to 8.4 degrees, turn rate up to 20 degrees per second while it stands). So "still" is judged by means over one second.
 
 The other start values (`clear_mm`, `robot_w_mm`, `tof_offset_mm`, `look_sign`) are still guesses. `look` ran, but it had nothing in front to see.
+
+### Testing the explorer without the robot
+
+`tools/sim_robot.py` is a stand-in for the robot in a flat world of walls. It answers `GET /state` and `POST /cmd` like the firmware, with the same `drive` rules. It also copies the trouble we saw in tests 38 to 41: it stops a few cm before its goal, it sways, its heading drifts, its distances are a bit off, the sensor sees a cone, and low things stop the wheels where the sensor sees nothing. `GET /truth` gives the real place and the world.
+
+```bash
+python3 examples/bala2-fire/06-balance/tools/sim_robot.py --port 8099 --world rooms
+```
+
+```bash
+BALA2_HOST=127.0.0.1:8099 python3 examples/bala2-fire/06-balance/tools/explorer.py explore --steps 3
+```
+
+`tools/explorer_test.py` runs it all: it starts the stand-in in a world of two rooms, measures the model, explores until no edge is left, and compares the map and the pose with the truth. `--speed 5` makes the stand-in's clock run 5 times faster, and `BALA2_TIME_SCALE=5` does the same for the tool; the test sets both.
+
+```bash
+python3 examples/bala2-fire/06-balance/tools/explorer_test.py
+```
+
+What the test gave on 2026-11-13, in the world of two rooms (the stand-in's heading is 2 degrees off per turn, and its distances 3%):
+
+| | With the model measured | With the model left at 1.0 |
+| --- | --- | --- |
+| `odo_head` / `odo_dist` | 0.9938 / 0.9756 (the truth: 0.9944 / 0.9709) | 1.0 / 1.0 |
+| Exploration | ended by itself after 6 steps | did not end in 30 steps |
+| Place error at the end | 0.075 m | 0.59 m |
+| Heading error at the end | 2.1 degrees | 78 degrees |
+| Taken cells that are near a real wall | 225 of 225 | 138 of 359 |
+| Reachable floor mapped as free | 711 of 720 | 582 of 720 |
+
+So the model comes first. Without it every scan lands a little turned, the walls smear, and the robot keeps finding new edges that are not there.
+
+The new firmware also ran 40 s in QEMU: it starts, balances its simulated robot and drives 0.26 m to the wall.
+
+The stand-in does not balance, and its sensor is a perfect cone. The real sensor is not, and the real room has chair legs and dark things. So a pass here says the logic is right, not that the values fit the robot.
+
+### The explorer against the firmware in QEMU
+
+QEMU has no Wi-Fi radio for the ESP32, but it has an Ethernet card. A second build of this firmware uses that card for its link (`sdkconfig.qemu`, see [bala2_link](../../../components/bala2_link)). So the tool can talk to the firmware itself: its own `drive` rules, its brake, its commands and its web server. The stand-in only copies those by hand.
+
+In that build the simulated robot takes its orders from outside, not from a script. It has two wheels now, so it turns. It has no world: its distance sensor reads what the command `simtof <mm>` gives it (-1 for nothing). `tools/qemu_world.py` is the world. It stands between the tool and the firmware, moves the robot through the same walls as the stand-in, and tells the firmware 10 times a second what the sensor sees.
+
+Build it, and copy the image where the [emulator scripts](https://github.com/dromerosm/tiny-robotics/tree/main/bala2-fire/emulator) of the site's repo look for it (`.work/fw/balance-net/build/flash.bin`, made 16 MB long with `truncate -s 16M`):
+
+```bash
+VARIANT=qemu scripts/build.sh examples/bala2-fire/06-balance
+```
+
+Start QEMU there, with the firmware's port 80 at port 8099 of your computer:
+
+```bash
+PORT=8099 ./run-native.sh balance-net 2400
+```
+
+Then the world, and the tool through it:
+
+```bash
+python3 examples/bala2-fire/06-balance/tools/qemu_world.py --robot 127.0.0.1:8099
+```
+
+```bash
+BALA2_HOST=127.0.0.1:8142 python3 examples/bala2-fire/06-balance/tools/explorer.py scan
+```
+
+```bash
+python3 examples/bala2-fire/06-balance/tools/explorer_test.py --robot 127.0.0.1:8142
+```
+
+What it gave on 2026-11-14:
+
+- **The link works.** The firmware gets its address 12 s after the start. 50 reads of `/state` took 0.5 s, and the firmware's clock ran at the real speed.
+- **By hand:** `drive 0.1 0` for 3 s took the robot 0.39 m forward, `drive 0 45` for 4 s turned it 212 degrees (the order goes on for 1 s after the last one), and it stood for 20 s more without a fall.
+- **`scan`** saw the room in all 36 directions, with the box at 0.75 to 0.88 m on the left.
+- **The whole test failed.** The exploration ended by itself, after 19 steps, but the map came out turned: 1.92 m and 50 degrees off at the end, 142 of 334 taken cells near a real wall, 546 of 720 of the floor mapped as free.
+- **Why:** `calibrate spin` is not exact enough. It gave `odo_head` 0.9897 in the test, for a truth of 0.9944. Four more runs gave 0.9945, 0.9931, 0.9911 and 0.9965 (the last one with 4.5 turns). That is about 0.3% from run to run, or 1 degree per turn. The test turned the robot about 30 times, so the error grew to 50 degrees. The stand-in had hidden this: its one run gave 0.9938, and its exploration took 6 steps.
+- `odo_dist` was fine: 0.9686 for a truth of 0.9709.
+
+So the heading cannot come from the wheels and the gyro alone over a long run. See [Try next](#try-next).
+
+Limits of this setup:
+
+- Native QEMU only. The browser emulator has no network.
+- Only TCP comes through to the computer, so the answers the firmware sends over UDP (a refused command) do not.
+- Low things do not work: nothing here can hold the wheels of the firmware's robot.
+- The simulated robot is still too rough to set any gain.
+- Part of the spread in `calibrate spin` may come from the setup: the distance the firmware has can be 0.1 to 0.2 s old. Nobody measured how much.
 
 ### The servo
 
@@ -697,5 +790,7 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
 - The distance sensor, after test 37: check the stop without the creep, measure the distance against a tape, and try dark, thin and low things. Then let the robot back away or turn when the way is closed, not only stop.
+- The map, `goto`, `explore` and `calibrate` only ran against the stand-in. On the robot: first `calibrate still`, `calibrate spin` and `calibrate wall` (twice each: do they give the same numbers?), then `goto` around a square and back to a mark on the floor, then `explore`. Watch what `"head"` says in `spin`: the wheels or the gyro, which one is closer to one real turn?
+- `calibrate spin` gives `odo_head` to about 0.3%, and that is 50 degrees after 30 turns (the test in QEMU). Take the mean of some runs, and find what makes it change from run to run. Better: correct the heading while the robot explores, by fitting each new scan to the map.
 - The explorer tool, after tests 38 to 40: check the `tof` stop with a box in the middle of the view. After a stall, do not move the goal into the thing that stopped the robot before. Decide if `tzr 16` becomes the start value, and check it at 0.2 m: there the view is about 10 cm wide and the robot is wider. Make the robot reach its goal, not stop 4 cm before it. Run `forward` to a wall and against a low thing the sensor does not see. Find how far the small zone sees, to give "nothing" a real distance. Set `look_sign` with a box on one side, and measure a scan against a tape.
 - The sensor only looks forward. For all around, put it on the servo. The servo turns without end and does not say where it points, so the firmware must find that out first.

@@ -16,7 +16,10 @@ orders that end by themselves, and reads `GET /state`.
     explorer.py turn --to 0          turn to a heading
     explorer.py forward 0.4          go 0.4 m ahead; stops by itself at a wall
     explorer.py halt                 end the order now (the robot keeps balancing)
-    explorer.py map                  what the scans have seen so far
+    explorer.py goto 1.0 0.5         drive to a place, through cells the map says are free
+    explorer.py explore --steps 3    scan, go to the nearest edge of the map, and again
+    explorer.py map                  the map so far: taken, free and not seen
+    explorer.py calibrate spin       measure the model: degrees (spin), metres (wall), drift (still)
     explorer.py origin               forget the map; here is (0, 0)
     explorer.py params               every value you can change, here and on the robot
     explorer.py set scan_rate 20     change one (this tool's, or the robot's: `set ts 0.25`)
@@ -41,7 +44,20 @@ import statistics
 import sys
 import time
 
+import navmap as nm
 from bala2_link import find_robot
+
+# For tests: sim_robot.py --speed 5 runs its clock 5 times faster, and so must we.
+SCALE = float(os.environ.get("BALA2_TIME_SCALE") or 1)
+
+
+def now():
+    return time.monotonic() * SCALE
+
+
+def nap(seconds):
+    time.sleep(max(0.0, seconds) / SCALE)
+
 
 # This tool's own values: name -> (start value, what it is).
 PARAMS = {
@@ -81,7 +97,20 @@ PARAMS = {
     "look_to": (13, "last zone row of `look`"),
     "look_step": (2, "rows between two looks"),
     "look_sign": (1, "1 or -1: which way a higher row looks (depends on the mount)"),
-    "map_cell": (0.1, "m, one character of `map`"),
+    "map_cell": (0.1, "m, one cell of the map and one character of `map`"),
+    "odo_dist": (1.0, "the robot's model: real metres for each metre it reports (see `calibrate wall`)"),
+    "odo_head": (1.0, "the robot's model: real degrees for each degree it reports (see `calibrate spin`)"),
+    "beam_deg": (0, "deg, width of the sensor's cone for the map; 0 takes it from the zone (tz, tzr)"),
+    "reach_mm": (1500, "mm, how far a reading clears the map; \"nothing\" clears this far too"),
+    "goto_tol": (0.10, "m, `goto` is there when it is this close"),
+    "goto_tries": (8, "stretches `goto` may drive before it gives up"),
+    "leg_max": (0.6, "m, the longest stretch `goto` drives in one go"),
+    "frontier_min": (3, "cells, `explore` skips edges of the map smaller than this"),
+    "fit_deg": (12, "degrees, most a full scan may correct the heading by the walls; 0: off"),
+    "fit_step": (3, "degrees, most one scan corrects"),
+    "fit_agree": (3, "walls that must agree before their direction is the reference"),
+    "fit_flank": (22, "degrees past the flat stretch of a wall that must fit, on each side"),
+    "fit_miss": (0.04, "share of the distance the scan may be off the shape of a wall"),
 }
 HOME = os.environ.get("BALA2_EXPLORER_DIR") or os.path.expanduser("~/.bala2-explorer")
 ZONE_DEG = 1.7  # one detector of the sensor, from M5Stack's 27 degrees for 16
@@ -129,7 +158,8 @@ def norm(deg):
 
 
 class Robot:
-    def __init__(self, host):
+    def __init__(self, host, p):
+        self.p = p
         name, _, port = (host or "").partition(":")
         self.host = find_robot(name or None) + (":" + port if port else "")
         self.conn = None
@@ -137,6 +167,8 @@ class Robot:
         self.ses.setdefault("pose", [0.0, 0.0])
         self.ses.setdefault("points", [])
         self.ses.setdefault("path", [[0.0, 0.0]])
+        self.ses.setdefault("grid", {})
+        self.ses.setdefault("tried", {})
         self.fresh = False  # a new balance run began: the old map is gone
         self.last = None
 
@@ -171,14 +203,20 @@ class Robot:
         else:
             if not old or s["up"] < old["up"]:
                 # The robot counts its place and heading from each start.
-                self.fresh = bool(ses["points"] or len(ses["path"]) > 1)
-                ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]])
+                self.fresh = bool(ses["grid"] or len(ses["path"]) > 1)
+                ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]], grid={}, tried={},
+                           h_fix=0.0, wall_ref=None, wall_seen=[])
             else:
-                d = s["pos"] - old["pos"]
-                mid = math.radians((s["heading"] + old["heading"]) / 2)
+                # The model: what the robot reports, times what one unit really is.
+                d = (s["pos"] - old["pos"]) * self.p.odo_dist
+                mid = math.radians((s["heading"] + old["heading"]) / 2 * self.p.odo_head +
+                                   ses.get("h_fix", 0.0))
                 ses["pose"][0] += d * math.cos(mid)
                 ses["pose"][1] += d * math.sin(mid)
             ses["last"] = {"pos": s["pos"], "heading": s["heading"], "up": s["up"]}
+            s["px"], s["py"] = ses["pose"]
+        # The real heading: by the model, plus what the map has corrected (fit_scan).
+        s["H"] = s["heading"] * self.p.odo_head + ses.get("h_fix", 0.0)
         self.last = s
         return s
 
@@ -193,7 +231,7 @@ class Robot:
 
     def pose(self):
         x, y = self.ses["pose"]
-        return {"x": round(x, 3), "y": round(y, 3), "heading": round(self.last["heading"], 1)}
+        return {"x": round(x, 3), "y": round(y, 3), "heading": round(self.last["H"], 1)}
 
     def mark(self):
         x, y = self.ses["pose"]
@@ -204,6 +242,7 @@ class Robot:
     def close(self):
         self.ses["path"] = self.ses["path"][-2000:]
         self.ses["points"] = self.ses["points"][-5000:]
+        self.ses["grid"] = {k: v for k, v in self.ses["grid"].items() if v}
         store("session.json", self.ses)
 
 
@@ -214,12 +253,12 @@ def motion(bot, p, v, w, seconds, check=None):
     Returns (samples, reason or None)."""
     period = 1.0 / p.poll_hz
     samples, why = [], None
-    t0 = time.monotonic()
+    t0 = now()
     next_send, last_t = 0.0, 0.0
     sending = seconds > 0.02
     try:
         while True:
-            t = time.monotonic() - t0
+            t = now() - t0
             if sending and t >= next_send:
                 left = seconds - t
                 if left > 0.02:
@@ -248,7 +287,7 @@ def motion(bot, p, v, w, seconds, check=None):
                         abs(statistics.fmean(x["yaw"] for x in win)) < p.settle_yaw)
                 if calm or t > seconds + p.settle_timeout:
                     break
-            time.sleep(max(0.0, period - (time.monotonic() - t0 - t)))
+            nap(max(0.0, period - (now() - t0 - t)))
     except KeyboardInterrupt:
         bot.cmd("drive 0 0")
         raise
@@ -257,17 +296,96 @@ def motion(bot, p, v, w, seconds, check=None):
 
 
 def turn_by(bot, p, angle, rate=None):
-    """Turn `angle` degrees from the heading now. Returns the heading error left."""
-    target = bot.last["heading"] + angle
+    """Turn `angle` real degrees from the heading now. Returns the error left."""
+    k = p.odo_head or 1.0
+    target = bot.last["heading"] + angle / k  # in the degrees the robot reports
     rate = min(abs(rate or p.turn_rate), 90) or 1
     if abs(angle) > 0.5:
-        motion(bot, p, 0, math.copysign(rate, angle), abs(angle) / rate)
+        motion(bot, p, 0, math.copysign(rate, angle), abs(angle / k) / rate)
     tries = 0
-    while abs(target - bot.last["heading"]) > p.turn_tol and tries < p.turn_tries:
+    while abs(target - bot.last["heading"]) * k > p.turn_tol and tries < p.turn_tries:
         err = target - bot.last["heading"]
         motion(bot, p, 0, math.copysign(p.turn_fix_rate, err), abs(err) / p.turn_fix_rate)
         tries += 1
-    return round(target - bot.last["heading"], 1), tries
+    return round((target - bot.last["heading"]) * k, 1), tries
+
+
+def beam(bot, p):
+    v = bot.last["vars"]
+    return p.beam_deg or (v.get("tzr") or v.get("tz", 4)) * ZONE_DEG
+
+
+def readings(p, samples):
+    """The samples as the map wants them: (x, y, bearing, m or None), and the samples used."""
+    got = [s for s in samples if "px" in s and s["tof"] != -2]
+    if not got:
+        return [], []
+    usual = statistics.median(s["tilt"] for s in got)
+    rs = []
+    for s in got:
+        if abs(s["tilt"] - usual) > p.scan_tilt_tol:
+            continue  # it leaned: the sensor may have seen the floor
+        b = s["H"] - s["yaw"] * p.scan_lag_s
+        off, th = p.tof_offset_mm / 1000.0, math.radians(b)
+        rs.append((s["px"] + off * math.cos(th), s["py"] + off * math.sin(th), b,
+                   None if s["tof"] < 0 else s["tof"] / 1000.0))
+    return rs, got
+
+
+def fit(bot, p, samples):
+    """Correct the heading with the walls. The walls of a room stand at right
+    angles to each other, so the directions that look straight at a wall are
+    all the same, counted in turns of 90 degrees. The first scan sets that
+    direction; each later scan says how far the heading has drifted from it.
+    Returns what it found, or None."""
+    if p.fit_deg <= 0:
+        return None
+    rs, _ = readings(p, samples)
+    walls = nm.wall_bearings([(r[2], r[3]) for r in rs], beam(bot, p), p.fit_flank, p.fit_miss)
+    if not walls:
+        return {"walls": 0, "applied": False}
+    ses = bot.ses
+    ref = ses.get("wall_ref")
+    if ref is None:
+        # One wall is not enough to set the direction: a corner of a box can
+        # look like a wall. Wait until three of them agree, over the first scans.
+        seen = ses.setdefault("wall_seen", [])
+        seen += [round(w[0] % 90, 2) for w in walls]
+        away = lambda a, b: (a - b + 45) % 90 - 45
+        group = max(([away(x, c) for x in seen if abs(away(x, c)) <= p.fit_step] for c in seen),
+                    key=len)
+        if len(group) < p.fit_agree:
+            return {"walls": len(walls), "seen": len(seen), "applied": False}
+        c = next(c for c in seen
+                 if len([x for x in seen if abs(away(x, c)) <= p.fit_step]) == len(group))
+        ses["wall_ref"] = c + sum(group) / len(group)
+        return {"walls": len(walls), "wall_ref": round(ses["wall_ref"], 1), "applied": False}
+    off = sorted((w[0] - ref + 45) % 90 - 45 for w in walls)
+    off = [o for o in off if abs(o) <= p.fit_deg]
+    if not off:
+        return {"walls": len(walls), "applied": False}
+    # One scan corrects only a little: the drift of one scan is small, and a
+    # corner of a box can look like a wall. A real error goes away over some scans.
+    turn = max(-p.fit_step, min(p.fit_step, -statistics.median(off)))
+    ses["h_fix"] = ses.get("h_fix", 0.0) + turn
+    for s in samples + [bot.last]:
+        if not s.get("fitted"):
+            s["H"] += turn
+            s["fitted"] = True
+    return {"walls": len(walls), "used": len(off), "off": [round(o, 1) for o in off],
+            "turn": round(turn, 2), "applied": True}
+
+
+def learn(bot, p, samples, arcs):
+    """Put what the sensor read on the way into the map."""
+    grid, cell = bot.ses["grid"], p.map_cell
+    rs, got = readings(p, samples)
+    if not got:
+        return 0, 0
+    out = nm.add_readings(grid, cell, rs, beam(bot, p), p.reach_mm / 1000.0, arcs)
+    for s in got[::4]:
+        nm.add_robot(grid, cell, s["px"], s["py"], p.robot_w_mm / 2000.0)
+    return out
 
 
 def warnings(s, p):
@@ -302,10 +420,10 @@ def c_status(bot, p, a):
 
 
 def c_watch(bot, p, a):
-    rows, t0 = [], time.monotonic()
-    while time.monotonic() - t0 < a.seconds:
+    rows, t0 = [], now()
+    while now() - t0 < a.seconds:
         rows.append(bot.sample())
-        time.sleep(1.0 / p.poll_hz)
+        nap(1.0 / p.poll_hz)
     out = {"samples": len(rows), "state": rows[-1]["state"], "reason": rows[-1]["reason"]}
     for k in ("tilt", "speed", "pos", "heading", "yaw", "tof", "u", "rssi"):
         vals = [r[k] for r in rows if not (k == "tof" and r[k] < 0)]
@@ -321,19 +439,21 @@ def c_turn(bot, p, a):
     s = bot.ready(p)
     if (a.angle is None) == (a.to is None):
         raise Fail(1, "give an angle, or --to a heading")
-    angle = a.angle if a.to is None else norm(a.to - s["heading"])
-    h0 = s["heading"]
+    angle = a.angle if a.to is None else norm(a.to - s["H"])
+    h0 = s["H"]
     err, tries = turn_by(bot, p, angle, a.rate)
-    return {"asked": round(angle, 1), "turned": round(bot.last["heading"] - h0, 1), "error": err,
+    return {"asked": round(angle, 1), "turned": round(bot.last["H"] - h0, 1), "error": err,
             "extra_turns": tries, "tof": bot.last["tof"], "pose": bot.pose()}
 
 
-def c_forward(bot, p, a):
-    s = bot.ready(p)
-    dist, sign = a.distance, 1 if a.distance >= 0 else -1
-    speed = min(abs(a.speed or p.fwd_speed), s["vars"].get("dv", 0.25)) or 0.05
+def do_forward(bot, p, dist, speed=None, blind_ok=False):
+    """Go `dist` real metres. Returns the result; "stopped" says why it ended early."""
+    s = bot.last
+    k = p.odo_dist or 1.0
+    sign = 1 if dist >= 0 else -1
+    speed = min(abs(speed or p.fwd_speed), s["vars"].get("dv", 0.25)) or 0.05
     note = None
-    if (sign < 0 or s["tof"] == -2) and abs(dist) > p.blind_max:
+    if (sign < 0 or s["tof"] == -2) and abs(dist) > p.blind_max and not blind_ok:
         dist = sign * p.blind_max
         note = "nothing looks that way: cut to blind_max"
     run = {"goal": 0.0, "lag": 0.0, "slow": 0.0, "speeds": []}
@@ -365,42 +485,62 @@ def c_forward(bot, p, a):
     # The robot holds its place loosely, so it may stand off its goal already.
     # Ask for the distance from where it is, not from where its goal is.
     off = s["goal"][0] - s["pos"] if "goal" in s else 0.0
-    todo = dist - off
+    todo = dist / k - off  # in the metres the robot reports
     if todo * sign <= 0.005:
         todo = 0.0  # its goal is already that far ahead: just wait for it
-    _, why = motion(bot, p, sign * speed, 0, abs(todo) / speed, check)
+    samples, why = motion(bot, p, sign * speed, 0, abs(todo) / speed, check)
     last = bot.last
-    out = {"asked": round(dist, 3), "moved": round(last["pos"] - pos0, 3),
+    out = {"asked": round(dist, 3), "moved": round((last["pos"] - pos0) * k, 3),
            "stopped": why, "max_lag": round(run["lag"], 3), "tof": last["tof"],
            "pose": bot.pose()}
     if "goal" in last:
         out["off_goal"] = round(last["pos"] - last["goal"][0], 3)
     if note:
         out["note"] = note
+    learn(bot, p, samples, arcs=False)
     if why == "stall":
+        # Something the sensor missed. Put it in the map, right in front of the robot.
+        x, y = bot.ses["pose"]
+        nm.add_bump(bot.ses["grid"], p.map_cell, x, y, last["H"] + (0 if sign > 0 else 180),
+                    p.robot_w_mm / 2000.0 + p.map_cell / 2)
         # Its goal is ahead of it, behind the thing it pushes. Bring the goal back.
         back = run["lag"] + p.stall_back
         motion(bot, p, -sign * speed, 0, back / speed)
         out.update(backed=round(back, 3), pose=bot.pose())
-    if why:
-        raise Fail(3, {"stall": "something the sensor did not see holds the robot",
-                       "tilt": "the robot leaned too far", "tof": "something is ahead",
-                       "rssi": "the Wi-Fi got weak"}[why], **out)
     return out
 
 
-def c_scan(bot, p, a):
-    s = bot.ready(p)
+WHY = {"stall": "something the sensor did not see holds the robot",
+       "tilt": "the robot leaned too far", "tof": "something is ahead",
+       "rssi": "the Wi-Fi got weak"}
+
+
+def c_forward(bot, p, a):
+    bot.ready(p)
+    out = do_forward(bot, p, a.distance, a.speed)
+    if out["stopped"]:
+        raise Fail(3, WHY[out["stopped"]], **out)
+    return out
+
+
+def do_scan(bot, p, arc=360, rate=None):
+    """Turn on the spot, read the sensor all the way, and put it in the map."""
+    s = bot.last
     if s["tof"] == -2:
         raise Fail(1, "no distance sensor")
-    arc = min(max(a.arc, p.scan_bin), 360)
+    arc = min(max(arc, p.scan_bin), 360)
     full = arc >= 360
-    h0 = s["heading"]
+    k = p.odo_head or 1.0
+    h0 = s["H"]
     if not full:
         turn_by(bot, p, -arc / 2)
-    rate = min(abs(a.rate or p.scan_rate), 90) or 1
-    samples, _ = motion(bot, p, 0, rate, arc / rate)
-    turn_by(bot, p, h0 + (360 if full else 0) - bot.last["heading"])
+    rate = min(abs(rate or p.scan_rate), 90) or 1
+    samples, _ = motion(bot, p, 0, rate, arc / k / rate)
+    turn_by(bot, p, h0 + (360 if full else 0) - bot.last["H"])
+    fitted = fit(bot, p, samples) if full else None
+    if fitted and fitted["applied"]:
+        h0 += fitted["turn"]  # the start of the scan was off by this too
+    free, taken = learn(bot, p, samples, arcs=True)
 
     usual = statistics.median(x["tilt"] for x in samples)
     bins, dropped = {}, 0
@@ -408,7 +548,7 @@ def c_scan(bot, p, a):
         if abs(x["tilt"] - usual) > p.scan_tilt_tol:
             dropped += 1
             continue
-        rel = x["heading"] - x["yaw"] * p.scan_lag_s - h0
+        rel = x["H"] - x["yaw"] * p.scan_lag_s - h0
         rel = norm(rel) if full else rel
         if not full and abs(rel) > arc / 2 + p.scan_bin:
             continue
@@ -422,42 +562,230 @@ def c_scan(bot, p, a):
     center = lambda i: (i + 0.5) * p.scan_bin
 
     # Free sectors: runs of directions with nothing closer than clear_mm.
-    free = [d is not None and d >= p.clear_mm for d in dist]
-    runs, k, n = [], 0, len(idx)
-    while k < n:
-        if free[k]:
-            j = k
-            while j + 1 < n and free[j + 1]:
+    free_dir = [d is not None and d >= p.clear_mm for d in dist]
+    runs, j0, n = [], 0, len(idx)
+    while j0 < n:
+        if free_dir[j0]:
+            j = j0
+            while j + 1 < n and free_dir[j + 1]:
                 j += 1
-            runs.append([k, j])
-            k = j + 1
+            runs.append([j0, j])
+            j0 = j + 1
         else:
-            k += 1
+            j0 += 1
     if full and len(runs) > 1 and runs[0][0] == 0 and runs[-1][1] == n - 1:
         runs[0][0] = runs.pop()[0] - n  # the run goes on across the back
     need = 2 * math.degrees(math.atan((p.robot_w_mm / 2 + p.margin_mm) / p.clear_mm))
-    turned = bot.last["heading"] - h0 - (360 if full else 0)
+    turned = bot.last["H"] - h0 - (360 if full else 0)
     sectors = []
-    for k, j in runs:
-        width = (j - k + 1) * p.scan_bin
-        mid = norm(idx[0] * p.scan_bin + k * p.scan_bin + width / 2)
+    for a0, a1 in runs:
+        width = (a1 - a0 + 1) * p.scan_bin
+        mid = norm(idx[0] * p.scan_bin + a0 * p.scan_bin + width / 2)
         sectors.append({"center": round(mid, 1), "width": width,
-                        "min_mm": min(dist[m % n] for m in range(k, j + 1)),
+                        "min_mm": min(dist[m % n] for m in range(a0, a1 + 1)),
                         "passable": width >= need, "turn": round(norm(mid - turned), 1)})
     ok = [x for x in sectors if x["passable"]]
     best = max(ok, key=lambda x: (x["min_mm"], x["width"]), default=None)
     hits = [(d, center(i)) for i, d in zip(idx, dist) if d is not None and d < p.free_mm]
-    x0, y0 = bot.ses["pose"]
-    for d, c in hits:
-        r, th = (d + p.tof_offset_mm) / 1000.0, math.radians(h0 + c)
-        bot.ses["points"].append([round(x0 + r * math.cos(th), 3), round(y0 + r * math.sin(th), 3)])
     return {"arc": arc, "rate": rate, "samples": len(samples), "dropped_for_tilt": dropped,
             "bins": [[round(center(i), 1), d, bins[i][1] if i in bins else 0]
                      for i, d in zip(idx, dist)],
             "bins_are": "[degrees from the heading at the start, mm (null: not seen), samples]",
             "nearest": min(({"mm": d, "at": round(c, 1)} for d, c in hits),
                            key=lambda x: x["mm"], default=None),
-            "need_deg": round(need, 1), "sectors": sectors, "best": best, "pose": bot.pose()}
+            "need_deg": round(need, 1), "sectors": sectors, "best": best,
+            "map": {"free": free, "taken": taken}, "fit": fitted, "pose": bot.pose()}
+
+
+def c_scan(bot, p, a):
+    bot.ready(p)
+    out = do_scan(bot, p, a.arc, a.rate)
+    out["map_cells"] = out.pop("map")  # "map" is the drawing, in `map`
+    return out
+
+
+def keep_out(p):
+    return (p.robot_w_mm / 2 + p.margin_mm) / 1000.0
+
+
+def no_go(bot, p, start):
+    """Cells the robot's middle must stay out of. Never the ones it stands on."""
+    blocked = nm.blocked_cells(bot.ses["grid"], p.map_cell, keep_out(p))
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            blocked.discard((start[0] + dx, start[1] + dy))
+    return blocked
+
+
+def do_goto(bot, p, gx, gy, legs):
+    """Drive to (gx, gy) through cells the map says are free. Returns how it ended:
+    "arrived", "no way", "gave up", or why the robot had to stop."""
+    grid, cell = bot.ses["grid"], p.map_cell
+    for _ in range(int(p.goto_tries)):
+        x, y = bot.ses["pose"]
+        if math.hypot(gx - x, gy - y) <= p.goto_tol:
+            return "arrived"
+        nm.add_robot(grid, cell, x, y, p.robot_w_mm / 2000.0)
+        start, goal = nm.cell_of(cell, x, y), nm.cell_of(cell, gx, gy)
+        way = [goal] if start == goal else nm.route(grid, start, goal, no_go(bot, p, start))
+        if not way:
+            return "no way"
+        tx, ty = (gx, gy) if way[0] == goal else (way[0][0] * cell, way[0][1] * cell)
+        turn_by(bot, p, norm(math.degrees(math.atan2(ty - y, tx - x)) - bot.last["H"]))
+        out = do_forward(bot, p, min(math.hypot(tx - x, ty - y), p.leg_max))
+        legs.append({"to": [round(tx, 2), round(ty, 2)], "moved": out["moved"],
+                     "stopped": out["stopped"]})
+        if out["stopped"] == "tof":
+            do_scan(bot, p)  # see what it is, then look for another way
+        elif out["stopped"] in ("tilt", "rssi"):
+            return out["stopped"]
+    x, y = bot.ses["pose"]
+    return "arrived" if math.hypot(gx - x, gy - y) <= p.goto_tol else "gave up"
+
+
+def map_numbers(bot, p):
+    grid = bot.ses["grid"]
+    return {"free": sum(v <= nm.FREE for v in grid.values()),
+            "taken": sum(v >= nm.OCC for v in grid.values()), "cell_m": p.map_cell}
+
+
+def c_goto(bot, p, a):
+    bot.ready(p)
+    legs = []
+    end = do_goto(bot, p, a.x, a.y, legs)
+    out = {"asked": [a.x, a.y], "ended": end, "legs": legs, "pose": bot.pose()}
+    if end != "arrived":
+        raise Fail(3, f"goto ended: {end}", **out)
+    return out
+
+
+def c_explore(bot, p, a):
+    """Scan, go to the nearest edge of what the map knows, and again."""
+    bot.ready(p)
+    grid, cell, tried = bot.ses["grid"], p.map_cell, bot.ses["tried"]
+    steps, done = [], False
+    for _ in range(a.steps):
+        scan = do_scan(bot, p)
+        x, y = bot.ses["pose"]
+        start = nm.cell_of(cell, x, y)
+        cost = nm.reach(grid, start, no_go(bot, p, start))
+        edges = [g for g in nm.frontiers(grid, cost, int(p.frontier_min))
+                 if tried.get(nm.key(g[1]), 0) < 2]
+        if not edges:
+            done = True
+            break
+        _, target, far = edges[0]
+        tried[nm.key(target)] = tried.get(nm.key(target), 0) + 1
+        legs = []
+        end = do_goto(bot, p, target[0] * cell, target[1] * cell, legs)
+        steps.append({"nearest": scan["nearest"], "fit": scan["fit"], "edges": len(edges),
+                      "target": [round(target[0] * cell, 2), round(target[1] * cell, 2)],
+                      "ended": end, "legs": len(legs),
+                      "stops": [g["stopped"] for g in legs if g["stopped"]]})
+        if end in ("tilt", "rssi"):
+            break
+    return {"steps": steps, "done": done, "map_cells": map_numbers(bot, p), "pose": bot.pose(),
+            "note": "done: no edge of the map is left that the robot can get to"}
+
+
+def slope(ts, vs):
+    """Least squares slope of vs over ts: steadier than last minus first."""
+    mt, mv = statistics.fmean(ts), statistics.fmean(vs)
+    den = sum((x - mt) ** 2 for x in ts)
+    return sum((x - mt) * (v - mv) for x, v in zip(ts, vs)) / den if den else 0.0
+
+
+def average(bot, p, seconds=3.0):
+    rows, t0 = [], now()
+    while now() - t0 < seconds:
+        rows.append(bot.sample())
+        rows[-1]["t"] = now() - t0
+        nap(1.0 / p.poll_hz)
+    tof = [r["tof"] for r in rows if r["tof"] >= 0]
+    return (statistics.fmean(r["pos"] for r in rows),
+            statistics.fmean(tof) if len(tof) > len(rows) / 2 else None, rows)
+
+
+def c_calibrate(bot, p, a):
+    """Measure the robot's model with its own sensors."""
+    s = bot.ready(p)
+    if a.what == "still":
+        # Standing: how much do the heading and the place drift by themselves?
+        _, _, rows = average(bot, p, a.seconds)
+        ts = [r["t"] for r in rows]
+        out = {"seconds": a.seconds, "samples": len(rows),
+               "heading_drift_deg_per_min": round(60 * slope(ts, [r["heading"] for r in rows]), 2),
+               "pos_drift_m_per_min": round(60 * slope(ts, [r["pos"] for r in rows]), 3)}
+        if "head" in rows[0]:
+            for i, name in enumerate(("wheels", "gyro")):
+                out[f"{name}_drift_deg_per_min"] = round(
+                    60 * slope(ts, [r["head"][i] for r in rows]), 2)
+        return out
+    if s["tof"] == -2:
+        raise Fail(1, "no distance sensor: it is the ruler for this")
+    if a.what == "spin":
+        # Turn more than once. The room repeats after one real turn, so the
+        # distances say how many reported degrees one real turn is.
+        h0 = s["H"]
+        samples, _ = motion(bot, p, 0, p.scan_rate, a.turns * 360.0 / p.scan_rate)
+        vals = [min(x["tof"], p.reach_mm * 2) if x["tof"] >= 0 else p.reach_mm * 2 for x in samples]
+        period, sure = nm.turn_period([x["heading"] for x in samples], vals)
+        turn_by(bot, p, norm(h0 - bot.last["H"]))
+        if not period:
+            raise Fail(1, "the turn was too short to compare two rounds")
+        out = {"turns": a.turns, "samples": len(samples), "reported_deg_per_real_turn": period,
+               "odo_head": round(360.0 / period, 4), "sure": sure,
+               "sure_is": "error at other periods over the error at this one; under 2, do not trust it",
+               "was": p.odo_head}
+        if "head" in samples[0]:
+            # The same for the wheels alone and for the gyro alone.
+            span = samples[-1]["heading"] - samples[0]["heading"]
+            for i, name in enumerate(("wheels", "gyro")):
+                part = (samples[-1]["head"][i] - samples[0]["head"][i]) / span * period
+                out[f"{name}_deg_per_real_turn"] = round(part, 2)
+            out["track_m_should_be"] = "TRACK_M x wheels_deg_per_real_turn / 360"
+        name, value = "odo_head", out["odo_head"]
+    else:
+        # A wall ahead is the ruler: drive at it and back, and compare what the
+        # wheels say with what the sensor says.
+        if not 350 <= s["tof"] <= 1800:
+            raise Fail(1, "face a wall 0.5 to 1.5 m ahead first", tof=s["tof"])
+        turn_by(bot, p, -30)
+        samples, _ = motion(bot, p, 0, 15, 60.0 / 15)
+        seen = [(x["tof"], x["H"]) for x in samples if x["tof"] >= 0]
+        if len(seen) < 8:
+            raise Fail(1, "the sensor lost the wall while it looked for it")
+        least = min(d for d, _ in seen)
+        square = statistics.fmean(h for d, h in seen if d <= least * 1.02)
+        turn_by(bot, p, norm(square - bot.last["H"]))
+        d = min(a.distance, (bot.last["tof"] - 300) / 1000.0 if bot.last["tof"] > 0 else 0.1)
+        if d < 0.1:
+            raise Fail(1, "too close to the wall to drive at it")
+        ratios, legs = [], []
+        pos0, tof0, _ = average(bot, p)
+        for way in [1, -1] * a.rounds:
+            do_forward(bot, p, way * d, blind_ok=True)
+            pos1, tof1, _ = average(bot, p)
+            if tof0 is None or tof1 is None or abs(pos1 - pos0) < 0.05:
+                legs.append("lost")
+            else:
+                r = -(tof1 - tof0) / 1000.0 / (pos1 - pos0)
+                ratios.append(r)
+                legs.append(round(r, 4))
+            pos0, tof0 = pos1, tof1
+        if len(ratios) < 2:
+            raise Fail(1, "not enough good runs", legs=legs)
+        out = {"runs": legs, "odo_dist": round(statistics.median(ratios), 4),
+               "spread": round(max(ratios) - min(ratios), 4), "was": p.odo_dist,
+               "note": "the sensor is the ruler: its own error (a few percent) is in this number"}
+        name, value = "odo_dist", out["odo_dist"]
+    if a.apply:
+        p.saved[name] = value
+        store("params.json", p.saved)
+        out["applied"] = True
+    else:
+        out["to_use_it"] = f"set {name} {value}"
+    return out
 
 
 def c_look(bot, p, a):
@@ -471,11 +799,11 @@ def c_look(bot, p, a):
         row = int(p.look_from)
         while row <= p.look_to:
             bot.cmd(f"trow {row}")
-            time.sleep(p.tof_settle_s)
+            nap(p.tof_settle_s)
             got = []
             for _ in range(3):
                 got.append(bot.sample()["tof"])
-                time.sleep(0.1)
+                nap(0.1)
             out.append([row, round(p.look_sign * (row - 7.5) * ZONE_DEG, 1),
                         int(statistics.median(got))])
             row += max(1, int(p.look_step))
@@ -496,34 +824,24 @@ def c_halt(bot, p, a):
 
 def c_map(bot, p, a):
     s = bot.sample()
-    ses, cell = bot.ses, p.map_cell
+    ses = bot.ses
     x, y = ses["pose"]
+    out = {"pose": bot.pose(), **map_numbers(bot, p)}
     if a.points:
-        return {"pose": bot.pose(), "points": ses["points"], "path": ses["path"]}
-    every = ses["points"] + ses["path"] + [[x, y]]
-    to = lambda v: int(math.floor(v / cell + 0.5))
-    cx = [to(q[0]) for q in every]
-    cy = [to(q[1]) for q in every]
-    x1, x2, y1, y2 = min(cx), max(cx), min(cy), max(cy)
-    if x2 - x1 > 100 or y2 - y1 > 60:
+        out.update(grid=ses["grid"], path=ses["path"],
+                   grid_is="cell 'ix,iy' (times cell_m): score, 2 and up taken, -1 and down free")
+        return out
+    rows = nm.draw(ses["grid"], p.map_cell, (x, y), s.get("H", 0.0), ses["path"])
+    if rows is None:
         raise Fail(1, "the map is too big to draw: raise map_cell, or use --points")
-    grid = [[" "] * (y2 - y1 + 1) for _ in range(x2 - x1 + 1)]
-    for q in ses["path"]:
-        grid[to(q[0]) - x1][y2 - to(q[1])] = "."
-    for q in ses["points"]:
-        grid[to(q[0]) - x1][y2 - to(q[1])] = "#"
-    grid[to(0) - x1][y2 - to(0)] = "o"
-    grid[to(x) - x1][y2 - to(y)] = "^<v>"[int(((s["heading"] + 45) % 360) // 90)]
-    # Forward at the start (x) is up, left (y) is to the left.
-    rows = ["".join(r) for r in reversed(grid)]
-    return {"pose": bot.pose(), "cell_m": cell, "points": len(ses["points"]),
-            "legend": "# seen, . path, o start, arrow robot; up is forward at the start",
-            "map": rows}
+    out["legend"] = "# taken, . free, : path, o start, arrow robot; up is forward at the start"
+    out["map"] = rows
+    return out
 
 
 def c_origin(bot, p, a):
     bot.sample()
-    bot.ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]])
+    bot.ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]], grid={}, tried={})
     return {"pose": [0.0, 0.0], "note": "map cleared; the heading still counts from the robot's start"}
 
 
@@ -555,7 +873,7 @@ def c_set(bot, p, a):
         if name not in before:
             raise Fail(1, f"{name}: not a value of this tool or of the robot (see `params`)")
         bot.cmd(f"{name} {float(value):g}")
-        time.sleep(0.1)
+        nap(0.1)
         out[name] = bot.sample()["vars"][name]  # the robot keeps it inside its limits
     return {"set": out, "note": "robot values last until it restarts; `cmd save` keeps them"}
 
@@ -564,7 +882,7 @@ def c_cmd(bot, p, a):
     if a.line.split()[:1] in (["save"], ["defaults"]) and bot.sample()["state"] == "balancing":
         raise Fail(2, f"the robot refuses `{a.line}` while it balances: lay it down first")
     bot.cmd(a.line)
-    time.sleep(0.1)
+    nap(0.1)
     s = bot.sample()
     return {"sent": a.line, "state": s["state"], "reason": s["reason"], "vars": s["vars"]}
 
@@ -594,6 +912,18 @@ def main():
     sp.add_argument("--arc", type=float, default=360, help="degrees, centred ahead")
     sp.add_argument("--rate", type=float, help="deg/s")
     add("look", c_look)
+    sp = add("goto", c_goto)
+    sp.add_argument("x", type=float, help="metres ahead of the start")
+    sp.add_argument("y", type=float, help="metres to the left of the start")
+    add("explore", c_explore).add_argument("--steps", type=int, default=1,
+                                           help="scans and moves to do in this call")
+    sp = add("calibrate", c_calibrate)
+    sp.add_argument("what", choices=("spin", "wall", "still"))
+    sp.add_argument("--turns", type=float, default=2.5, help="spin: turns on the spot")
+    sp.add_argument("--distance", type=float, default=0.4, help="wall: metres of each run")
+    sp.add_argument("--rounds", type=int, default=3, help="wall: runs there and back")
+    sp.add_argument("--seconds", type=float, default=20, help="still: how long")
+    sp.add_argument("--apply", action="store_true", help="keep the result as the model")
     add("halt", c_halt)
     add("map", c_map).add_argument("--points", action="store_true", help="the numbers, no drawing")
     add("origin", c_origin)
@@ -605,7 +935,7 @@ def main():
     bot, code = None, 0
     try:
         p = P(a.set)
-        bot = Robot(a.host)
+        bot = Robot(a.host, p)
         out = a.fn(bot, p, a)
     except Fail as e:
         out, code = e.out, e.code
