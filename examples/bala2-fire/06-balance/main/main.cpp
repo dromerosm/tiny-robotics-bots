@@ -183,6 +183,20 @@ static const char *TAG = "balance";
 // back, again and again, to swing the body out of a pose a kick cannot fix.
 #define ROCK_MIN_MS 40
 #define ROCK_MAX_CYCLES 8
+// Get up by itself (command "up", or `au` seconds after it lies still).
+// Once still: a kick if the pose allows it, else one rock swing, then wait
+// until it is still again. Tested by hand on 2026-11-16: one swing got it out
+// of the stuck pose 5 of 5 times. PWM 700 failed on the back: the body came
+// up slowly, and the wheels stayed too fast for too long ("too fast").
+#define UP_KICK_FRONT 700
+#define UP_KICK_BACK  850
+#define UP_KICK_MS    200
+#define UP_ROCK_PWM   (-1023)
+#define UP_ROCK_MS    150
+#define UP_MAX_KICKS  2
+#define UP_MAX_SWINGS 3
+#define UP_AUTO_S     3 // button C turns `au` on with this many seconds, or off
+#define UP_STILL_TICKS (LOOP_HZ / 2) // still this long before the next step
 // Wheel test (command "wheels <left> <right> <ms>"): each wheel on its own,
 // from lying down, to learn how one wheel can move the robot out of a pose a
 // kick cannot fix. Same limits as a kick.
@@ -205,7 +219,7 @@ static const char *TAG = "balance";
 // Balance point at the first boot: -1.5 for the bare robot. The robot then
 // learns its own (see LEARN_ below) and keeps it in flash, because the point
 // moves a lot with the load: +9.4 with the servo on the back, and -3.5 to
-// +0.7 with it on top (2026-11-12). "bp" and buttons A and C move it too.
+// +0.7 with it on top (2026-11-12). "bp" moves it too.
 #define BALANCE_POINT_DEG -1.5f
 // Learning the balance point: the mean tilt of a 10 s block, if the robot
 // stayed slow in all of it. The first two blocks of a run do not count (the
@@ -404,6 +418,8 @@ static volatile bool wheels_request; // a wheel test waits for the control task
 static volatile int wheels_l, wheels_r, wheels_ms;
 static volatile bool rock_request;
 static volatile int rock_pwm, rock_half_ms, rock_cycles;
+static volatile bool up_request;     // "up": get up by itself, once
+static volatile float up_auto = 0;   // au: s lying still before it gets up alone (0 = never)
 // For a soft stand-up and a soft landing, changed over Wi-Fi ("kc 20").
 static volatile float kick_cut = 15.0f;  // kc: the body came up this far: catch, or motors off
 static volatile float kick_i0 = 1.0f;    // kf: share of the wheel speed the catch's I starts with
@@ -805,6 +821,10 @@ static void control_task(void *arg)
     int wheels_ticks = 0;   // ticks left of a wheel test
     int rock_ticks = 0, rock_halves = 0; // ticks left in this half swing, half swings left
     float rock_u = 0;                    // PWM of this half swing
+    bool up_on = false;                  // getting up by itself
+    int up_kicks = 0, up_swings = 0;     // tries so far
+    int up_still = 0, auto_ticks = 0;    // ticks still, ticks lying still for `au`
+    bool auto_armed = true;              // `au` acts once each time it lies down
     float grav[3] = {0, 0, 0};           // "up" in the IMU's axes, length 1 (0: not started)
     bool caught = false; // this balance started from a kick, not from a hand
     int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
@@ -961,7 +981,7 @@ static void control_task(void *arg)
         }
         // Not while it is stuck: charge mode turns the screen off.
         if (st.state == ST_WAIT && st.charging && fabsf(tilt) > LYING_DEG && !link_updating() &&
-            !st.stuck) {
+            !st.stuck && !up_on) {
             if (!low && ++rest_ticks >= CHARGE_WAIT_S * LOOP_HZ) {
                 low_power = true;
             }
@@ -973,6 +993,58 @@ static void control_task(void *arg)
         if (!imu_ok) {
             set_speed(0);
             continue;
+        }
+        // Get up by itself. Each step waits until the robot is still. The kick
+        // and the rock below check the battery, charge mode and updates.
+        const bool lying = (st.state == ST_WAIT || st.state == ST_STOPPED) && (lean > LYING_DEG || st.stuck);
+        const bool busy = kick_ticks > 0 || rock_halves > 0 || lie_ticks > 0 || wheels_ticks > 0;
+        up_still = !busy && fabsf(rate) < STUCK_DPS ? up_still + 1 : 0;
+        if (st.state == ST_BALANCE || lean < START_DEG) {
+            auto_armed = true; // it stood: `au` may act the next time it lies down
+        }
+        // Not while it charges: it would leave the charger.
+        auto_ticks = up_auto > 0 && auto_armed && lying && up_still > 0 && !st.charging && !up_on
+                         ? auto_ticks + 1 : 0;
+        if (up_request || (up_auto > 0 && auto_ticks >= up_auto * LOOP_HZ)) {
+            up_request = false;
+            auto_ticks = 0;
+            auto_armed = false;
+            if (lying && !busy) {
+                up_on = true;
+                up_kicks = up_swings = 0;
+                mon_say("up: getting up\n");
+            } else {
+                mon_say("up: only lying down, and not while it moves\n");
+            }
+        }
+        if (up_on) {
+            if (stop_request) {
+                up_on = false;
+                mon_say("up: stopped\n");
+            } else if (st.state == ST_BALANCE) {
+                up_on = false;
+                mon_say("up: standing\n");
+            } else if (!busy && !lying) {
+                up_on = false; // picked up, or held upright
+            } else if (up_still >= UP_STILL_TICKS) {
+                up_still = 0;
+                if (can_kick && st.state == ST_WAIT && up_kicks < UP_MAX_KICKS) {
+                    up_kicks++;
+                    kick_pwm = tilt > 0 ? UP_KICK_FRONT : UP_KICK_BACK;
+                    kick_ms = UP_KICK_MS;
+                    kick_catch = true;
+                    kick_request = true;
+                } else if (st.stuck && up_swings < UP_MAX_SWINGS) {
+                    up_swings++;
+                    rock_pwm = UP_ROCK_PWM;
+                    rock_half_ms = UP_ROCK_MS;
+                    rock_cycles = 1;
+                    rock_request = true;
+                } else if (can_kick || st.stuck) {
+                    up_on = false; // out of tries: the screen asks for help
+                    mon_say("up: gave up after %d kicks and %d swings\n", up_kicks, up_swings);
+                }
+            }
         }
         bool catch_now = false; // a kick test just brought the body up: balance now
         // Lie down: from any state but a fall test, not when it already lies.
@@ -1539,6 +1611,10 @@ static void handle_command(const char *line)
         } else {
             mon_say("kick <pwm> <ms> [1 = then balance]\n");
         }
+    } else if (!strcmp(name, "up")) {
+        // "up": get up by itself from lying down (see UP_KICK_FRONT). Records 6 s.
+        mon_rec_start(6 * LOOP_HZ);
+        up_request = true;
     } else if (!strcmp(name, "rock")) {
         // "rock 800 150 4": both wheels at PWM 800 forward for 150 ms, then
         // back for 150 ms, 4 times (a negative PWM starts back). Records it all.
@@ -1739,14 +1815,16 @@ extern "C" void app_main(void)
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
     mon_float("kc", &kick_cut, 5, 35);
     mon_float("kf", &kick_i0, 0, 1.2f);
+    mon_float("au", &up_auto, 0, 60);
     mon_float("lp", &lie_push, 0, HARD_MAX_PWM);
     mon_float("lc", &lie_cut, 3, 35);
     mon_float("lb", &lie_brake, 0, 5);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
-    // "save" keeps all of them in flash but these two: the balance point has
-    // its own place there, and a servo must not start by itself.
+    // "save" keeps all of them in flash but these three: the balance point has
+    // its own place there, and a servo or a robot must not start by itself.
     mon_not_saved("bp");
     mon_not_saved("servo");
+    mon_not_saved("au");
     mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff,roll,pitch");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
@@ -1794,7 +1872,7 @@ extern "C" void app_main(void)
     mon_list();
     mon_say("t_ms,state,tilt,rate,speed,position,u,setpoint,heading_enc,heading,yaw_rate,turn,"
         "battery,charging,v_model,shake,kp_eff,tof\n");
-    int last_a = 1, last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
+    int last_b = 1, last_c = 1, backlight_set = BACKLIGHT_PCT;
     bool low_set = false;
     int64_t low_ms = 0; // when charge mode began
     for (int n = 0;; n++) {
@@ -1808,11 +1886,9 @@ extern "C" void app_main(void)
                 servo_us = SERVO_STOP_US;
                 drive_end_ms = 0;
             }
-            if (pressed(BTN_A, &last_a)) {
-                setpoint_trim -= 0.25f;
-            }
             if (pressed(BTN_C, &last_c)) {
-                setpoint_trim += 0.25f;
+                up_auto = up_auto > 0 ? 0 : UP_AUTO_S; // get up alone: on or off
+                mon_say("au %.0f (button C)\n", up_auto);
             }
             // After a run, start the next one from the point this one found.
             const float found = learned_bp;
@@ -1873,7 +1949,12 @@ extern "C" void app_main(void)
             screen_line(134, TFT_DARKGREY, "balance point %+.2f deg (auto)", st.setpoint);
             screen_line(152, st.battery >= 0 && st.battery < MIN_BATTERY ? TFT_RED : TFT_DARKGREY,
                         "battery %d%%%s", st.battery, st.charging ? ", charging" : "");
-            screen_line(170, TFT_DARKGREY, "B: stop");
+            const float au = up_auto;
+            if (au > 0) {
+                screen_line(170, TFT_GREEN, "B: stop   C: auto up ON (%.0f s)", au);
+            } else {
+                screen_line(170, TFT_DARKGREY, "B: stop   C: auto up off");
+            }
             screen_distance(tof_mm);
             if (!sim) {
                 screen_line(196, TFT_CYAN, "Wi-Fi %s  key %s", link_ssid(), link_password());
