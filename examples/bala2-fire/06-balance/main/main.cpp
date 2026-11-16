@@ -172,6 +172,13 @@ static const char *TAG = "balance";
 #define STUCK_MS      500   // still this long in a bad pose: show it
 #define STUCK_DPS     15.0f // still: the tilt changes slower than this
 #define STUCK_TEXT    "can't stand up, help me"
+// Where "down" is, in 3 axes: a gravity vector turned by all three gyros, and
+// pulled slowly to the accelerometer, but only while that reads close to 1 g.
+// The tilt of the balance uses one gyro, and a robot that lies on its side
+// and turns fools it (it read 111 degrees for a true 75). Used for the pose
+// checks and the recordings, not for the balance.
+#define GRAV_K   0.01f // share of the accelerometer per tick (about 0.5 s)
+#define GRAV_TOL 0.15f // g: farther from 1 g, the accelerometer is not used
 // Wheel test (command "wheels <left> <right> <ms>"): each wheel on its own,
 // from lying down, to learn how one wheel can move the robot out of a pose a
 // kick cannot fix. Same limits as a kick.
@@ -246,7 +253,8 @@ typedef struct {
     volatile float goal_x, goal_h;   // m and deg: the place and the heading it holds
     // To watch the motor model, the shake meter and the kp in use (see `gain`).
     volatile float v_model, shake, kp_eff;
-    volatile float roll; // deg, to the side (+ = right side down), from the accelerometer
+    volatile float roll;   // deg, to the side, from the 3-axis gravity estimate
+    volatile float pitch3; // deg, the tilt from the same estimate (not the balance's)
     volatile bool stuck; // it lies where a kick cannot stand it up: a person must help
 } status_t;
 
@@ -297,8 +305,8 @@ static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0, 0, false};
-static float gyro_offset, yaw_offset;
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0, 0, false, 0};
+static float gyro_offset, yaw_offset, roll_gyro_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
 static struct {
@@ -670,7 +678,7 @@ static void read_battery(void)
 static bool calibrate_gyro(void)
 {
     for (int tries = 1;; tries++) {
-        double sum = 0, sum_sq = 0, sum_yaw = 0;
+        double sum = 0, sum_sq = 0, sum_yaw = 0, sum_roll = 0;
         for (int i = 0; i < CAL_SAMPLES; i++) {
             float acc, g, yaw;
             if (sim) {
@@ -683,6 +691,7 @@ static bool calibrate_gyro(void)
             sum += g;
             sum_sq += (double)g * g;
             sum_yaw += yaw;
+            sum_roll += raw.gy;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
         const double mean = sum / CAL_SAMPLES;
@@ -690,6 +699,7 @@ static bool calibrate_gyro(void)
         if (sd < 20 || tries == 5) {
             gyro_offset = (float)mean;
             yaw_offset = (float)(sum_yaw / CAL_SAMPLES);
+            roll_gyro_offset = (float)(sum_roll / CAL_SAMPLES);
             printf("gyro offset %.1f raw (noise %.1f), yaw offset %.1f raw, try %d\n", mean, sd,
                    yaw_offset, tries);
             return true;
@@ -787,6 +797,7 @@ static void control_task(void *arg)
     float kick_dir = 1;  // the side it lies on: + = on its front
     int64_t bad_since = -1; // us, when it came to rest in a pose a kick cannot fix
     int wheels_ticks = 0;   // ticks left of a wheel test
+    float grav[3] = {0, 0, 0};           // "up" in the IMU's axes, length 1 (0: not started)
     bool caught = false; // this balance started from a kick, not from a hand
     int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
     bool lie_falling = false; // the push is over, the fall is on
@@ -889,10 +900,45 @@ static void control_task(void *arg)
         }
         // Can a kick stand it up from here? A bad pose shows on the screen once
         // the robot is still in it, and until it is in a good one again.
-        const float roll = sim ? 0.0f
-                               : atan2f(raw.ax, sqrtf(raw.ay * raw.ay + raw.az * raw.az)) * RAD_TO_DEG_F;
+        // The gravity vector: turned by the gyros (g' = -w x g), then pulled
+        // to the accelerometer while it reads about 1 g.
+        float pitch3 = tilt, roll = 0;
+        if (!sim) {
+            const float an = sqrtf((float)raw.ax * raw.ax + (float)raw.ay * raw.ay + (float)raw.az * raw.az);
+            if (grav[0] == 0 && grav[1] == 0 && grav[2] == 0 && an > 0) {
+                grav[0] = raw.ax / an;
+                grav[1] = raw.ay / an;
+                grav[2] = raw.az / an;
+            }
+            const float k_dt = (low ? 1.0f / CHARGE_HZ : DT) / (GYRO_LSB_PER_DPS * RAD_TO_DEG_F);
+            const float wx = (raw.gx - gyro_offset) * k_dt, wy = (raw.gy - roll_gyro_offset) * k_dt,
+                        wz = (raw.gz - yaw_offset) * k_dt;
+            const float g0 = grav[0], g1 = grav[1], g2 = grav[2];
+            grav[0] = g0 - (wy * g2 - wz * g1);
+            grav[1] = g1 - (wz * g0 - wx * g2);
+            grav[2] = g2 - (wx * g1 - wy * g0);
+            if (an > 0 && fabsf(an / 4096.0f - 1) < GRAV_TOL) {
+                const float k = low ? 0.2f : GRAV_K; // charge mode: 10 Hz and still
+                grav[0] += k * (raw.ax / an - grav[0]);
+                grav[1] += k * (raw.ay / an - grav[1]);
+                grav[2] += k * (raw.az / an - grav[2]);
+            }
+            const float n = sqrtf(grav[0] * grav[0] + grav[1] * grav[1] + grav[2] * grav[2]);
+            if (n > 0) {
+                grav[0] /= n;
+                grav[1] /= n;
+                grav[2] /= n;
+            }
+            // The whole circle, so upside down is 180, not 0. The tilt of the
+            // balance (and an atan2 over the length of the other two axes) cannot
+            // tell 18 degrees from upright from 18 degrees from upside down: a
+            // robot on its head once started a balance (2026-11-16).
+            pitch3 = atan2f(grav[1], grav[2]) * RAD_TO_DEG_F;
+            roll = atan2f(grav[0], sqrtf(grav[1] * grav[1] + grav[2] * grav[2])) * RAD_TO_DEG_F;
+        }
         st.roll = roll;
-        const float lean = fabsf(tilt);
+        st.pitch3 = pitch3;
+        const float lean = fabsf(pitch3);
         const bool can_kick = lean >= KICK_MIN_DEG && lean <= KICK_MAX_DEG && fabsf(roll) <= KICK_MAX_ROLL;
         if (st.state == ST_BALANCE || st.state == ST_FALL || kick_ticks > 0 || lie_ticks > 0 ||
             wheels_ticks > 0 || lean < START_DEG || can_kick) {
@@ -925,7 +971,7 @@ static void control_task(void *arg)
         if (lie_request) {
             const int dir = lie_request;
             lie_request = 0;
-            if (st.state != ST_FALL && fabsf(tilt) < LYING_DEG && kick_ticks == 0) {
+            if (st.state != ST_FALL && lean < LYING_DEG && kick_ticks == 0) {
                 if (st.state == ST_BALANCE) {
                     stop("lying down");
                 }
@@ -1070,7 +1116,8 @@ static void control_task(void *arg)
                 // Start only after it was lying down, then held upright and still:
                 // within HOLD_DEG of where this hold began. A fall test still
                 // needs the known balance point, so it keeps the old check.
-                if (st.seen_lying && fabsf(rate) < UPRIGHT_RATE_DPS &&
+                // And never upside down (see pitch3).
+                if (st.seen_lying && fabsf(rate) < UPRIGHT_RATE_DPS && (sim || grav[2] > 0.5f) &&
                     (fall_request ? fabsf(err) < UPRIGHT_DEG
                                   : fabsf(tilt) < START_DEG &&
                                         (upright_ticks == 0 || fabsf(tilt - hold_ref) < HOLD_DEG))) {
@@ -1324,7 +1371,7 @@ static void control_task(void *arg)
 
         // Fast samples for bala2_mon. It takes them only while someone asked.
         const float sample[MON_REC_COLS] = {tilt,  rate,       acc,      st.position, speed,
-                                            st.u,  st.v_model, shake,    st.kp_eff, st.roll};
+                                            st.u,  st.v_model, shake,    st.kp_eff, st.roll, st.pitch3};
         mon_rec_add((uint32_t)(now / 1000), sample);
     }
 }
@@ -1639,7 +1686,7 @@ extern "C" void app_main(void)
     // its own place there, and a servo must not start by itself.
     mon_not_saved("bp");
     mon_not_saved("servo");
-    mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff,roll");
+    mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff,roll,pitch");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
     display.init();
