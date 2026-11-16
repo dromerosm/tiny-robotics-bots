@@ -21,6 +21,7 @@ orders that end by themselves, and reads `GET /state`.
     explorer.py map                  the map so far: taken, free and not seen
     explorer.py near                 a slow turn with the narrow zone: the map of 0.5 m around, and its gaps
     explorer.py gaps                 the gaps again, with what a person said about them
+    explorer.py measure              sweep ahead slowly: the nearest thing, its width, and the room each side
     explorer.py approach 2           go toward gap 2 and stop 0.3 m before it, to ask a person
     explorer.py mark 2 real          a person saw gap 2 (or `false`: something closes it)
     explorer.py pass 2               go through gap 2, only if it is marked real
@@ -111,6 +112,11 @@ PARAMS = {
     "near_cell": (0.05, "m, one cell of the near map"),
     "near_rate": (15, "deg/s for `near` (slow: the narrow zone needs many readings)"),
     "near_step": (2, "deg between two directions when `gaps` looks for ways out"),
+    "measure_arc": (90, "deg, the sector ahead that `measure` sweeps"),
+    "measure_rate": (10, "deg/s for `measure` (slow: many readings with the narrow zone)"),
+    "measure_rows": (8, "zone rows across for `measure`: 0 = the narrow square (tz); 8 sees dark things farther, and errs wide"),
+    "edge_shift": (0.0, "share of the zone's width to move an edge inward (0: the real sensor; 0.5 for a nearest-in-cone sensor)"),
+    "edge_mm": (120, "mm, a jump this big between two readings is the edge of a thing"),
     "approach_m": (0.3, "m from the middle of a gap where `approach` stops"),
     "approach_leg": (0.1, "m, one stretch of `approach`"),
     "pass_m": (0.3, "m past the middle of a gap where `pass` ends"),
@@ -942,6 +948,143 @@ def show_gaps(bot, p):
                         "mark: what a person said (real, false) or null"}
 
 
+def sweep(bot, p, arc, rate, rows=0):
+    """Turn slowly over `arc` degrees centred ahead with the narrow zone, and
+    come back. Returns (samples, beam in degrees, heading at the start)."""
+    s = bot.last
+    if s["tof"] == -2:
+        raise Fail(1, "no distance sensor")
+    rows0 = s["vars"].get("tzr")
+    h0 = s["H"]
+    k = p.odo_head or 1.0
+    try:
+        if rows0 != rows:
+            bot.cmd(f"tzr {int(rows)}")  # 0: the narrow square
+            nap(p.tof_settle_s)
+        bot.sample()
+        width = p.beam_deg or (int(rows) or bot.last["vars"].get("tz", 4)) * ZONE_DEG
+        turn_by(bot, p, -arc / 2)
+        samples, _ = motion(bot, p, 0, rate, arc / k / rate)
+    finally:
+        if rows0 != rows:
+            bot.cmd(f"tzr {rows0}")
+    turn_by(bot, p, norm(h0 - bot.last["H"]))
+    return samples, width, h0
+
+
+def measure_front(rs, beam_deg, x0, y0, h0, p):
+    """The nearest thing ahead in a sweep, from its edges: where the distance
+    jumps by edge_mm or more, or the sensor sees nothing past it.
+
+    rs: readings (x, y, bearing, m or None) from `readings`, each from where
+    the robot was then, so a robot that slides does not smear the thing.
+    Returns the thing and the room on each side, in the frame of the start
+    (x0, y0, h0): metres ahead, and to the left (+) / right (-)."""
+    pts = sorted(rs, key=lambda r: norm(r[2] - h0))
+    if not pts:
+        return None
+    th0 = math.radians(h0)
+    c0, s0 = math.cos(th0), math.sin(th0)
+
+    def frame(px, py):
+        return ((px - x0) * c0 + (py - y0) * s0, -(px - x0) * s0 + (py - y0) * c0)
+
+    def hit(r, shift=0.0):
+        b = math.radians(r[2] + shift)
+        return frame(r[0] + r[3] * math.cos(b), r[1] + r[3] * math.sin(b))
+
+    jump = p.edge_mm / 1000.0
+    # The thing: the nearest reading near the middle, then the readings next to
+    # it as long as the distance changes smoothly.
+    mid = [i for i, r in enumerate(pts) if r[3] is not None and abs(norm(r[2] - h0)) <= 15]
+    if not mid:
+        return {"thing": None, "note": "nothing ahead within 15 degrees"}
+    i0 = min(mid, key=lambda i: pts[i][3])
+    lo = hi = i0
+    def step(i, d):
+        """The next reading on the same thing from i, going d (+1 or -1), or None.
+        One empty reading in between does not end it: the face of a box at an
+        angle sends little light back."""
+        for j in (i + d, i + 2 * d):
+            if not 0 <= j < len(pts):
+                return None
+            if pts[j][3] is not None:
+                return j if abs(pts[j][3] - pts[i][3]) < jump else None
+        return None
+
+    while (j := step(lo, -1)) is not None:
+        lo = j
+    while (j := step(hi, +1)) is not None:
+        hi = j
+
+    def edge(i, j):
+        """The sensor gives the distance of what fills most of its zone, so the
+        reading changes when the middle of the zone crosses the edge: between
+        reading i (on the thing) and j (off it). edge_shift moves it inward."""
+        b = pts[i][2] if j is None else pts[i][2] + norm(pts[j][2] - pts[i][2]) / 2
+        r = pts[i]
+        sign = 1 if j is None or norm(pts[j][2] - pts[i][2]) > 0 else -1
+        return hit((r[0], r[1], b, r[3]), -sign * p.edge_shift * beam_deg)
+
+    right = edge(lo, lo - 1 if lo > 0 else None)  # angles grow to the left
+    left = edge(hi, hi + 1 if hi < len(pts) - 1 else None)
+    open_right, open_left = lo == 0, hi == len(pts) - 1  # the thing goes past the sweep
+    body = [hit(pts[i]) for i in range(lo, hi + 1) if pts[i][3] is not None]
+    thing = {"ahead_m": round(min(b[0] for b in body), 3),
+             "left_m": round(left[1], 3), "right_m": round(right[1], 3),
+             "width_mm": int(round((left[1] - right[1]) * 1000)),
+             "readings": hi - lo + 1,
+             "sure": not (open_left or open_right),
+             "note": "the width is across the line ahead; only the front is seen, not the depth"}
+
+    def side(idx, sign):
+        """Past one edge: the next thing the sweep saw, and the room between."""
+        rest = [pts[i] for i in idx]
+        # Only what stands where the robot will pass: up to 0.5 m past the front.
+        reach_x = thing["ahead_m"] + 0.5
+        far = [q for q in (hit(r) for r in rest if r[3] is not None) if q[0] <= reach_x]
+        nothing = sum(1 for r in rest if r[3] is None)
+        edge = left[1] if sign > 0 else right[1]
+        out = {"readings": len(rest), "nothing": nothing}
+        if not rest:
+            return {**out, "room_mm": None, "note": "the sweep ended at the edge: turn and look"}
+        if far:
+            # Of what lies to that side, the nearest across the line: that is the room.
+            nearest = min(far, key=lambda q: sign * (q[1] - edge))
+            out.update(next_ahead_m=round(nearest[0], 3), next_side_m=round(nearest[1], 3),
+                       room_mm=int(round(sign * (nearest[1] - edge) * 1000)))
+        else:
+            out.update(room_mm=None, note="nothing seen past the edge, as far as the sensor sees")
+        return out
+
+    need = need_mm(p)
+    sides = {"left": side(range(hi + 1, len(pts)), +1), "right": side(range(0, lo), -1)}
+    for v in sides.values():
+        # Nothing seen is not free: a dark box may send no light back. Then ask.
+        v["fits"] = None if v.get("room_mm") is None else v["room_mm"] >= need
+    return {"thing": thing, "sides": sides, "need_mm": need}
+
+
+def c_measure(bot, p, a):
+    """Measure the thing ahead: how far, how wide, and the room on each side."""
+    s = bot.ready(p)
+    x0, y0 = bot.ses["pose"]
+    samples, width, h0 = sweep(bot, p, a.arc or p.measure_arc, p.measure_rate, p.measure_rows)
+    rs, _ = readings(p, samples)
+    nm.add_readings(bot.ses["grid"], p.map_cell, rs, width, p.reach_mm / 1000.0, arcs=True)
+    out = measure_front(rs, width, x0, y0, h0, p) or {"thing": None}
+    xs = [q["px"] for q in samples if "px" in q]
+    ys = [q["py"] for q in samples if "py" in q]
+    out.update(samples=len(rs), beam_deg=round(width, 1),
+               slid_m=round(math.hypot(max(xs) - min(xs), max(ys) - min(ys)), 3) if xs else None,
+               pose=bot.pose())
+    if a.profile:
+        out["profile"] = [[round(norm(r[2] - h0), 1), None if r[3] is None else int(r[3] * 1000)]
+                          for r in sorted(rs, key=lambda r: norm(r[2] - h0))]
+        out["profile_is"] = "[degrees from the heading at the start (left +), mm or null for nothing]"
+    return out
+
+
 def c_near(bot, p, a):
     s = bot.ready(p)
     if s["tof"] == -2:
@@ -1166,6 +1309,9 @@ def main():
     sp.add_argument("--apply", action="store_true", help="keep the result as the model")
     add("near", c_near)
     add("gaps", c_gaps)
+    sp = add("measure", c_measure)
+    sp.add_argument("--arc", type=float, help="degrees to sweep (measure_arc)")
+    sp.add_argument("--profile", action="store_true", help="also every reading of the sweep")
     add("approach", c_approach).add_argument("id", type=int, help="a gap from `near` or `gaps`")
     sp = add("mark", c_mark)
     sp.add_argument("id", type=int)

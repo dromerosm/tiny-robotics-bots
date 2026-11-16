@@ -53,6 +53,8 @@ WORLDS = {
     # A wall 0.45 m ahead with two gaps in it: 0.30 m (the robot fits) and 0.12 m (it does not).
     "gaps": {"walls": box(-1.0, -1.2, 2.0, 1.2) + [(0.45, -1.2, 0.45, -0.25), (0.45, 0.05, 0.45, 0.30),
                                                      (0.45, 0.42, 0.45, 1.2)], "low": []},
+    # An object 20 cm wide and 10 cm deep, 0.5 m ahead on the line, and a wall 0.35 m to the right.
+    "object": {"walls": box(-1.0, -0.35, 2.5, 1.5) + box(0.5, -0.1, 0.6, 0.1), "low": []},
     # Nothing near: every direction reads "nothing".
     "empty": {"walls": box(-9, -9, 9, 9), "low": []},
 }
