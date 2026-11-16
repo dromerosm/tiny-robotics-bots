@@ -417,6 +417,18 @@ Limits of this setup:
 - The simulated robot is still too rough to set any gain.
 - Part of the spread in `calibrate spin` may come from the setup: the distance the firmware has can be 0.1 to 0.2 s old. Nobody measured how much.
 
+### The explorer on the robot
+
+The first run on the real robot, on 2026-11-16, in a room with walls and furniture 0.2 to 2 m away.
+
+- **`calibrate still`** (20 s, balancing): the heading moved -1.5 degrees per minute, the place -3.3 cm per minute.
+- **`calibrate spin`**, three times: `odo_head` 1.0503, 1.0588 and 1.0511 (2.5, 2.5 and 4 turns). That is about 0.8% from run to run, more than twice the spread in QEMU, or about 3 degrees per turn. `sure` was 2.1, 4.5 and 2.2, so two of them were just above 2, the least value to trust. The wheels said about 342 degrees for one real turn, the gyro about 366. So the wheels count 5% short in a turn, and the gyro 2% long.
+- **`goto`**, with `odo_head` 1.0534 (the mean): 0.55 m out and back. The tool said it ended 3 cm from the start. On the floor it was under 5 cm from a mark.
+- **`explore --steps 3`**: three steps, no fall. In the first one a stall stopped the robot, and the tool found no way to the edge. In the second, the distance sensor stopped it before the goal. The map came out like the room: 515 free cells and 115 taken ones. Once the robot came 9 cm from a thing, which is close.
+- The map's x axis points where the robot faced when the firmware started, not where it faces now. `goto 0.6 0` gave "no way" for that reason: that place was next to things. `map` shows the axis.
+
+So short trips work. A long run will not: with 0.8% on the heading the map turns, as it did in QEMU.
+
 ### The servo
 
 One servo of the M5Stack Servo Kit 360° is plugged into the base's **S4** header. It is a speed servo: it turns without end and cannot hold an angle. The base makes its 50 Hz signal; we only write the pulse width to the base (I2C 0x3A, register 0x36, in microseconds).
@@ -790,7 +802,7 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
 - The distance sensor, after test 37: check the stop without the creep, measure the distance against a tape, and try dark, thin and low things. Then let the robot back away or turn when the way is closed, not only stop.
-- The map, `goto`, `explore` and `calibrate` only ran against the stand-in. On the robot: first `calibrate still`, `calibrate spin` and `calibrate wall` (twice each: do they give the same numbers?), then `goto` around a square and back to a mark on the floor, then `explore`. Watch what `"head"` says in `spin`: the wheels or the gyro, which one is closer to one real turn?
-- `calibrate spin` gives `odo_head` to about 0.3%, and that is 50 degrees after 30 turns (the test in QEMU). Take the mean of some runs, and find what makes it change from run to run. Better: correct the heading while the robot explores, by fitting each new scan to the map.
+- The explorer on the robot (see [The explorer on the robot](#the-explorer-on-the-robot)): run `calibrate wall`, a `goto` around a square and back to the mark, and a longer `explore`. Keep more room from things: once it came 9 cm close.
+- `calibrate spin` gives `odo_head` to about 0.3% in QEMU (50 degrees after 30 turns) and 0.8% on the robot. Take the mean of some runs, and find what makes it change from run to run. Better: correct the heading while the robot explores, by fitting each new scan to the map.
 - The explorer tool, after tests 38 to 40: check the `tof` stop with a box in the middle of the view. After a stall, do not move the goal into the thing that stopped the robot before. Decide if `tzr 16` becomes the start value, and check it at 0.2 m: there the view is about 10 cm wide and the robot is wider. Make the robot reach its goal, not stop 4 cm before it. Run `forward` to a wall and against a low thing the sensor does not see. Find how far the small zone sees, to give "nothing" a real distance. Set `look_sign` with a box on one side, and measure a scan against a tape.
 - The sensor only looks forward. For all around, put it on the servo. The servo turns without end and does not say where it points, so the firmware must find that out first.
