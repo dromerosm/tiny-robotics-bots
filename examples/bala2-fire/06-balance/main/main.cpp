@@ -163,6 +163,15 @@ static const char *TAG = "balance";
 // balance takes over at `kc`. The base takes up to 1023; the time keeps
 // it short.
 #define KICK_MIN_DEG 35.0f // only from this far down
+// From where a kick can stand it up. It rests at +45 on its front and -42 on
+// its back, and the kick worked from 40 to 46 degrees. From 71 to 76 it did
+// not lift the body. 55 is between them, not measured. To the side it rests
+// at 1 to 1.5 degrees, and at 15.5 on one wheel, with the other in the air.
+#define KICK_MAX_DEG  55.0f
+#define KICK_MAX_ROLL 8.0f
+#define STUCK_MS      500   // still this long in a bad pose: show it
+#define STUCK_DPS     15.0f // still: the tilt changes slower than this
+#define STUCK_TEXT    "can't stand up, help me"
 #define KICK_MAX_PWM 1023
 #define KICK_MAX_MS  400
 // Lie down (command "lie"): a short push of the wheels tips the body, then the
@@ -234,6 +243,8 @@ typedef struct {
     volatile float goal_x, goal_h;   // m and deg: the place and the heading it holds
     // To watch the motor model, the shake meter and the kp in use (see `gain`).
     volatile float v_model, shake, kp_eff;
+    volatile float roll; // deg, to the side (+ = right side down), from the accelerometer
+    volatile bool stuck; // it lies where a kick cannot stand it up: a person must help
 } status_t;
 
 // The last raw readings, for the phone page only. The control task writes
@@ -283,7 +294,7 @@ static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0};
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0, 0, false};
 static float gyro_offset, yaw_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
@@ -769,6 +780,7 @@ static void control_task(void *arg)
     int kick_ticks = 0;  // ticks left of a kick test
     int16_t kick_u = 0;  // its PWM, + = forward
     float kick_dir = 1;  // the side it lies on: + = on its front
+    int64_t bad_since = -1; // us, when it came to rest in a pose a kick cannot fix
     bool caught = false; // this balance started from a kick, not from a hand
     int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
     bool lie_falling = false; // the push is over, the fall is on
@@ -869,7 +881,27 @@ static void control_task(void *arg)
         if (fabsf(tilt) > LYING_DEG) {
             st.seen_lying = true;
         }
-        if (st.state == ST_WAIT && st.charging && fabsf(tilt) > LYING_DEG && !link_updating()) {
+        // Can a kick stand it up from here? A bad pose shows on the screen once
+        // the robot is still in it, and until it is in a good one again.
+        const float roll = sim ? 0.0f
+                               : atan2f(raw.ax, sqrtf(raw.ay * raw.ay + raw.az * raw.az)) * RAD_TO_DEG_F;
+        st.roll = roll;
+        const float lean = fabsf(tilt);
+        const bool can_kick = lean >= KICK_MIN_DEG && lean <= KICK_MAX_DEG && fabsf(roll) <= KICK_MAX_ROLL;
+        if (st.state == ST_BALANCE || st.state == ST_FALL || kick_ticks > 0 || lie_ticks > 0 ||
+            lean < START_DEG || can_kick) {
+            st.stuck = false;
+            bad_since = -1;
+        } else if (fabsf(rate) > STUCK_DPS) {
+            bad_since = -1; // it moves: keep what the screen says
+        } else if (bad_since < 0) {
+            bad_since = now;
+        } else if (now - bad_since >= STUCK_MS * 1000LL) {
+            st.stuck = true;
+        }
+        // Not while it is stuck: charge mode turns the screen off.
+        if (st.state == ST_WAIT && st.charging && fabsf(tilt) > LYING_DEG && !link_updating() &&
+            !st.stuck) {
             if (!low && ++rest_ticks >= CHARGE_WAIT_S * LOOP_HZ) {
                 low_power = true;
             }
@@ -942,6 +974,8 @@ static void control_task(void *arg)
                 if (st.seen_lying) {
                     st.state = ST_WAIT;
                     st.reason = "stand me up";
+                } else if (st.stuck) {
+                    st.reason = STUCK_TEXT;
                 }
                 break;
 
@@ -949,7 +983,7 @@ static void control_task(void *arg)
                 // Kick test: only lying down, with battery, not while an update runs.
                 if (kick_request) {
                     kick_request = false;
-                    if (fabsf(tilt) > KICK_MIN_DEG && !low && !link_updating() &&
+                    if (can_kick && !low && !link_updating() &&
                         (st.battery < 0 || st.battery >= MIN_BATTERY || st.charging)) {
                         kick_dir = tilt > 0 ? 1.0f : -1.0f;
                         kick_u = (int16_t)(kick_dir * kick_pwm); // + pwm drives under the body
@@ -958,7 +992,8 @@ static void control_task(void *arg)
                         stop_request = false;
                         ESP_LOGI(TAG, "kick %d for %d ms", kick_u, kick_ms);
                     } else {
-                        mon_say("kick: lay it down first (and no charge mode, no low battery)\n");
+                        mon_say("kick: not from here (tilt %.0f, roll %.0f), or charge mode, or low battery\n",
+                                tilt, roll);
                     }
                 }
                 if (kick_ticks > 0) {
@@ -997,7 +1032,7 @@ static void control_task(void *arg)
                     upright_ticks = 0;
                     break;
                 }
-                st.reason = low_power ? "charging, low power" : "stand me up";
+                st.reason = st.stuck ? STUCK_TEXT : low_power ? "charging, low power" : "stand me up";
                 // Start only after it was lying down, then held upright and still:
                 // within HOLD_DEG of where this hold began. A fall test still
                 // needs the known balance point, so it keeps the old check.
@@ -1458,7 +1493,8 @@ static void state_json(char *buf, size_t size)
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
              "\"up\":%lld,\"heap\":%lu,\"heap_min\":%lu,\"fw\":\"%s %s\",\"slot\":\"%s\","
-             "\"restart\":\"%s\",\"pwr\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],\"screen\":%s}",
+             "\"restart\":\"%s\",\"pwr\":[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d],\"screen\":%s,"
+             "\"roll\":%.1f,\"stuck\":%s}",
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
@@ -1473,7 +1509,7 @@ static void state_json(char *buf, size_t size)
              esp_ota_get_running_partition()->label, link_last_restart(), pwr_raw[0],
              pwr_raw[1], pwr_raw[2], pwr_raw[3], pwr_raw[4], pwr_raw[5], pwr_raw[6], pwr_raw[7],
              pwr_raw[8], pwr_raw[9], pwr_raw[10], pwr_raw[11], pwr_raw[12],
-             screen_off ? "false" : "true");
+             screen_off ? "false" : "true", st.roll, st.stuck ? "true" : "false");
 }
 
 // The learned balance point lives in flash (NVS), in hundredths of a degree.
@@ -1669,13 +1705,13 @@ extern "C" void app_main(void)
                 backlight_set = light;
                 display.setBrightness(light * 255 / 100);
             }
-            const uint32_t color = st.state == ST_BALANCE ? TFT_GREEN
-                                   : st.state == ST_WAIT  ? TFT_YELLOW
-                                                          : TFT_RED;
+            const uint32_t color = st.state == ST_BALANCE        ? TFT_GREEN
+                                   : st.state == ST_WAIT && !st.stuck ? TFT_YELLOW
+                                                                      : TFT_RED;
             display.setFont(&fonts::DejaVu18);
             screen_line(40, color, "%s", st.reason);
             display.setFont(&fonts::DejaVu12);
-            screen_line(80, TFT_WHITE, "tilt     %+7.2f deg", st.tilt);
+            screen_line(80, st.stuck ? TFT_RED : TFT_WHITE, "tilt %+5.1f side %+5.1f", st.tilt, st.roll);
             screen_line(98, TFT_WHITE, "position %+7.3f m", st.position);
             screen_line(116, TFT_WHITE, "motor    %+5.0f / %.0f", st.u, gain.max);
             screen_line(134, TFT_DARKGREY, "balance point %+.2f deg (auto)", st.setpoint);
