@@ -172,6 +172,9 @@ static const char *TAG = "balance";
 #define STUCK_MS      500   // still this long in a bad pose: show it
 #define STUCK_DPS     15.0f // still: the tilt changes slower than this
 #define STUCK_TEXT    "can't stand up, help me"
+// Wheel test (command "wheels <left> <right> <ms>"): each wheel on its own,
+// from lying down, to learn how one wheel can move the robot out of a pose a
+// kick cannot fix. Same limits as a kick.
 #define KICK_MAX_PWM 1023
 #define KICK_MAX_MS  400
 // Lie down (command "lie"): a short push of the wheels tips the body, then the
@@ -385,6 +388,8 @@ static volatile bool kick_request;  // a kick test waits for the control task
 static volatile int kick_pwm, kick_ms;
 static volatile bool kick_catch;    // balance at the end of the kick
 static volatile int lie_request;    // +1 lie on the front, -1 on the back, 0 none
+static volatile bool wheels_request; // a wheel test waits for the control task
+static volatile int wheels_l, wheels_r, wheels_ms;
 // For a soft stand-up and a soft landing, changed over Wi-Fi ("kc 20").
 static volatile float kick_cut = 15.0f;  // kc: the body came up this far: catch, or motors off
 static volatile float kick_i0 = 1.0f;    // kf: share of the wheel speed the catch's I starts with
@@ -781,6 +786,7 @@ static void control_task(void *arg)
     int16_t kick_u = 0;  // its PWM, + = forward
     float kick_dir = 1;  // the side it lies on: + = on its front
     int64_t bad_since = -1; // us, when it came to rest in a pose a kick cannot fix
+    int wheels_ticks = 0;   // ticks left of a wheel test
     bool caught = false; // this balance started from a kick, not from a hand
     int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
     bool lie_falling = false; // the push is over, the fall is on
@@ -889,7 +895,7 @@ static void control_task(void *arg)
         const float lean = fabsf(tilt);
         const bool can_kick = lean >= KICK_MIN_DEG && lean <= KICK_MAX_DEG && fabsf(roll) <= KICK_MAX_ROLL;
         if (st.state == ST_BALANCE || st.state == ST_FALL || kick_ticks > 0 || lie_ticks > 0 ||
-            lean < START_DEG || can_kick) {
+            wheels_ticks > 0 || lean < START_DEG || can_kick) {
             st.stuck = false;
             bad_since = -1;
         } else if (fabsf(rate) > STUCK_DPS) {
@@ -931,7 +937,35 @@ static void control_task(void *arg)
                 stop_request = false;
             }
         }
-        if (lie_ticks > 0) {
+        // Wheel test: lying down (or stuck), not balancing, not in charge mode,
+        // not while an update runs.
+        if (wheels_request) {
+            wheels_request = false;
+            if ((st.state == ST_WAIT || st.state == ST_STOPPED) && (lean > LYING_DEG || st.stuck) &&
+                !low && !link_updating() && kick_ticks == 0 && lie_ticks == 0 &&
+                (st.battery < 0 || st.battery >= MIN_BATTERY || st.charging)) {
+                wheels_ticks = wheels_ms * LOOP_HZ / 1000;
+                start_pos = pos;
+                stop_request = false;
+                ESP_LOGI(TAG, "wheels %d %d for %d ms", wheels_l, wheels_r, wheels_ms);
+            } else {
+                mon_say("wheels: only lying down, not balancing, not in charge mode, not on low battery\n");
+            }
+        }
+        if (wheels_ticks > 0) {
+            // Ends when the time is up, on "stop" or button B, or if the body
+            // comes up near upright (there is no catch: it falls again).
+            if (stop_request || lean < kick_cut || --wheels_ticks == 0) {
+                wheels_ticks = 0;
+                set_speed(0);
+                st.u = 0;
+            } else {
+                set_wheels((int16_t)wheels_l, (int16_t)wheels_r);
+                st.u = (wheels_l + wheels_r) / 2.0f;
+                st.position = pos - start_pos;
+                st.reason = "wheel test";
+            }
+        } else if (lie_ticks > 0) {
             // First the push: wheels back to tip it forward (and the other way
             // for the back). Then the fall: with `lb`, the wheels run toward
             // the fall, faster the faster it falls, so it lands slower.
@@ -1290,7 +1324,7 @@ static void control_task(void *arg)
 
         // Fast samples for bala2_mon. It takes them only while someone asked.
         const float sample[MON_REC_COLS] = {tilt,  rate,       acc,      st.position, speed,
-                                            st.u,  st.v_model, shake,    st.kp_eff};
+                                            st.u,  st.v_model, shake,    st.kp_eff, st.roll};
         mon_rec_add((uint32_t)(now / 1000), sample);
     }
 }
@@ -1410,6 +1444,20 @@ static void handle_command(const char *line)
             mon_say("kick %d for %d ms%s\n", kick_pwm, kick_ms, kick_catch ? ", then balance" : "");
         } else {
             mon_say("kick <pwm> <ms> [1 = then balance]\n");
+        }
+    } else if (!strcmp(name, "wheels")) {
+        // "wheels 0 600 150": the right wheel at PWM 600 for 150 ms, the left
+        // one still. + is forward. Records 2 s.
+        int l = 0, r = 0, ms = 0;
+        if (sscanf(line, "%*s %d %d %d", &l, &r, &ms) == 3 && ms > 0) {
+            wheels_l = l < -KICK_MAX_PWM ? -KICK_MAX_PWM : l > KICK_MAX_PWM ? KICK_MAX_PWM : l;
+            wheels_r = r < -KICK_MAX_PWM ? -KICK_MAX_PWM : r > KICK_MAX_PWM ? KICK_MAX_PWM : r;
+            wheels_ms = ms > KICK_MAX_MS ? KICK_MAX_MS : ms;
+            mon_rec_start(2 * LOOP_HZ);
+            wheels_request = true;
+            mon_say("wheels %d %d for %d ms\n", wheels_l, wheels_r, wheels_ms);
+        } else {
+            mon_say("wheels <left> <right> <ms>\n");
         }
     } else if (!strcmp(name, "lie")) {
         // "lie": lie down on the front (on the distance sensor); "lie -1": on the back.
@@ -1591,7 +1639,7 @@ extern "C" void app_main(void)
     // its own place there, and a servo must not start by itself.
     mon_not_saved("bp");
     mon_not_saved("servo");
-    mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff");
+    mon_rec_columns("tilt,rate,acc_tilt,x,v,u,v_model,shake,kp_eff,roll");
     // The screen first: M5GFX looks at the I2C pins to find out which board
     // it is on, so it must finish before our I2C bus starts.
     display.init();
