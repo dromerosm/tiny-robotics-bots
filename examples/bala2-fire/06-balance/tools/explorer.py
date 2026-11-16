@@ -19,6 +19,11 @@ orders that end by themselves, and reads `GET /state`.
     explorer.py goto 1.0 0.5         drive to a place, through cells the map says are free
     explorer.py explore --steps 3    scan, go to the nearest edge of the map, and again
     explorer.py map                  the map so far: taken, free and not seen
+    explorer.py near                 a slow turn with the narrow zone: the map of 0.5 m around, and its gaps
+    explorer.py gaps                 the gaps again, with what a person said about them
+    explorer.py approach 2           go toward gap 2 and stop 0.3 m before it, to ask a person
+    explorer.py mark 2 real          a person saw gap 2 (or `false`: something closes it)
+    explorer.py pass 2               go through gap 2, only if it is marked real
     explorer.py calibrate spin       measure the model: degrees (spin), metres (wall), drift (still)
     explorer.py origin               forget the map; here is (0, 0)
     explorer.py params               every value you can change, here and on the robot
@@ -89,7 +94,7 @@ PARAMS = {
     "scan_tilt_tol": (4, "deg, drop scan samples taken this far from the usual tilt"),
     "free_mm": (2000, "mm, the distance we give a direction where the sensor sees nothing"),
     "clear_mm": (600, "mm, a direction is free if nothing is closer"),
-    "robot_w_mm": (150, "mm, width the robot needs to pass (measure yours)"),
+    "robot_w_mm": (90, "mm, width the robot needs to pass (ours: 90, wheel edge to wheel edge)"),
     "margin_mm": (50, "mm of room on each side"),
     "tof_offset_mm": (0, "mm from the middle of the wheels to the sensor"),
     "tof_settle_s": (0.3, "s to wait after the sensor's zone changes"),
@@ -102,6 +107,13 @@ PARAMS = {
     "odo_head": (1.0, "the robot's model: real degrees for each degree it reports (see `calibrate spin`)"),
     "beam_deg": (0, "deg, width of the sensor's cone for the map; 0 takes it from the zone (tz, tzr)"),
     "reach_mm": (1500, "mm, how far a reading clears the map; \"nothing\" clears this far too"),
+    "near_m": (0.5, "m, how far around the robot `near` maps"),
+    "near_cell": (0.05, "m, one cell of the near map"),
+    "near_rate": (15, "deg/s for `near` (slow: the narrow zone needs many readings)"),
+    "near_step": (2, "deg between two directions when `gaps` looks for ways out"),
+    "approach_m": (0.3, "m from the middle of a gap where `approach` stops"),
+    "approach_leg": (0.1, "m, one stretch of `approach`"),
+    "pass_m": (0.3, "m past the middle of a gap where `pass` ends"),
     "goto_tol": (0.10, "m, `goto` is there when it is this close"),
     "goto_tries": (8, "stretches `goto` may drive before it gives up"),
     "leg_max": (0.6, "m, the longest stretch `goto` drives in one go"),
@@ -205,7 +217,7 @@ class Robot:
                 # The robot counts its place and heading from each start.
                 self.fresh = bool(ses["grid"] or len(ses["path"]) > 1)
                 ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]], grid={}, tried={},
-                           h_fix=0.0, wall_ref=None, wall_seen=[])
+                           h_fix=0.0, wall_ref=None, wall_seen=[], near=None, gaps=[])
             else:
                 # The model: what the robot reports, times what one unit really is.
                 d = (s["pos"] - old["pos"]) * self.p.odo_dist
@@ -816,6 +828,233 @@ def c_look(bot, p, a):
             "zone": {k: s["vars"].get(k) for k in ("tz", "tcol")}}
 
 
+# --- Near map and gaps -------------------------------------------------------
+# A small map of what is around the robot, in cells of 5 cm, from a slow turn
+# with the narrow zone (about 7 degrees, so about 6 cm wide at 0.5 m; the wide
+# zone is 24 cm there, as wide as the gap the robot needs). Then the ways out
+# between the things it saw, and how wide each one is. A person says if a gap
+# is real (`mark`): the sensor misses low, thin and dark things.
+
+def need_mm(p):
+    return p.robot_w_mm + 2 * p.margin_mm
+
+
+def find_gaps(grid, cell, x, y, p, old=()):
+    """Ways out of the near map: runs of directions with nothing in near_m,
+    with something on both sides. Returns them, the nearest first."""
+    # A little past near_m, or a wall right at the edge comes and goes.
+    step, reach = p.near_step, p.near_m + 2 * cell
+    rays = []
+    for i in range(int(round(360 / step))):
+        b = i * step
+        th = math.radians(b)
+        r, hit = p.robot_w_mm / 2000.0, None
+        while r <= reach:
+            px, py = x + r * math.cos(th), y + r * math.sin(th)
+            if nm.is_occ(grid, nm.cell_of(cell, px, py)):
+                hit = (px, py)
+                break
+            r += cell / 2
+        rays.append((b, hit))
+    n = len(rays)
+    if all(h is None for _, h in rays):
+        return []
+    j0 = next(j for j in range(n) if rays[j][1] is not None)
+    gaps, j = [], j0 + 1
+    while j < j0 + n:
+        if rays[j % n][1] is not None:
+            j += 1
+            continue
+        k = j
+        while rays[k % n][1] is None:
+            k += 1
+        right, left = rays[(j - 1) % n][1], rays[k % n][1]  # angles grow to the left
+        arc = (k - j) * step
+        if arc < 180:
+            mx, my = (left[0] + right[0]) / 2, (left[1] + right[1]) / 2
+            width = math.hypot(left[0] - right[0], left[1] - right[1]) * 1000
+            kind = "gap"
+        else:
+            # Most of the circle is open: that is open floor, not a gap. Its
+            # middle is the middle of the open directions, near_m away.
+            th = math.radians((j + k - 1) / 2 * step)
+            mx, my = x + p.near_m * math.cos(th), y + p.near_m * math.sin(th)
+            width, kind = 2000 * p.near_m, "open"
+        gaps.append({"kind": kind, "bearing": round(math.degrees(math.atan2(my - y, mx - x)), 1),
+                     "dist_m": round(math.hypot(mx - x, my - y), 3), "width_mm": int(width),
+                     "arc_deg": arc, "passable": width >= need_mm(p),
+                     "mid": [round(mx, 3), round(my, 3)],
+                     "edges": [[round(right[0], 3), round(right[1], 3)],
+                               [round(left[0], 3), round(left[1], 3)]]})
+        j = k
+    gaps.sort(key=lambda g: g["dist_m"])
+    for i, g in enumerate(gaps, 1):
+        g["id"] = i
+        # Keep what a person said about the same gap before.
+        for o in old:
+            if o.get("mark") and math.hypot(o["mid"][0] - g["mid"][0], o["mid"][1] - g["mid"][1]) < 0.08:
+                g["mark"] = o["mark"]
+    return gaps
+
+
+def blocking(grid, cell, x, y, heading, p):
+    """What stands in the way straight ahead: the thing that touches the strip
+    as wide as the robot needs, and how far it reaches to each side. In metres,
+    in the robot's frame: ahead, and left (+) / right (-). None if the way is free."""
+    th = math.radians(heading)
+    c, s_ = math.cos(th), math.sin(th)
+    occ = {nm.unkey(k) for k, v in grid.items() if v >= nm.OCC}
+    frame = lambda q: ((q[0] * cell - x) * c + (q[1] * cell - y) * s_,
+                       -(q[0] * cell - x) * s_ + (q[1] * cell - y) * c)
+    half = need_mm(p) / 2000.0
+    seeds = [q for q in occ if 0 < frame(q)[0] <= p.near_m + 2 * cell and abs(frame(q)[1]) <= half]
+    if not seeds:
+        return None
+    # The whole thing: the taken cells that touch the nearest one in the strip.
+    first = min(seeds, key=lambda q: frame(q)[0])
+    todo, part = [first], {first}
+    while todo:
+        q = todo.pop()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nb = (q[0] + dx, q[1] + dy)
+                if nb in occ and nb not in part:
+                    part.add(nb)
+                    todo.append(nb)
+    pts = [frame(q) for q in part]
+    a, l = [q[0] for q in pts], [q[1] for q in pts]
+    return {"ahead_m": round(min(a), 3), "far_m": round(max(a), 3),
+            "left_m": round(max(l), 3), "right_m": round(min(l), 3), "cells": len(part),
+            "note": "far_m is the far side the sensor saw; the back of a thing can be farther"}
+
+
+def show_gaps(bot, p):
+    h = bot.last["H"]
+    out = []
+    for g in bot.ses.get("gaps") or []:
+        out.append({"id": g["id"], "kind": g.get("kind", "gap"),
+                    "turn": round(norm(g["bearing"] - h), 1), "dist_m": g["dist_m"],
+                    "width_mm": g["width_mm"], "passable": g["passable"], "mark": g.get("mark")})
+    return {"gaps": out, "need_mm": need_mm(p),
+            "gaps_are": "turn: degrees to its middle from where the robot looks (left +); "
+                        "width_mm: between the things on each side, from 5 cm cells, so it can be "
+                        "some cm short; open: most of the circle is free; "
+                        "mark: what a person said (real, false) or null"}
+
+
+def c_near(bot, p, a):
+    s = bot.ready(p)
+    if s["tof"] == -2:
+        raise Fail(1, "no distance sensor")
+    rows0 = s["vars"].get("tzr")
+    k = p.odo_head or 1.0
+    h0 = s["H"]
+    try:
+        if rows0:
+            bot.cmd("tzr 0")  # the narrow zone
+            nap(p.tof_settle_s)
+        bot.sample()
+        width = p.beam_deg or bot.last["vars"].get("tz", 4) * ZONE_DEG
+        samples, _ = motion(bot, p, 0, p.near_rate, 360 / k / p.near_rate)
+    finally:
+        if rows0:
+            bot.cmd(f"tzr {rows0}")
+    turn_by(bot, p, h0 + 360 - bot.last["H"])
+    rs, _ = readings(p, samples)
+    x, y = bot.ses["pose"]
+    grid = {}
+    nm.add_readings(grid, p.near_cell, rs, width, p.near_m + 3 * p.near_cell, arcs=True)
+    nm.add_robot(grid, p.near_cell, x, y, p.robot_w_mm / 2000.0)
+    nm.add_readings(bot.ses["grid"], p.map_cell, rs, width, p.reach_mm / 1000.0, arcs=True)
+    bot.ses["near"] = {"grid": grid, "x": x, "y": y, "cell": p.near_cell}
+    bot.ses["gaps"] = find_gaps(grid, p.near_cell, x, y, p, bot.ses.get("gaps") or [])
+    out = {"samples": len(rs), "beam_deg": round(width, 1),
+           "blocking": blocking(grid, p.near_cell, x, y, bot.last["H"], p),
+           **show_gaps(bot, p), "pose": bot.pose()}
+    rows = nm.draw(grid, p.near_cell, (x, y), bot.last["H"])
+    if rows:
+        out["map"] = rows
+    return out
+
+
+def c_gaps(bot, p, a):
+    bot.sample()
+    if not bot.ses.get("near"):
+        raise Fail(1, "no near map yet: run `near` first")
+    return show_gaps(bot, p)
+
+
+def gap(bot, n):
+    for g in bot.ses.get("gaps") or []:
+        if g["id"] == n:
+            return g
+    raise Fail(1, f"no gap {n}: see `gaps`")
+
+
+def c_approach(bot, p, a):
+    """Go toward a gap in short stretches, and stop approach_m from its middle."""
+    bot.ready(p)
+    g = gap(bot, a.id)
+    legs = []
+    for _ in range(20):
+        x, y = bot.ses["pose"]
+        mx, my = g["mid"]
+        d = math.hypot(mx - x, my - y)
+        if d <= p.approach_m + 0.05:  # the robot stops some cm short of a goal
+            break
+        turn_by(bot, p, norm(math.degrees(math.atan2(my - y, mx - x)) - bot.last["H"]))
+        out = do_forward(bot, p, min(p.approach_leg, d - p.approach_m))
+        legs.append({"moved": out["moved"], "stopped": out["stopped"], "tof": out["tof"]})
+        if out["stopped"] or abs(out["moved"]) < 0.01:
+            break
+    x, y = bot.ses["pose"]
+    mx, my = g["mid"]
+    turn_by(bot, p, norm(math.degrees(math.atan2(my - y, mx - x)) - bot.last["H"]))
+    look = c_look(bot, p, a)
+    return {"gap": a.id, "width_mm": g["width_mm"], "passable": g["passable"],
+            "dist_m": round(math.hypot(mx - x, my - y), 3), "legs": legs, "tof": bot.last["tof"],
+            "look": look["rows"], "look_is": look["rows_are"], "pose": bot.pose(),
+            "next": f"ask: is gap {a.id} real, about {g['width_mm']} mm wide, straight ahead? "
+                    f"then `mark {a.id} real` or `mark {a.id} false`"}
+
+
+def c_mark(bot, p, a):
+    """What a person saw: the gap is there (real), or something closes it (false)."""
+    bot.sample()
+    g = gap(bot, a.id)
+    g["mark"] = a.what
+    grid, cell = bot.ses["grid"], p.map_cell
+    (x1, y1), (x2, y2) = g["edges"]
+    n = max(2, int(math.hypot(x2 - x1, y2 - y1) / (cell / 2)))
+    line = [(x1 + (x2 - x1) * i / n, y1 + (y2 - y1) * i / n) for i in range(1, n)]
+    near = bot.ses.get("near")
+    for px, py in line:
+        if a.what == "false":
+            nm.bump(grid, nm.cell_of(cell, px, py), nm.TOP)  # goto will keep away
+            if near:
+                nm.bump(near["grid"], nm.cell_of(near["cell"], px, py), nm.TOP)
+    return {"gap": a.id, "mark": a.what, "note": "false: the map has it closed now" if a.what == "false"
+            else "real: `pass` may go through it"}
+
+
+def c_pass(bot, p, a):
+    """Go straight through a gap a person said is real, to pass_m past its middle."""
+    bot.ready(p)
+    g = gap(bot, a.id)
+    if g.get("mark") != "real":
+        raise Fail(1, f"gap {a.id} is not marked real: ask first, then `mark {a.id} real`")
+    if not g["passable"]:
+        raise Fail(1, f"gap {a.id} is {g['width_mm']} mm, the robot needs {need_mm(p)}")
+    x, y = bot.ses["pose"]
+    mx, my = g["mid"]
+    turn_by(bot, p, norm(math.degrees(math.atan2(my - y, mx - x)) - bot.last["H"]))
+    out = do_forward(bot, p, math.hypot(mx - x, my - y) + p.pass_m)
+    out["gap"] = a.id
+    if out["stopped"]:
+        raise Fail(3, WHY[out["stopped"]], **out)
+    return out
+
+
 def c_halt(bot, p, a):
     bot.cmd("drive 0 0")
     s = bot.sample()
@@ -841,7 +1080,8 @@ def c_map(bot, p, a):
 
 def c_origin(bot, p, a):
     bot.sample()
-    bot.ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]], grid={}, tried={})
+    bot.ses.update(pose=[0.0, 0.0], points=[], path=[[0.0, 0.0]], grid={}, tried={},
+                   near=None, gaps=[])
     return {"pose": [0.0, 0.0], "note": "map cleared; the heading still counts from the robot's start"}
 
 
@@ -924,6 +1164,13 @@ def main():
     sp.add_argument("--rounds", type=int, default=3, help="wall: runs there and back")
     sp.add_argument("--seconds", type=float, default=20, help="still: how long")
     sp.add_argument("--apply", action="store_true", help="keep the result as the model")
+    add("near", c_near)
+    add("gaps", c_gaps)
+    add("approach", c_approach).add_argument("id", type=int, help="a gap from `near` or `gaps`")
+    sp = add("mark", c_mark)
+    sp.add_argument("id", type=int)
+    sp.add_argument("what", choices=("real", "false"), help="what a person saw")
+    add("pass", c_pass).add_argument("id", type=int, help="a gap marked real")
     add("halt", c_halt)
     add("map", c_map).add_argument("--points", action="store_true", help="the numbers, no drawing")
     add("origin", c_origin)

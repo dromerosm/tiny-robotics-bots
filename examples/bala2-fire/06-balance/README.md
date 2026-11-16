@@ -282,6 +282,11 @@ python3 examples/bala2-fire/06-balance/tools/explorer.py scan
 | `goto 1.0 0.5` | Drives to a place (metres ahead and to the left of the start), through cells the map says are free |
 | `explore --steps 3` | Scans, goes to the nearest edge of what the map knows, and does it again. `"done"` is true when no edge is left |
 | `map` | Draws the map: `#` taken, `.` free, blank not seen yet, the path and the robot |
+| `near` | A slow turn with the narrow zone: a map of 0.5 m around the robot in 5 cm cells, what stands in the way straight ahead, and the gaps |
+| `gaps` | The gaps again, with what a person said about each one |
+| `approach 2` | Goes toward gap 2 in steps of 10 cm and stops 0.3 m before it, so a person can look |
+| `mark 2 real` | A person saw gap 2 (or `false`: something closes it, and the map gets it closed) |
+| `pass 2` | Goes straight through gap 2, only if it is marked real and wide enough |
 | `calibrate spin` | Measures the robot's model with its own sensors: degrees (`spin`), metres (`wall`), drift (`still`). `--apply` keeps the result |
 | `origin` | Forgets the map. The place where the robot is becomes (0, 0) |
 | `params` | Every value you can change: the tool's own, with what each one is, and the robot's |
@@ -329,7 +334,7 @@ Fourth run, the same day (test 41), with the rectangle zone (`tzr`) and the box 
 - While the box read under `ts`, the robot went back about 0.23 m by itself. The stop line moves the goal back to the robot each time it sways back, and never forward again.
 - The robot sways all the time (tilt from 3.9 to 8.4 degrees, turn rate up to 20 degrees per second while it stands). So "still" is judged by means over one second.
 
-The other start values (`clear_mm`, `robot_w_mm`, `tof_offset_mm`, `look_sign`) are still guesses. `look` ran, but it had nothing in front to see.
+The other start values (`clear_mm`, `tof_offset_mm`, `look_sign`) are still guesses. `robot_w_mm` is 90, measured from wheel edge to wheel edge. `look` ran, but it had nothing in front to see.
 
 ### Testing the explorer without the robot
 
@@ -428,6 +433,30 @@ The first run on the real robot, on 2026-11-16, in a room with walls and furnitu
 - The map's x axis points where the robot faced when the firmware started, not where it faces now. `goto 0.6 0` gave "no way" for that reason: that place was next to things. `map` shows the axis.
 
 So short trips work. A long run will not: with 0.8% on the heading the map turns, as it did in QEMU.
+
+### Around a thing, with a person to help
+
+The goal: go straight, go around a thing in the way, and go on along the same line. The tool does not do it alone. An agent (Claude) drives it step by step with the telemetry, and asks a person at the points where the sensor can be wrong.
+
+`near` makes the small map for this. The wide zone of the sensor is 27 degrees, so at 0.5 m one reading covers 24 cm, about the gap the robot needs (90 mm + 2 x 50 mm of room = 190 mm). So `near` turns slowly (15 deg/s) with the narrow zone (`tzr 0`, about 7 degrees, 6 cm at 0.5 m) and puts the readings in cells of 5 cm. It then says:
+
+- `blocking`: the thing that touches the strip ahead as wide as the robot needs, how far it is, and how far it reaches to the left and to the right. The far side is only the part the sensor saw: the back of a thing can be farther.
+- `gaps`: ways out between the things it saw, with their width. A width comes from 5 cm cells, so it can be some cm short. Most of the circle free is `open`, not a gap.
+
+A person answers with `mark`. The sensor misses low, thin and dark things, so `pass` goes only through a gap marked real.
+
+Tested on 2026-11-16:
+
+- **Stand-in, a wall with two gaps** 0.45 m ahead: the 30 cm gap came out as 26 to 32 cm, the 12 cm gap as 11.5 cm (not passable). `pass` went through the 30 cm one only after `mark ... real`.
+- **Stand-in, a box on the line:** `blocking` gave the box to the cm (22 cm ahead, 10 cm to the left, 25 to 30 cm to the right). The robot went around on the short side, 25 cm off the line, came back to the line (6 mm off) and went on to the wall.
+- **The robot, an object on the line**, with steps chosen by Claude and two questions to a person:
+  1. `near`: something 31 cm ahead, from 1 cm right to 16 cm left of the line. The plan was the right side. The person said: use the left.
+  2. To the left, a thing 25 cm away braked the robot, so it got only 16 cm off the line, not 31. Ahead the sensor saw nothing. The person said: straight on clears it.
+  3. Ahead in steps, with a look to the right after each one: the object at 6 and 7 cm, then clear. Once a stall stopped the robot and it backed off 10 cm. It touched nothing.
+  4. To the right, toward the line, the sensor saw the object again at 12.5 cm and braked, so the robot went on 0.37 m first. Then the right was clear, and it went back to the line.
+  5. It ended 1.33 m from the start, on the line (2 mm off by the tool), facing the same way. The person saw it on the line.
+- **The robot, with diagonals** instead of right angles, the same day. Here `near` came out patchy: the robot slid 13 cm to the side while it turned, and `blocking` found nothing. So the person gave the size of the object (20 cm wide, 10 cm deep, on the line) and `watch 1` gave its front, 25 cm ahead. From that, three points: A (20 cm ahead, 23 cm left), B (47 cm ahead, 23 cm left, past its back) and C (85 cm ahead, on the line). Before each new way, a look with `watch 1` (the nearest of about 8 readings): 1.7 m free toward A, 0.88 m toward C. A and B went straight. On the way to C a stall stopped the robot after 8 cm, but nothing had touched it, and the same leg went fine the next time (the battery was at 25%, so the robot was slow to start). It ended 1.07 m from the start, 2 cm off the line by the tool, and on the line for the person. Three legs, against eight turns and side looks with right angles.
+- The wide zone still sees the corner of a thing after the robot has passed it. And the back of a thing can be farther than `near` saw (step 4). So the agent decides "passed" from the side looks and from how far the robot went, not from one reading.
 
 ### The servo
 
@@ -802,6 +831,7 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 - `drive`, after test 36: repeat each order a few times, and try 0.25 m/s, turns at 90 degrees per second, a higher `dacc`, and the hard floor (test 36 was on the carpet only). Check `kh` 0.3 over a long run before it becomes the start value.
 - A turn in place stays in the dead band. Try a least wheel speed for turns, like `kr` does for the balance.
 - The distance sensor, after test 37: check the stop without the creep, measure the distance against a tape, and try dark, thin and low things. Then let the robot back away or turn when the way is closed, not only stop.
+- Around a thing: do it more times, with things of other sizes, and on both sides. Look to the side with the narrow zone, so the corner of a thing does not count as still there. If it works the same way each time, make it one command (`detour`), with the questions to the person kept in.
 - The explorer on the robot (see [The explorer on the robot](#the-explorer-on-the-robot)): run `calibrate wall`, a `goto` around a square and back to the mark, and a longer `explore`. Keep more room from things: once it came 9 cm close.
 - `calibrate spin` gives `odo_head` to about 0.3% in QEMU (50 degrees after 30 turns) and 0.8% on the robot. Take the mean of some runs, and find what makes it change from run to run. Better: correct the heading while the robot explores, by fitting each new scan to the map.
 - The explorer tool, after tests 38 to 40: check the `tof` stop with a box in the middle of the view. After a stall, do not move the goal into the thing that stopped the robot before. Decide if `tzr 16` becomes the start value, and check it at 0.2 m: there the view is about 10 cm wide and the robot is wider. Make the robot reach its goal, not stop 4 cm before it. Run `forward` to a wall and against a low thing the sensor does not see. Find how far the small zone sees, to give "nothing" a real distance. Set `look_sign` with a box on one side, and measure a scan against a tape.
