@@ -179,6 +179,10 @@ static const char *TAG = "balance";
 // checks and the recordings, not for the balance.
 #define GRAV_K   0.01f // share of the accelerometer per tick (about 0.5 s)
 #define GRAV_TOL 0.15f // g: farther from 1 g, the accelerometer is not used
+// Rock (command "rock <pwm> <half_ms> <cycles>"): both wheels forward, then
+// back, again and again, to swing the body out of a pose a kick cannot fix.
+#define ROCK_MIN_MS 40
+#define ROCK_MAX_CYCLES 8
 // Wheel test (command "wheels <left> <right> <ms>"): each wheel on its own,
 // from lying down, to learn how one wheel can move the robot out of a pose a
 // kick cannot fix. Same limits as a kick.
@@ -398,6 +402,8 @@ static volatile bool kick_catch;    // balance at the end of the kick
 static volatile int lie_request;    // +1 lie on the front, -1 on the back, 0 none
 static volatile bool wheels_request; // a wheel test waits for the control task
 static volatile int wheels_l, wheels_r, wheels_ms;
+static volatile bool rock_request;
+static volatile int rock_pwm, rock_half_ms, rock_cycles;
 // For a soft stand-up and a soft landing, changed over Wi-Fi ("kc 20").
 static volatile float kick_cut = 15.0f;  // kc: the body came up this far: catch, or motors off
 static volatile float kick_i0 = 1.0f;    // kf: share of the wheel speed the catch's I starts with
@@ -797,6 +803,8 @@ static void control_task(void *arg)
     float kick_dir = 1;  // the side it lies on: + = on its front
     int64_t bad_since = -1; // us, when it came to rest in a pose a kick cannot fix
     int wheels_ticks = 0;   // ticks left of a wheel test
+    int rock_ticks = 0, rock_halves = 0; // ticks left in this half swing, half swings left
+    float rock_u = 0;                    // PWM of this half swing
     float grav[3] = {0, 0, 0};           // "up" in the IMU's axes, length 1 (0: not started)
     bool caught = false; // this balance started from a kick, not from a hand
     int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
@@ -941,7 +949,7 @@ static void control_task(void *arg)
         const float lean = fabsf(pitch3);
         const bool can_kick = lean >= KICK_MIN_DEG && lean <= KICK_MAX_DEG && fabsf(roll) <= KICK_MAX_ROLL;
         if (st.state == ST_BALANCE || st.state == ST_FALL || kick_ticks > 0 || lie_ticks > 0 ||
-            wheels_ticks > 0 || lean < START_DEG || can_kick) {
+            wheels_ticks > 0 || rock_halves > 0 || lean < START_DEG || can_kick) {
             st.stuck = false;
             bad_since = -1;
         } else if (fabsf(rate) > STUCK_DPS) {
@@ -983,13 +991,47 @@ static void control_task(void *arg)
                 stop_request = false;
             }
         }
-        // Wheel test: lying down (or stuck), not balancing, not in charge mode,
-        // not while an update runs.
+        // Lying down (or stuck), not balancing, not in charge mode, not while an
+        // update runs, with battery: the wheel test and the rock may run.
+        const bool may_move = (st.state == ST_WAIT || st.state == ST_STOPPED) &&
+                              (lean > LYING_DEG || st.stuck) && !low && !link_updating() &&
+                              kick_ticks == 0 && lie_ticks == 0 && wheels_ticks == 0 && rock_halves == 0 &&
+                              (st.battery < 0 || st.battery >= MIN_BATTERY || st.charging);
+        if (rock_request) {
+            rock_request = false;
+            if (may_move) {
+                rock_halves = 2 * rock_cycles;
+                rock_ticks = rock_half_ms * LOOP_HZ / 1000;
+                rock_u = (float)rock_pwm;
+                start_pos = pos;
+                stop_request = false;
+                ESP_LOGI(TAG, "rock %d, %d ms, %d cycles", rock_pwm, rock_half_ms, rock_cycles);
+            } else {
+                mon_say("rock: only lying down, not balancing, not in charge mode, not on low battery\n");
+            }
+        }
+        if (rock_halves > 0) {
+            // A new half swing turns the wheels the other way. It ends early, at
+            // a turn, once the pose is one a kick can fix, or on "stop".
+            if (rock_ticks == 0) {
+                rock_halves--;
+                rock_u = -rock_u;
+                rock_ticks = rock_half_ms * LOOP_HZ / 1000;
+                if (can_kick && fabsf(rate) < STUCK_DPS) {
+                    rock_halves = 0;
+                    mon_say("rock: a good pose, stopped\n");
+                }
+            }
+            if (stop_request || rock_halves == 0) {
+                rock_halves = 0;
+            } else {
+                rock_ticks--;
+            }
+        }
+        // Wheel test.
         if (wheels_request) {
             wheels_request = false;
-            if ((st.state == ST_WAIT || st.state == ST_STOPPED) && (lean > LYING_DEG || st.stuck) &&
-                !low && !link_updating() && kick_ticks == 0 && lie_ticks == 0 &&
-                (st.battery < 0 || st.battery >= MIN_BATTERY || st.charging)) {
+            if (may_move) {
                 wheels_ticks = wheels_ms * LOOP_HZ / 1000;
                 start_pos = pos;
                 stop_request = false;
@@ -998,7 +1040,12 @@ static void control_task(void *arg)
                 mon_say("wheels: only lying down, not balancing, not in charge mode, not on low battery\n");
             }
         }
-        if (wheels_ticks > 0) {
+        if (rock_halves > 0) {
+            set_wheels((int16_t)rock_u, (int16_t)rock_u);
+            st.u = rock_u;
+            st.position = pos - start_pos;
+            st.reason = "rocking";
+        } else if (wheels_ticks > 0) {
             // Ends when the time is up, on "stop" or button B, or if the body
             // comes up near upright (there is no catch: it falls again).
             if (stop_request || lean < kick_cut || --wheels_ticks == 0) {
@@ -1491,6 +1538,20 @@ static void handle_command(const char *line)
             mon_say("kick %d for %d ms%s\n", kick_pwm, kick_ms, kick_catch ? ", then balance" : "");
         } else {
             mon_say("kick <pwm> <ms> [1 = then balance]\n");
+        }
+    } else if (!strcmp(name, "rock")) {
+        // "rock 800 150 4": both wheels at PWM 800 forward for 150 ms, then
+        // back for 150 ms, 4 times (a negative PWM starts back). Records it all.
+        int pwm = 0, half = 0, cycles = 0;
+        if (sscanf(line, "%*s %d %d %d", &pwm, &half, &cycles) == 3 && half > 0 && cycles > 0) {
+            rock_pwm = pwm < -KICK_MAX_PWM ? -KICK_MAX_PWM : pwm > KICK_MAX_PWM ? KICK_MAX_PWM : pwm;
+            rock_half_ms = half < ROCK_MIN_MS ? ROCK_MIN_MS : half > KICK_MAX_MS ? KICK_MAX_MS : half;
+            rock_cycles = cycles > ROCK_MAX_CYCLES ? ROCK_MAX_CYCLES : cycles;
+            mon_rec_start((2 * rock_cycles * rock_half_ms + 1500) * LOOP_HZ / 1000);
+            rock_request = true;
+            mon_say("rock %d, %d ms, %d cycles\n", rock_pwm, rock_half_ms, rock_cycles);
+        } else {
+            mon_say("rock <pwm> <half_ms> <cycles>\n");
         }
     } else if (!strcmp(name, "wheels")) {
         // "wheels 0 600 150": the right wheel at PWM 600 for 150 ms, the left

@@ -173,7 +173,7 @@ Start values, all can be changed while it runs:
 | `lc` | 15 | degrees | lie: the push ends when the robot leans this far |
 | `lb` | 0 | PWM per deg/s | lie: while it falls, the wheels follow the fall to slow it (0 = free fall) |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And ten more:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And eleven more:
 
 - `save`: write the numbers of now to the robot's flash (NVS). The robot loads them at each start, so a good set needs no new firmware. They also stay after an update over Wi-Fi. `bp` and `servo` are left out: the balance point has its own place in flash, and a servo must not start by itself. The answer is `save: 26 values in flash`.
 - `defaults`: delete the saved numbers and go back to the firmware's. Use it when a saved set makes the robot fall. Both commands only work while the robot does not balance, because a flash write stops both cores for a few ms. Tested on the robot on 2026-11-13, lying down: `kd 0.08` and `bl 10` were saved and came back after two updates over Wi-Fi, a servo order was not saved, and `defaults` brought back 0.07 and 5. Not tested: that the robot says no while it balances.
@@ -183,6 +183,7 @@ Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And t
 - `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines (`tilt`, `rate`, `acc_tilt`, `x`, `v`, `u`, `v_model`, `shake`, `kp_eff`, `roll`, `pitch`). `roll` (to the side) and `pitch` (the tilt) come from a 3-axis estimate: all three gyros turn a gravity vector, and the accelerometer pulls it back only while it reads about 1 g. So they stay right while the robot is thrown around, and `pitch` goes all the way round: upside down is 180. The `tilt` of the balance uses one gyro. After a hard push from a stuck pose it read 168 degrees, for a true 18. They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
 - `kick 700 200 1`: stand up with no hands (see [Stand up and lie down](#stand-up-and-lie-down)). Without the last `1` it only kicks and does not balance.
 - `lie`: lie down on the front, on the distance sensor. `lie -1` lies down on the back.
+- `rock -1023 150 4`: both wheels forward and back, to swing the robot out of a stuck pose (see [Stand up and lie down](#stand-up-and-lie-down)). PWM, half a swing in ms, and the number of swings (at most 8). A negative PWM starts backward.
 - `wheels 0 600 150`: a test. Each wheel gets its own PWM (left, then right, + is forward) for some ms. It works only lying down, with the same limits as `kick`, and records 2 s. It is there to learn how one wheel can bring the robot out of a pose where it cannot stand up.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
 
@@ -360,6 +361,14 @@ Lying down, it rests on the distance sensor at +45 degrees, or on the servo at -
 **When it cannot stand up.** A kick works only from 35 to 55 degrees down, with the robot no more than 8 degrees to the side. Out of that, once the robot has been still for 0.5 s, the screen says `can't stand up, help me` in red, with the tilt and the side angle under it. It stays until the robot is in a good pose again, or upright. `kick` says no from such a pose. `GET /state` has `"stuck": true` and the side angle as `"roll"`. Charge mode waits too, because it would turn the screen off. The angles are the 3-axis ones (see `rec`), so upside down counts as stuck as well.
 
 Tested on 2026-11-16. In the two rests the robot is 1 to 1.5 degrees to the side. On one wheel, with the other in the air, it was 71 degrees down and 15.5 to the side: the screen showed the warning, `kick` said no, and the wheels did not move. Back on its front, the warning went away. The 55 degrees is not measured: the kick worked from 40 to 46 degrees and failed from 71 to 76.
+
+**Out of a stuck pose: `rock`.** In the pose on one wheel the robot lies on its face (the sensor, the case and the servo), and both wheels turn almost free: at PWM 800 for 200 ms they gave 495 and 467 counts. So one wheel cannot push it anywhere. A pulse of one wheel moved the body 1 to 3 degrees, then it came back. Both wheels at full power for 300 ms lifted it about 12 degrees and dragged it 26 to 28 cm, then it fell back. Once, going forward, they rolled it over its face and onto its head.
+
+`rock` swings it instead: both wheels forward, then back, again and again. It stops when the swings are done, on `stop`, or at a turn when the pose is one a kick can fix and the robot is still. The same limits as `kick` apply.
+
+- `rock -600 150 3` and `rock -800 150 4` did not get it out.
+- `rock -1023 150 4` did, once. After the first swing (300 ms) the wheel in the air was down (from 15 to 0.4 degrees to the side) and the tilt was 60. But the robot never got still, so the rock went on and threw it from front to back, near upright a few times, until it fell on its back at -44 degrees. From there `kick 700 200 1` stood it up and it balanced. In all it moved 7 cm (15 at most), far less than one pulse.
+- One try only, so we do not know yet how often it works.
 
 The robot rests on the sensor and on the servo, on one side only, and one wheel can lift. So we will add bars, and it will rest the same way on both sides. After that, all these numbers must be measured again.
 
@@ -665,6 +674,7 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 ## Try next
 
 - Stand up and lie down, after the bars: measure the rests on both sides, then the kick PWM for each side. Bring the back side's roll under 0.1 m. Try `kc` and `kf` for less overshoot after the catch. Try `lb` again: with the new rest it may not tip over. Decide if `kick` needs the update token, now that a command can start the robot.
+- `rock`, after its first win: repeat it to see how often it works. Stop it when the wheel is down and the tilt is in a lying range, even if the robot still moves, and try 1 or 2 swings instead of 4. The robot passed near upright while it swung: a catch there could stand it up with no kick.
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 16, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.
