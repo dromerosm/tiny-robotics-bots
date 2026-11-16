@@ -10,6 +10,10 @@
 # Optional: WIFI_ENV=path/to/wifi.env passes the file's KEY=value lines to the
 # build as environment variables (05-ota takes the home Wi-Fi from them). The
 # file is read where it is, so passwords never go into this repo.
+#
+# Optional: VARIANT=qemu adds the example's sdkconfig.qemu to its settings.
+# The build goes to build-qemu/ and the image to out/<name>-qemu.bin, so the
+# normal build stays as it is.
 set -eu
 if [ -n "${WIFI_ENV:-}" ]; then
   [ -f "$WIFI_ENV" ] || { echo "error: WIFI_ENV file not found: $WIFI_ENV" >&2; exit 1; }
@@ -27,7 +31,16 @@ TARGET="$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' "$EXAMPLE/sdkconfig.defaul
 ROBOT="$(basename "$(dirname "$EXAMPLE")")"
 NAME="$ROBOT-$(basename "$EXAMPLE")-$TARGET"
 
-BUILD="idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' set-target $TARGET && idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' build && idf.py -C '$EXAMPLE' -B '$EXAMPLE/build' merge-bin"
+DIR=build
+if [ -n "${VARIANT:-}" ]; then
+  [ -f "$EXAMPLE/sdkconfig.$VARIANT" ] || { echo "error: no $EXAMPLE/sdkconfig.$VARIANT" >&2; exit 1; }
+  DIR="build-$VARIANT"
+  NAME="$NAME-$VARIANT"
+  IDF="idf.py -C '$EXAMPLE' -B '$EXAMPLE/$DIR' -DSDKCONFIG='$DIR/sdkconfig' -DSDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.$VARIANT'"
+else
+  IDF="idf.py -C '$EXAMPLE' -B '$EXAMPLE/$DIR'"
+fi
+BUILD="$IDF set-target $TARGET && $IDF build && $IDF merge-bin"
 if [ -n "${IDF_PATH:-}" ]; then
   if [ -n "${WIFI_ENV:-}" ]; then
     (set -a && . "$WIFI_ENV" && sh -c "$BUILD")
@@ -41,5 +54,5 @@ else
 fi
 
 mkdir -p out
-cp "$EXAMPLE/build/merged-binary.bin" "out/$NAME.bin"
+cp "$EXAMPLE/$DIR/merged-binary.bin" "out/$NAME.bin"
 echo "built out/$NAME.bin"

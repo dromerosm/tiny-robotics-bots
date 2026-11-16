@@ -67,6 +67,16 @@ WIFI_ENV=~/wifi.env scripts/build.sh examples/bala2-fire/06-balance
 
 The file has `SSID_01`, `PWD_SSID_01`, `SSID_02` and `PWD_SSID_02`. With none set, as in CI, the robot makes its own network. A network with a password must be WPA2 or better: the robot does not join an open network with the same name.
 
+## In QEMU
+
+QEMU has no Wi-Fi radio for the ESP32, but it has an Ethernet card (`open_eth`). With `CONFIG_BALA2_LINK_QEMU_ETH=y` the link runs over that card: the web server and the UDP port work as on the robot, and Wi-Fi stays off. The option is off by default. Never set it in a build for the robot: the real chip has no such card.
+
+[06-balance](../../examples/bala2-fire/06-balance) has it in `sdkconfig.qemu`:
+
+```sh
+VARIANT=qemu scripts/build.sh examples/bala2-fire/06-balance
+```
+
 ## Partitions
 
 `partitions.csv` has two app slots of 3 MB each. It is the table already on our robot. A new table can only go in over USB, because an update over Wi-Fi writes only the app. So do not change the offsets unless you plan to flash over USB. The last 6 MB of the flash are free.

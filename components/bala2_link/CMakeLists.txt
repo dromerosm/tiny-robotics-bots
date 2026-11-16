@@ -14,5 +14,5 @@ configure_file("${CMAKE_CURRENT_LIST_DIR}/../tr_ota/favicon.svg"
 idf_component_register(SRCS "bala2_link.c"
                        INCLUDE_DIRS "include"
                        PRIV_REQUIRES esp_wifi esp_netif esp_event nvs_flash esp_http_server
-                                     app_update esp_app_format esp_timer
+                                     app_update esp_app_format esp_timer esp_eth
                        EMBED_TXTFILES "${CMAKE_CURRENT_BINARY_DIR}/bala2_icon.svg")

@@ -1,5 +1,6 @@
 .DS_Store
 build/
+build-*/
 out/
 managed_components/
 dependencies.lock
@@ -8,3 +9,6 @@ sdkconfig.old
 .tools/
 .wrangler/
 parts/*/target/
+
+# Python
+__pycache__/

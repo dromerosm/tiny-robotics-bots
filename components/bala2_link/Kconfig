@@ -15,3 +15,12 @@ menu "bala2_link home Wi-Fi"
         string "Second network password"
         default "$(PWD_SSID_02)"
 endmenu
+
+config BALA2_LINK_QEMU_ETH
+    bool "bala2_link over QEMU's Ethernet card (emulator only)"
+    default n
+    select ETH_USE_OPENETH
+    help
+        For builds that run in QEMU, which has no Wi-Fi radio. The link uses
+        QEMU's Ethernet card (open_eth) and Wi-Fi stays off. Never set it in
+        a build for the robot: the real chip has no such card.

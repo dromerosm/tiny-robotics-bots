@@ -35,6 +35,10 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#if CONFIG_BALA2_LINK_QEMU_ETH
+#include "esp_eth.h"
+#include "esp_eth_mac_openeth.h"
+#endif
 #include "lwip/sockets.h"
 #include "mdns.h"
 #include "nvs.h"
@@ -331,11 +335,51 @@ static esp_err_t start_ap(void)
     return ESP_OK;
 }
 
+#if CONFIG_BALA2_LINK_QEMU_ETH
+// The emulator has no Wi-Fi radio, but QEMU's ESP32 has an Ethernet card
+// (open_eth). HTTP and UDP run over it as they do over Wi-Fi.
+static void on_eth_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    const ip_event_got_ip_t *ev = (const ip_event_got_ip_t *)data;
+    snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ev->ip_info.ip));
+    got_ip = true;
+}
+
+static esp_err_t start_eth(void)
+{
+    const esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *netif = esp_netif_new(&netif_cfg);
+    ESP_RETURN_ON_FALSE(netif, ESP_FAIL, TAG, "eth netif");
+    const eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
+    phy_cfg.autonego_timeout_ms = 100;
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_cfg);
+    esp_eth_phy_t *phy = esp_eth_phy_new_generic(&phy_cfg);
+    ESP_RETURN_ON_FALSE(mac && phy, ESP_FAIL, TAG, "eth mac and phy");
+    const esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth = NULL;
+    ESP_RETURN_ON_ERROR(esp_eth_driver_install(&cfg, &eth), TAG, "eth driver");
+    ESP_RETURN_ON_ERROR(esp_netif_attach(netif, esp_eth_new_netif_glue(eth)), TAG, "eth attach");
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_eth_ip, NULL),
+                        TAG, "ip events");
+    ESP_RETURN_ON_ERROR(esp_eth_start(eth), TAG, "eth start");
+    strlcpy(ssid, "QEMU Ethernet", sizeof(ssid));
+    for (int i = 0; i < JOIN_MS / 100 && !got_ip; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ESP_LOGI(TAG, "Ethernet (emulator), robot at %s", got_ip ? ip : "no address");
+    return ESP_OK;
+}
+#endif
+
 static esp_err_t start_wifi(void)
 {
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif");
     esp_err_t err = esp_event_loop_create_default();
     ESP_RETURN_ON_FALSE(err == ESP_OK || err == ESP_ERR_INVALID_STATE, err, TAG, "event loop");
+#if CONFIG_BALA2_LINK_QEMU_ETH
+    return start_eth();
+#endif
     esp_netif_t *sta = esp_netif_create_default_wifi_sta();
     ESP_RETURN_ON_FALSE(sta, ESP_FAIL, TAG, "sta netif");
     esp_netif_set_hostname(sta, HOSTNAME);
