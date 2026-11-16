@@ -269,6 +269,7 @@ typedef struct {
     const char *volatile reason;
     volatile float drive_v, drive_w; // m/s and deg/s the robot follows now
     volatile float goal_x, goal_h;   // m and deg: the place and the heading it holds
+    volatile float heading_gyro;     // deg: the gyro alone, added up since the start
     // To watch the motor model, the shake meter and the kp in use (see `gain`).
     volatile float v_model, shake, kp_eff;
     volatile float roll;   // deg, to the side, from the 3-axis gravity estimate
@@ -323,7 +324,7 @@ static M5GFX display;
 static i2c_master_dev_handle_t imu, base, power;
 static bool have_power;
 static bool sim;
-static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0, 0, false, 0};
+static status_t st = {ST_WAIT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, false, false, "boot", 0, 0, 0, 0, 0, 0, 0, 0, 0, false, 0};
 static float gyro_offset, yaw_offset, roll_gyro_offset;
 // Gains, changed over Wi-Fi or serial while it runs (handle_command()).
 // Start values: see the README.
@@ -458,11 +459,16 @@ static bool have_tof;
 #define SIM_TAU 0.08f // s, how fast a wheel reaches the commanded speed (a guess)
 
 static struct {
-    float th, thd; // tilt (rad) and rate
-    float v, x;    // wheel speed and position
-    bool held;     // someone holds it upright
-    int16_t u;
-} sm = {0, 0, 0, 0, true, 0};
+    float th, thd;   // tilt (rad) and rate
+    float v[2], x[2]; // speed and position of each wheel: left, right
+    bool held;       // someone holds it upright
+    int16_t u[2];
+} sm = {0, 0, {0, 0}, {0, 0}, true, {0, 0}};
+#if CONFIG_BALA2_LINK_QEMU_ETH
+// The distance ahead, given from outside with "simtof <mm>" (-1: nothing):
+// a script on the computer keeps the world and knows what the sensor sees.
+static volatile int sim_tof = TOF_FREE;
+#endif
 
 // Wheel speed for a command, from example 05: dead band, then a straight line.
 static float sim_motor_speed(int16_t u)
@@ -479,9 +485,13 @@ static void sim_step(void)
 {
     for (int i = 0; i < 5; i++) {
         const float dt = DT / 5;
-        const float a = (sim_motor_speed(sm.u) - sm.v) / SIM_TAU;
-        sm.v += a * dt;
-        sm.x += sm.v * dt;
+        float a = 0; // of the middle of the robot
+        for (int w = 0; w < 2; w++) {
+            const float aw = (sim_motor_speed(sm.u[w]) - sm.v[w]) / SIM_TAU;
+            sm.v[w] += aw * dt;
+            sm.x[w] += sm.v[w] * dt;
+            a += aw / 2;
+        }
         if (sm.held) {
             sm.th = 0;
             sm.thd = 0;
@@ -563,7 +573,8 @@ static bool hw_init(void)
 static bool set_wheels(int16_t left, int16_t right)
 {
     if (sim) {
-        sm.u = (left + right) / 2;
+        sm.u[0] = left;
+        sm.u[1] = right;
         return true;
     }
     const uint8_t buf[5] = {REG_SPEED, (uint8_t)(left >> 8), (uint8_t)left, (uint8_t)(right >> 8),
@@ -592,7 +603,9 @@ static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
     if (sim) {
         *acc_tilt = sm.th * RAD_TO_DEG_F + ((int)(esp_random() % 41) - 20) * 0.01f;
         *gyro_raw = sm.thd * RAD_TO_DEG_F * GYRO_LSB_PER_DPS - 150 + (int)(esp_random() % 17) - 8;
-        *yaw_raw = 60 + (int)(esp_random() % 17) - 8;
+        // The turn the two wheels give, as the gyro would see it.
+        *yaw_raw = 60 + (int)(esp_random() % 17) - 8 +
+                   YAW_SIGN * (sm.v[1] - sm.v[0]) / TRACK_M * RAD_TO_DEG_F * GYRO_LSB_PER_DPS;
         return true;
     }
     const uint8_t reg = REG_ACCEL_XOUT_H;
@@ -621,8 +634,8 @@ static bool read_imu(float *acc_tilt, float *gyro_raw, float *yaw_raw)
 static bool read_position(float *pos, float *right_ahead)
 {
     if (sim) {
-        *pos = sm.x;
-        *right_ahead = 0;
+        *pos = (sm.x[0] + sm.x[1]) / 2;
+        *right_ahead = sm.x[1] - sm.x[0];
         return true;
     }
     const uint8_t reg = REG_ENCODER;
@@ -801,6 +814,7 @@ static void control_task(void *arg)
     int learn_n = 0, learn_blocks = 0;
     bool learn_calm = true;
     float start_ahead = 0, heading = 0; // heading in rad, + = turned left
+    float heading_gyro = 0;             // deg, the gyro alone: to compare it with the wheels
     float x_ref = 0;                    // m, where the wheels should be (kw)
     float v_model = 0;                  // m/s, wheel speed by the motor model (mt)
     float shake_fast = 0, shake_slow = 0, shake = 0; // shake meter, deg/s
@@ -851,7 +865,11 @@ static void control_task(void *arg)
         // Sense. The distance ahead first: the sensor has a new one about
         // 10 times a second. In the emulator a wall stands ahead of the start.
         if (sim) {
-            tof_mm = (int)((SIM_WALL_M - sm.x) * 1000);
+#if CONFIG_BALA2_LINK_QEMU_ETH
+            tof_mm = sim_tof;
+#else
+            tof_mm = (int)((SIM_WALL_M - (sm.x[0] + sm.x[1]) / 2) * 1000);
+#endif
         } else if (have_tof && ++tof_ticks >= (low ? 1 : TOF_TICKS)) {
             tof_ticks = 0;
             // A new zone first. The measure that is on its way is the old
@@ -1259,6 +1277,7 @@ static void control_task(void *arg)
                     start_pos = pos;
                     start_ahead = ahead;
                     heading = 0;
+                    heading_gyro = 0;
                     x_ref = 0;
                     v_ref = w_ref = x_goal = h_goal = 0;
                     drive_end_ms = 0; // an order from before the start does not count
@@ -1404,6 +1423,8 @@ static void control_task(void *arg)
                 const float turn = clampf(-gain.kh * (heading - h_goal) +
                                               w_ref / RAD_TO_DEG_F * TRACK_M / 2,
                                           TURN_LIMIT);
+                heading_gyro += yaw_rate * DT;
+                st.heading_gyro = heading_gyro;
                 st.heading_enc = heading_enc * RAD_TO_DEG_F;
                 st.heading = heading * RAD_TO_DEG_F;
                 st.yaw_rate = yaw_rate;
@@ -1596,6 +1617,10 @@ static void handle_command(const char *line)
         drive_w = isnan(turn) ? 0 : clampf(turn, DRIVE_MAX_W);
         seconds = seconds > 0 ? fminf(seconds, DRIVE_MAX_S) : 0;
         drive_end_ms = (uint32_t)(esp_timer_get_time() / 1000) + (uint32_t)(seconds * 1000);
+#if CONFIG_BALA2_LINK_QEMU_ETH
+    } else if (n == 2 && !strcmp(name, "simtof")) {
+        sim_tof = v < 0 ? TOF_FREE : (int)v;
+#endif
     } else if (!strcmp(name, "kick")) {
         // "kick 600 200": wheels at PWM 600 for 200 ms, toward the side it
         // lies on (a negative PWM drives away from it). Records 2 s.
@@ -1720,7 +1745,7 @@ static void state_json(char *buf, size_t size)
              "{\"state\":\"%s\",\"reason\":\"%s\",\"tilt\":%.2f,\"speed\":%.3f,"
              "\"battery\":%d,\"charging\":%s,\"vars\":%s,"
              "\"rate\":%.1f,\"pos\":%.3f,\"u\":%.0f,\"setpoint\":%.2f,\"heading\":%.1f,"
-             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"goal\":[%.3f,%.1f],\"tof\":%d,\"tof_slows\":%s,\"saved_bp\":%s,\"stored\":%d,"
+             "\"yaw\":%.1f,\"turn\":%.3f,\"drive\":[%.3f,%.1f],\"goal\":[%.3f,%.1f],\"head\":[%.1f,%.1f],\"tof\":%d,\"tof_slows\":%s,\"saved_bp\":%s,\"stored\":%d,"
              "\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"temp\":%.1f,"
              "\"enc\":[%ld,%ld],\"btn\":[%d,%d,%d],\"i2c_err\":%lu,"
              "\"net\":\"%s\",\"home\":%s,\"ip\":\"%s\",\"rssi\":%d,"
@@ -1730,7 +1755,7 @@ static void state_json(char *buf, size_t size)
              names[st.state], st.reason, st.tilt, st.speed, st.battery,
              st.charging ? "true" : "false", vars, st.rate,
              st.position, st.u,
-             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, st.goal_x, st.goal_h, (int)tof_mm, tof_slows ? "true" : "false", saved_text, mon_stored(), raw.ax / 4096.0f,
+             st.setpoint, st.heading, st.yaw_rate, st.turn, st.drive_v, st.drive_w, st.goal_x, st.goal_h, st.heading_enc, st.heading_gyro, (int)tof_mm, tof_slows ? "true" : "false", saved_text, mon_stored(), raw.ax / 4096.0f,
              raw.ay / 4096.0f, raw.az / 4096.0f, raw.gx / GYRO_LSB_PER_DPS,
              raw.gy / GYRO_LSB_PER_DPS, raw.gz / GYRO_LSB_PER_DPS, raw.temp / 326.8f + 25,
              (long)raw.enc_l, (long)raw.enc_r, !gpio_get_level(BTN_A), !gpio_get_level(BTN_B),
@@ -1847,8 +1872,15 @@ extern "C" void app_main(void)
     if (sim) {
         ESP_LOGW(TAG, "no IMU or base (emulator?), using a simulated robot");
         display.drawString("BALA2 balance (sim)", 8, 6);
-    } else {
-        // No Wi-Fi in the emulator.
+    }
+    // No Wi-Fi in the emulator. A build for QEMU with a network has the link
+    // over Ethernet, and then the orders come from outside, not from a script.
+#if CONFIG_BALA2_LINK_QEMU_ETH
+    const bool with_link = true;
+#else
+    const bool with_link = !sim;
+#endif
+    if (with_link) {
         extern const char page_start[] asm("_binary_app_html_start");
         extern const char page_end[] asm("_binary_app_html_end");
         const link_callbacks_t cb = {handle_command, can_update, state_json, page_start,
@@ -1856,8 +1888,10 @@ extern "C" void app_main(void)
         if (link_start(&cb) != ESP_OK) {
             ESP_LOGE(TAG, "no Wi-Fi link: the robot works, but only the buttons control it");
         }
-        load_balance_point(); // after link_start: it opens the flash storage
-        mon_load();           // the same for the values of "save"
+        if (!sim) {
+            load_balance_point(); // after link_start: it opens the flash storage
+            mon_load();           // the same for the values of "save"
+        }
         printf("Wi-Fi %s %s, key %s, robot at %s (%s), UDP port %d\n",
                link_on_home() ? "home network" : "own network", link_ssid(), link_password(),
                link_ip(), LINK_HOST, LINK_UDP_PORT);
@@ -1879,7 +1913,9 @@ extern "C" void app_main(void)
         const int64_t ms = esp_timer_get_time() / 1000;
         read_serial();
         if (sim) {
-            sim_script(ms);
+            if (!with_link) {
+                sim_script(ms);
+            }
         } else {
             if (pressed(BTN_B, &last_b)) {
                 stop_request = true;

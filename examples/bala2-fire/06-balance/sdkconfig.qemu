@@ -1,0 +1,3 @@
+# For QEMU with a network (VARIANT=qemu scripts/build.sh ...): the link runs
+# over QEMU's Ethernet card, and the simulated robot takes orders from outside.
+CONFIG_BALA2_LINK_QEMU_ETH=y
