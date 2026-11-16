@@ -167,8 +167,13 @@ Start values, all can be changed while it runs:
 | `tz` | 4 | detectors | distance sensor: side of the square it looks through (4 to 16) |
 | `tcol` | 14 | column | distance sensor: where the square is, up and down on our robot (8 is the middle) |
 | `trow` | 7 | row | distance sensor: where the square is, left and right on our robot (7 is the middle) |
+| `kc` | 15 | degrees | kick: when the body is this close to upright, the catch starts (or the motors stop) |
+| `kf` | 1 | share | kick: the catch's I term starts at this share of the wheel speed |
+| `lp` | 300 | PWM | lie: how hard the push that tips the robot is |
+| `lc` | 15 | degrees | lie: the push ends when the robot leans this far |
+| `lb` | 0 | PWM per deg/s | lie: while it falls, the wheels follow the fall to slow it (0 = free fall) |
 
-Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And seven more:
+Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And nine more:
 
 - `save`: write the numbers of now to the robot's flash (NVS). The robot loads them at each start, so a good set needs no new firmware. They also stay after an update over Wi-Fi. `bp` and `servo` are left out: the balance point has its own place in flash, and a servo must not start by itself. The answer is `save: 26 values in flash`.
 - `defaults`: delete the saved numbers and go back to the firmware's. Use it when a saved set makes the robot fall. Both commands only work while the robot does not balance, because a flash write stops both cores for a few ms. Tested on the robot on 2026-11-13, lying down: `kd 0.08` and `bl 10` were saved and came back after two updates over Wi-Fi, a servo order was not saved, and `defaults` brought back 0.07 and 5. Not tested: that the robot says no while it balances.
@@ -176,6 +181,8 @@ Commands: the name and a value (`kd 0.07`), `?` to print them all, `stop`. And s
 - `bp 9.4`: set the balance point in degrees (from -25 to 25). The telemetry shows it as the setpoint while the robot waits.
 - `servo 1700`: turn the servo on the base's S4 header (see [The servo](#the-servo)). It is not a test, and it stays until you change it.
 - `rec 3`: send 3 s (at most 60) of every control tick, at 200 Hz, as `rec,...` lines (`tilt`, `rate`, `acc_tilt`, `x`, `v`, `u`, `v_model`, `shake`, `kp_eff`). They come as the robot takes them, about 20 ms later, and `rec_end lost 0` closes them. The normal telemetry runs at 50 Hz, and its UDP packets arrive in bursts.
+- `kick 700 200 1`: stand up with no hands (see [Stand up and lie down](#stand-up-and-lie-down)). Without the last `1` it only kicks and does not balance.
+- `lie`: lie down on the front, on the distance sensor. `lie -1` lies down on the back.
 - `fall`: the next start is a fall test, not a balance. Hold the robot upright and still, and let go. The wheels hold their place, and it records 4 s at 200 Hz while the robot falls over. From how fast the tilt grows we get the robot's pendulum length (see [A physical model](#a-physical-model)).
 
 The gains came from a search on a simulated robot. We kept the sets that worked for many guesses of the center of mass height (5 to 16 cm), motor lag (30 to 150 ms) and extra delay (0 to 40 ms). Then we tuned them on the robot.
@@ -212,7 +219,7 @@ Tested on the robot on 2026-11-13 (test 36): forward and back at 0.10 and 0.15 m
 The robot should rather fall over than drive away.
 
 - Speed limit 0.5 m/s and PWM limit 500. Over Wi-Fi they can go up to 0.55 m/s and 600, never more.
-- It only starts after it was lying down, and then held upright and still for 1 second. Then the speed limit ramps up over 1 second.
+- It only starts after it was lying down (more than 38 degrees), and then held upright and still for 1 second. Then the speed limit ramps up over 1 second. The other way to start is `kick ... 1`, from lying down (see [Stand up and lie down](#stand-up-and-lie-down)).
 - It stops, and stays stopped, if the tilt goes past 25 degrees, if it is more than 0.3 m from where it should be (where it started, or where a `drive` order has moved that place to), if it goes faster than 0.4 m/s for 0.3 s, if the I2C bus fails three times in a row, if the loop runs late, or on button B.
 - The base keeps the last speed it got ([04](../04-wheels)). So the robot sends 0 at boot, and repeats 0 while it waits. A stuck loop resets the chip (task watchdog, 1 s).
 - It never starts if the IMU cannot be read at boot.
@@ -220,7 +227,7 @@ The robot should rather fall over than drive away.
 - Wi-Fi power saving is off, except in charge mode (see below). With it on, the robot answered pings late (up to 1.7 s) and lost one packet in three. One second without a packet stops the balance, so a slow link can stop it for no reason.
 - It never starts on a nearly empty battery (IP5306 level under 25%), unless it is charging. Once, after about 4 hours of tests on battery, the robot switched off in the middle of a test.
 - Updates need the token and are refused while it balances or runs a fall test. The robot does not start while an update runs. The flash is erased one sector at a time, so the control loop is never stalled for long. Erasing and writing keeps core 0 busy for the whole update, so its idle task does not run, and the task watchdog reset the robot in the middle of the update (twice; the backtrace was in `esp_ota_write`). So during an update the watchdog stops watching core 0's idle task. The control task stays watched. An upload that stalls ends after 30 s (three receive timeouts in a row).
-- On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, but never start the robot: that needs your hands. Use the robot's own network if you don't trust the other devices.
+- On the home network, any computer on that network can send UDP commands and gets the telemetry (the robot answers whoever talked last). Commands can change gains and limits, and `kick ... 1` starts the robot with no hands. Use the robot's own network if you don't trust the other devices.
 
 ### Charge mode
 
@@ -329,6 +336,26 @@ The value is kept between 500 and 2500. `?` shows it at the end of the gains lin
 - Only the control task talks to the base. A command just stores the value, and the control task sends it on its next tick, when it changes.
 - Each servo stops at a slightly different pulse. Ours stands still at 1500 (checked by eye). If yours creeps, try values near it.
 - It works while the robot balances, but that is not measured: a turning servo shakes the body a little and uses the same battery as the motors (up to 750 mA if it is blocked).
+
+### Stand up and lie down
+
+The robot can stand up and lie down by itself, with the wheels alone. Tested on 2026-11-16, with the servo on the back and the distance sensor on the front.
+
+Lying down, it rests on the distance sensor at +45 degrees, or on the servo at -42 degrees.
+
+**Stand up: `kick 700 200 1`.** The wheels run at PWM 700 toward the side the robot lies on, for 200 ms at most. They push the base under the body, and the body comes up. When it is `kc` (15) degrees from upright, the balance takes over. The command works only while the robot lies more than 35 degrees down, with enough battery, and not in charge mode. `stop` and button B end it. It records 2 s at 200 Hz (as `rec 2`). The base takes up to PWM 1023 for a kick, and the kick lasts 400 ms at most.
+
+- **Why the catch.** Without it (`kick 700 200`), the motors stop at 15 degrees and the body still comes up to 1 or 2 degrees from upright. Then it falls back. That is not gravity: at PWM 0 the base stops the wheels at once, from 0.54 m/s, and that throws the body back down.
+- **How the catch starts.** At 15 degrees the body still comes up at about 460 deg/s, and the P and D terms nearly cancel. With the I term at 0, the loop would ask for 0 m/s, which brakes the wheels like the stop. So the I term starts at the wheel speed of that moment (`kf` 1), and there is no soft start. The balance point is the saved one, not a hand's angle. All other stop rules work as usual.
+- **From the front:** 5 of 5. It goes 7 degrees past upright (11.7 past the balance point) and is still after 0.6 to 1.4 s. It moves 5 to 13 cm.
+- **From the back:** 2 of 2, but it rolls 0.23 to 0.26 m, close to the 0.3 m stop. At the catch the wheels already go 0.54 m/s backward. To brake, the position loop lets the body lean only 5 degrees past the balance point. PWM 650 failed: for 200 ms the body never got to 15 degrees, and for 300 ms the catch was at the 0.5 m/s limit from the first moment, so it could not push harder and the body fell back.
+- A weaker kick is not enough. PWM 400 lifted the body only 6 degrees. PWM 600 brought it to 6 degrees from upright, then it fell back.
+
+**Lie down: `lie`.** The wheels push back (`lp` 300) until the robot leans `lc` (15) degrees forward, or for 200 ms. Then the motors stop and it falls on the distance sensor. `lie -1` does the same toward the back. `stop` is not enough to lie down: near the balance point the gearbox holds the robot up. It stood at 2 and at 10 degrees with the motors off. In 4 of 4 tests it landed on the front, and then `kick 700 200 1` stood it up again (3 of 3 full rounds).
+
+**Softer landing.** A free fall (`lb` 0) hits the floor at about 260 deg/s. The body sinks to 53 degrees, then comes back at about 170 deg/s. With `lb`, the wheels follow the fall: the faster it falls, the faster they go toward it. In the air this works (`lb` 1.5: about 200 deg/s at the floor). But the wheels still run when the robot lands, and they push it over the sensor. With `lb` 3 the body went to 88 degrees, and with `lb` 1.5 to 68 degrees, even when the wheels slow down over 0.15 s after the landing. From past about 60 degrees the kick cannot lift it any more. So `lb` stays 0.
+
+The robot rests on the sensor and on the servo, on one side only, and one wheel can lift. So we will add bars, and it will rest the same way on both sides. After that, all these numbers must be measured again.
 
 ### Two cores
 
@@ -631,6 +658,7 @@ The simulated robot gets an order to drive forward for 5 s at 0.1 m/s, which wou
 
 ## Try next
 
+- Stand up and lie down, after the bars: measure the rests on both sides, then the kick PWM for each side. Bring the back side's roll under 0.1 m. Try `kc` and `kf` for less overshoot after the catch. Try `lb` again: with the new rest it may not tip over. Decide if `kick` needs the update token, now that a command can start the robot.
 - The learned balance point is saved (test 27), but nobody checked that a restart loads it. With the start from the hand's angle it matters little. Decide if it stays.
 - Start from the hand's angle with the servo on top, and with a hold more than 3 degrees off, to find where the start fails.
 - Push the robot hard, close to the 0.4 m/s stop, with the new position loop (`kpos` 18, `kvel` 16, no `kx` and `kv`). Test 23 only had soft pushes. To go back, use commit 17b83ac.

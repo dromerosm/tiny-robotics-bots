@@ -157,7 +157,27 @@ static const char *TAG = "balance";
 #define HOLD_DEG  1.5f  // and this still, for UPRIGHT_TICKS
 #define UPRIGHT_RATE_DPS 15.0f
 #define UPRIGHT_TICKS    LOOP_HZ // 1 s
-#define LYING_DEG        45.0f
+#define LYING_DEG        38.0f // it rests at 45 on its front, 42 on its back (servo arm)
+// Kick test (command "kick <pwm> <ms>"): from lying down, the wheels run at a
+// fixed PWM for a short time, to bring the body up. With the catch, the
+// balance takes over at `kc`. The base takes up to 1023; the time keeps
+// it short.
+#define KICK_MIN_DEG 35.0f // only from this far down
+#define KICK_MAX_PWM 1023
+#define KICK_MAX_MS  400
+// Lie down (command "lie"): a short push of the wheels tips the body, then the
+// motors stop and it falls. Near the balance point "stop" alone is not enough:
+// the gearbox holds the robot up (it stood at 2 and at 10 degrees).
+// Then, while it falls, the wheels may follow the body (`lb`) to slow it
+// down before it lands.
+#define LIE_MAX_MS  200
+#define LIE_LAND_DEG 38.0f // it lies: the fall is over
+#define LIE_FALL_MS 800    // the slowed fall ends after this at the latest
+// A slowed fall ends with the wheels still running. Cut at once, they brake
+// and throw the body: once over the sensor, to 88 degrees. So they slow down
+// in about 0.15 s.
+#define LIE_TAIL     0.93f // share of the PWM kept per tick
+#define LIE_TAIL_MS  300
 #define MIN_BATTERY      25    // %, the IP5306 gives 0, 25, 50, 75 or 100
 // Balance point at the first boot: -1.5 for the bare robot. The robot then
 // learns its own (see LEARN_ below) and keeps it in flash, because the point
@@ -350,6 +370,16 @@ static struct {
 
 static volatile bool stop_request;
 static volatile bool fall_request; // next start is a fall test, not a balance
+static volatile bool kick_request;  // a kick test waits for the control task
+static volatile int kick_pwm, kick_ms;
+static volatile bool kick_catch;    // balance at the end of the kick
+static volatile int lie_request;    // +1 lie on the front, -1 on the back, 0 none
+// For a soft stand-up and a soft landing, changed over Wi-Fi ("kc 20").
+static volatile float kick_cut = 15.0f;  // kc: the body came up this far: catch, or motors off
+static volatile float kick_i0 = 1.0f;    // kf: share of the wheel speed the catch's I starts with
+static volatile float lie_push = 300.0f; // lp: PWM of the push that tips it
+static volatile float lie_cut = 15.0f;   // lc: tipped this far: the push ends
+static volatile float lie_brake = 0.0f;  // lb: while it falls, PWM per deg/s toward the fall (0 = free fall)
 static volatile bool ready;        // set by the control task after calibration
 static volatile float setpoint_trim = BALANCE_POINT_DEG;
 // Balance point learned in this run, or NAN. The control task sets it; the
@@ -736,6 +766,15 @@ static void control_task(void *arg)
     int upright_ticks = 0, fast_ticks = 0, balance_ticks = 0, errors = 0, write_errors = 0,
         battery_ticks = 0;
     int rest_ticks = 0; // ticks lying down, waiting and charging
+    int kick_ticks = 0;  // ticks left of a kick test
+    int16_t kick_u = 0;  // its PWM, + = forward
+    float kick_dir = 1;  // the side it lies on: + = on its front
+    bool caught = false; // this balance started from a kick, not from a hand
+    int lie_ticks = 0;   // ticks left of a lie-down push, then of the slowed fall
+    bool lie_falling = false; // the push is over, the fall is on
+    bool lie_tail = false;    // it landed: the wheels slow down
+    float lie_u = 0;          // PWM of the last tick
+    float lie_dir = 1;   // + = falls on its front
     int tof_ticks = 0, tof_quiet = 0; // ticks to the next ask, asks with no answer
     int zone_set = 16, rows_set = 16, col_set = 8, row_set = 7; // the zone the sensor has now (its own at start)
     int64_t last_us = esp_timer_get_time();
@@ -843,7 +882,61 @@ static void control_task(void *arg)
             set_speed(0);
             continue;
         }
-        switch (st.state) {
+        bool catch_now = false; // a kick test just brought the body up: balance now
+        // Lie down: from any state but a fall test, not when it already lies.
+        if (lie_request) {
+            const int dir = lie_request;
+            lie_request = 0;
+            if (st.state != ST_FALL && fabsf(tilt) < LYING_DEG && kick_ticks == 0) {
+                if (st.state == ST_BALANCE) {
+                    stop("lying down");
+                }
+                lie_dir = (float)dir;
+                lie_ticks = LIE_MAX_MS * LOOP_HZ / 1000;
+                lie_falling = false;
+                lie_tail = false;
+                lie_u = 0;
+                stop_request = false;
+            }
+        }
+        if (lie_ticks > 0) {
+            // First the push: wheels back to tip it forward (and the other way
+            // for the back). Then the fall: with `lb`, the wheels run toward
+            // the fall, faster the faster it falls, so it lands slower.
+            // "stop" or button B ends it all at once.
+            const float toward = lie_dir * tilt; // deg on the way down
+            int16_t u = 0;
+            if (!lie_falling && (toward > lie_cut || lie_ticks == 1)) {
+                lie_falling = true;
+                lie_ticks = LIE_FALL_MS * LOOP_HZ / 1000;
+            }
+            if (lie_falling && !lie_tail && lie_brake > 0 &&
+                (toward > LIE_LAND_DEG || lie_ticks == 1)) {
+                lie_tail = true;
+                lie_ticks = LIE_TAIL_MS * LOOP_HZ / 1000;
+            }
+            if (stop_request || (lie_falling && lie_brake <= 0) ||
+                (lie_tail && fabsf(lie_u) < 30)) {
+                lie_ticks = 0;
+            } else if (lie_tail) {
+                u = (int16_t)(lie_u * LIE_TAIL);
+                lie_ticks--;
+            } else if (lie_falling) {
+                u = (int16_t)(lie_dir * fminf(fmaxf(lie_brake * lie_dir * rate, 0), HARD_MAX_PWM));
+                lie_ticks--;
+            } else {
+                u = (int16_t)(-lie_dir * lie_push);
+                lie_ticks--;
+            }
+            if (u != 0) {
+                set_wheels(u, u);
+                st.reason = "lying down";
+            } else {
+                set_speed(0);
+            }
+            lie_u = u;
+            st.u = u;
+        } else switch (st.state) {
             case ST_STOPPED:
                 set_speed(0); // the base keeps the last command, so repeat it
                 if (st.seen_lying) {
@@ -853,8 +946,44 @@ static void control_task(void *arg)
                 break;
 
             case ST_WAIT:
-                set_speed(0);
-                st.u = 0;
+                // Kick test: only lying down, with battery, not while an update runs.
+                if (kick_request) {
+                    kick_request = false;
+                    if (fabsf(tilt) > KICK_MIN_DEG && !low && !link_updating() &&
+                        (st.battery < 0 || st.battery >= MIN_BATTERY || st.charging)) {
+                        kick_dir = tilt > 0 ? 1.0f : -1.0f;
+                        kick_u = (int16_t)(kick_dir * kick_pwm); // + pwm drives under the body
+                        kick_ticks = kick_ms * LOOP_HZ / 1000;
+                        start_pos = pos;
+                        stop_request = false;
+                        ESP_LOGI(TAG, "kick %d for %d ms", kick_u, kick_ms);
+                    } else {
+                        mon_say("kick: lay it down first (and no charge mode, no low battery)\n");
+                    }
+                }
+                if (kick_ticks > 0) {
+                    // Stop when the time is up, on "stop" or button B, or when the
+                    // body came up past `kc`. There a catch starts the
+                    // balance at once, with the wheels still running.
+                    if (stop_request || kick_dir * tilt < kick_cut) {
+                        // (Not while an update starts: that path below brakes, as it must.)
+                        catch_now = kick_catch && !stop_request && !link_updating() &&
+                                    kick_dir * tilt < kick_cut;
+                        kick_ticks = 0;
+                    } else {
+                        kick_ticks--;
+                        set_wheels(kick_u, kick_u);
+                        st.u = kick_u;
+                        st.position = pos - start_pos;
+                        st.reason = "kick";
+                        upright_ticks = 0;
+                        break;
+                    }
+                }
+                if (!catch_now) {
+                    set_speed(0); // a catch must not brake the wheels, not even for a tick
+                    st.u = 0;
+                }
                 // Do not start on a nearly empty battery (unless it charges): the
                 // motors get weak, and the robot can switch off mid-balance (it
                 // did after about 4 hours of tests).
@@ -884,8 +1013,8 @@ static void control_task(void *arg)
                 } else {
                     upright_ticks = 0;
                 }
-                if (upright_ticks >= UPRIGHT_TICKS) {
-                    if (!fall_request) {
+                if (upright_ticks >= UPRIGHT_TICKS || catch_now) {
+                    if (!fall_request && !catch_now) {
                         setpoint_trim = hold_sum / upright_ticks; // the hand's angle
                     }
                     upright_ticks = 0;
@@ -898,10 +1027,24 @@ static void control_task(void *arg)
                     x_ref = 0;
                     v_ref = w_ref = x_goal = h_goal = 0;
                     drive_end_ms = 0; // an order from before the start does not count
-                    speed = 0;
-                    integral = 0;
                     trim = 0;
                     stop_request = false;
+                    caught = catch_now;
+                    if (catch_now) {
+                        // From a kick: the balance point stays the saved one, and
+                        // the loop takes over the wheels at the speed they have.
+                        // At this moment P and D nearly cancel (the body comes up
+                        // fast), so with I at 0 the loop would ask for 0 m/s and
+                        // brake, and the brake throws the body back down.
+                        integral = kick_i0 * speed;
+                        v_model = speed;
+                        st.state = ST_BALANCE;
+                        st.reason = "balancing";
+                        ESP_LOGI(TAG, "caught at %.1f deg, %.2f m/s", tilt, speed);
+                        break;
+                    }
+                    speed = 0;
+                    integral = 0;
                     if (fall_request) {
                         // Fall test: record 4 s at 200 Hz from now; let go.
                         fall_request = false;
@@ -1032,7 +1175,8 @@ static void control_task(void *arg)
                 st.turn = turn;
 
                 // Soft start: the speed limit grows from 0 in RAMP_S.
-                const float ramp = fminf(1.0f, balance_ticks * DT / RAMP_S);
+                // Not after a kick: the wheels already run, and a low limit would brake them.
+                const float ramp = caught ? 1.0f : fminf(1.0f, balance_ticks * DT / RAMP_S);
                 const float vlim = fminf(gain.vmax, HARD_MAX_V) * ramp;
                 const float th = (err - outer) / RAD_TO_DEG_F;
                 integral = clampf(integral + gain.ki * th * DT, vlim);
@@ -1217,6 +1361,26 @@ static void handle_command(const char *line)
         drive_w = isnan(turn) ? 0 : clampf(turn, DRIVE_MAX_W);
         seconds = seconds > 0 ? fminf(seconds, DRIVE_MAX_S) : 0;
         drive_end_ms = (uint32_t)(esp_timer_get_time() / 1000) + (uint32_t)(seconds * 1000);
+    } else if (!strcmp(name, "kick")) {
+        // "kick 600 200": wheels at PWM 600 for 200 ms, toward the side it
+        // lies on (a negative PWM drives away from it). Records 2 s.
+        // "kick 700 200 1": the same, then it balances (the catch).
+        int pwm = 0, ms = 0, catch_it = 0;
+        if (sscanf(line, "%*s %d %d %d", &pwm, &ms, &catch_it) >= 2 && ms > 0) {
+            kick_catch = catch_it != 0;
+            kick_pwm = pwm < -KICK_MAX_PWM ? -KICK_MAX_PWM : pwm > KICK_MAX_PWM ? KICK_MAX_PWM : pwm;
+            kick_ms = ms > KICK_MAX_MS ? KICK_MAX_MS : ms;
+            mon_rec_start(2 * LOOP_HZ);
+            kick_request = true;
+            mon_say("kick %d for %d ms%s\n", kick_pwm, kick_ms, kick_catch ? ", then balance" : "");
+        } else {
+            mon_say("kick <pwm> <ms> [1 = then balance]\n");
+        }
+    } else if (!strcmp(name, "lie")) {
+        // "lie": lie down on the front (on the distance sensor); "lie -1": on the back.
+        lie_request = (n == 2 && v < 0) ? -1 : 1;
+        mon_rec_start(2 * LOOP_HZ);
+        mon_say("lie down on the %s\n", lie_request > 0 ? "front" : "back");
     } else if (!strcmp(name, "fall")) {
         fall_request = true;
         mon_say("fall test: lay it down, then hold it upright and still, and let go\n");
@@ -1381,6 +1545,11 @@ extern "C" void app_main(void)
     mon_int("trow", &tof_row, 0, 15);
     mon_float("bp", &setpoint_trim, -BP_LIMIT, BP_LIMIT); // balance point, degrees
     mon_int("servo", &servo_us, SERVO_MIN_US, SERVO_MAX_US);
+    mon_float("kc", &kick_cut, 5, 35);
+    mon_float("kf", &kick_i0, 0, 1.2f);
+    mon_float("lp", &lie_push, 0, HARD_MAX_PWM);
+    mon_float("lc", &lie_cut, 3, 35);
+    mon_float("lb", &lie_brake, 0, 5);
     mon_int("bl", &backlight, 0, 100); // screen backlight, percent
     // "save" keeps all of them in flash but these two: the balance point has
     // its own place there, and a servo must not start by itself.
