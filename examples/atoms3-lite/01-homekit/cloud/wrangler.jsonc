@@ -5,8 +5,7 @@
   "compatibility_date": "2026-09-25",
   "assets": { "directory": "./public" },
   "d1_databases": [
-    // Set database_id after `wrangler d1 create home-energy`.
-    { "binding": "DB", "database_name": "home-energy", "database_id": "local-only", "migrations_dir": "migrations" }
+    { "binding": "DB", "database_name": "home-energy", "database_id": "3448e5c3-7dad-435f-a73c-668ca652579b", "migrations_dir": "migrations" }
   ],
   // The bridge sends with this secret: `wrangler secret put INGEST_TOKEN`.
   // For `wrangler dev`, put INGEST_TOKEN=... in .dev.vars (ignored by git).
