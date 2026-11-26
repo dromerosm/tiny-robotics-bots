@@ -169,6 +169,6 @@ Not checked yet:
 
 - Put the board where the Wi-Fi is stronger, and watch the lowest free memory for a day.
 - A long press on the button to forget the pairings, as a way back without the token.
-- Review power saving. Today the only saving is ESP-IDF's default Wi-Fi modem sleep (`WIFI_PS_MIN_MODEM`): `tr_ota` never calls `esp_wifi_set_ps()`. The radio wakes on each DTIM, so a ping takes 16 to 244 ms. `CONFIG_PM_ENABLE` is off, so the CPU stays at 160 MHz and never sleeps, and TX power is at its 20 dBm maximum. The button is read every 50 ms, which would block light sleep. Measure the current draw first, then pick one of two ways:
-  - `WIFI_PS_NONE`: steady, low latency, about 0.3 W more.
-  - `CONFIG_PM_ENABLE` with DFS from 80 to 160 MHz, plus a GPIO interrupt for the button: less power, but slower HomeKit key math when a controller connects. Check that HAP and mDNS still answer.
+- Review power saving. Today the only saving is the Wi-Fi modem sleep that ESP-IDF turns on by default (`WIFI_PS_MIN_MODEM`), because `tr_ota` never calls `esp_wifi_set_ps()`. The radio wakes up on each DTIM, so a ping takes from 16 to 244 ms. `CONFIG_PM_ENABLE` is off: the CPU stays at 160 MHz and never sleeps. TX power is at the 20 dBm maximum. The button is read every 50 ms, and that would keep the chip awake if light sleep were on. First measure the current, then pick one of these:
+  - `WIFI_PS_NONE`: fast, steady pings, for about 0.3 W more.
+  - `CONFIG_PM_ENABLE` with DFS from 80 to 160 MHz, and a GPIO interrupt for the button: less power, but the HomeKit key math is slower when a controller connects. Check that HAP and mDNS still answer.
