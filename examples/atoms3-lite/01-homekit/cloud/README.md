@@ -41,3 +41,5 @@ npx wrangler@4.135.0 deploy
 ```
 
 Then add a Cloudflare Access application for `energy.diegoromero.es`, with a bypass for `/ingest`.
+
+The zone has a WAF custom rule that challenges every HTTP/1.1 request. The bridge's HTTP client only speaks HTTP/1.1 and cannot pass a challenge, so it gets a 403. The first custom rule in the zone skips the rest for `POST energy.diegoromero.es/ingest`. The Worker's token still protects that path.
