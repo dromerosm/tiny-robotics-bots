@@ -40,9 +40,10 @@ static esp_err_t status_get(httpd_req_t *req)
     energy_clock_text(clock, sizeof(clock));
     jw_raw(&w, "{\"firmware\":");
     jw_str(&w, esp_app_get_description()->version);
-    jw_fmt(&w, ",\"uptime_s\":%lld,\"heap_free\":%u,\"heap_min\":%u,\"clock\":",
+    jw_fmt(&w, ",\"uptime_s\":%lld,\"heap_free\":%u,\"heap_min\":%u,\"heap_largest\":%u,\"clock\":",
            esp_timer_get_time() / 1000000, (unsigned)esp_get_free_heap_size(),
-           (unsigned)esp_get_minimum_free_heap_size());
+           (unsigned)esp_get_minimum_free_heap_size(),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     jw_str(&w, clock[0] ? clock : NULL);
     jw_raw(&w, ",\"cloud\":");
     cloud_json(&w);

@@ -40,7 +40,23 @@ The plugs, HomeKit, the energy, the API and `/panel` are the same code (`plugs.c
 | Built | Every shared component | Only `main` and what it needs (`COMPONENTS`) |
 | Energy history | 48 hours and 62 days, on the board | The same, plus every hour sent to the [home-energy](cloud/README.md) Worker, which keeps all of it with a price table (`cloud.c`) |
 
-The app is 1.1 MB. On the board, with the three plugs read and one controller paired, the lowest free memory since boot was 176 KB.
+The app is 1.1 MB. On the board, with the three plugs read and one controller paired, the lowest free memory since boot was 176 KB before the hourly send to Cloudflare.
+
+### Memory
+
+The board has no PSRAM, so all of this shares about 320 KB of RAM. Measured on 2026-11-26:
+
+| What | Value |
+|---|---|
+| Free memory when idle | 183 to 188 KB |
+| Peak of one send to Cloudflare (TLS, its task and the JSON) | about 45 KB |
+| Lowest free memory since boot, after a send | 128 to 136 KB (107 KB after 12 sends in a row) |
+| Largest free block | 106 to 143 KB (TLS needs 16 KB in one piece) |
+| Free stack in the send task, at its lowest | 3.8 KB of 8 KB |
+
+The send runs in a task made for it and deleted after, so its memory is used only for a few seconds each hour. It starts only with 80 KB free and a free block of 24 KB. Otherwise it is skipped and tried again 10 minutes later, so it never takes the memory HomeKit needs. A skipped send loses nothing: the next one has the same hours.
+
+Not changed, on purpose: the TLS input buffer stays at 16 KB, because Cloudflare can send records that big. The full certificate bundle stays, because it is in flash, not RAM.
 
 ## Build
 
@@ -56,7 +72,7 @@ WIFI_ENV=$E scripts/build.sh examples/atoms3-lite/01-homekit
 rm $E
 ```
 
-Without `HOME_ENERGY_URL` the bridge sends nothing, and the history stays on the board. `cloud/.dev.vars.remote` holds the Worker's token and is not in git. `GET /api/status` shows the last sends under `cloud`: HTTP status, bytes, and the free memory before and after TLS.
+Without `HOME_ENERGY_URL` the bridge sends nothing, and the history stays on the board. `cloud/.dev.vars.remote` holds the Worker's token and is not in git. `GET /api/status` shows the last sends under `cloud`: sends, failures and skipped sends, HTTP status, bytes, the free memory and the largest free block before TLS, the lowest free memory after it, and the least free stack the send task had. `heap_largest` at the top level is the largest free block now.
 
 Output: `out/atoms3-lite-01-homekit-esp32s3.bin` (to flash over USB) and `examples/atoms3-lite/01-homekit/build/homekit.bin` (to send over Wi-Fi).
 

@@ -9,6 +9,11 @@
 // There is no PSRAM, and TLS takes about 40 KB while it runs. So the send runs
 // in a task that is made for it and then deleted: its stack and the TLS memory
 // are only used for the few seconds of the send.
+//
+// A send starts only when there is room for it: MIN_FREE bytes free and a free
+// block of MIN_BLOCK (TLS needs one buffer of 16 KB in one piece). Otherwise it
+// is skipped and tried again RETRY_S later, so a send never takes the memory
+// HomeKit needs. A skipped send loses nothing: the next one has the same hours.
 #include "cloud.h"
 
 #include <stdlib.h>
@@ -31,7 +36,9 @@ static const char *TAG = "cloud";
 #define RETRY_S   600
 #define FROM_MIN  2 // minutes into the hour: the hour before is closed
 #define STACK     8192
-#define FIRST_BUF 8192
+#define FIRST_BUF 2048        // the JSON is about 1.3 KB; the buffer doubles if needed
+#define MIN_FREE  (80 * 1024) // a send takes about 45 KB at its peak
+#define MIN_BLOCK (24 * 1024) // the TLS input buffer is 16 KB, in one piece
 
 typedef struct {
     char *data;
@@ -44,8 +51,10 @@ static time_t tried_at;    // when the last send started
 // For GET /api/status. Written only by the send task.
 static int last_http;                 // the last HTTP status, or -1 for a network error
 static int64_t last_try_s, last_ok_s; // uptime in seconds (0: never)
-static unsigned sends, fails;
+static unsigned sends, fails, skips;
 static unsigned heap_before, heap_low; // free heap before the last send, lowest since boot after it
+static unsigned block_before;          // the largest free block before the last send
+static unsigned stack_low;             // the least free stack any send task had, in bytes (0: none)
 static int last_len;
 
 static esp_err_t buf_sink(void *ctx, const char *data, size_t n)
@@ -78,6 +87,7 @@ static void send_task(void *arg)
     jw_t w;
     last_try_s = esp_timer_get_time() / 1000000;
     heap_before = (unsigned)esp_get_free_heap_size();
+    block_before = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
 
     jw_begin_sink(&w, buf_sink, &b);
     energy_json(&w);
@@ -121,6 +131,10 @@ static void send_task(void *arg)
         fails++;
         ESP_LOGW(TAG, "send failed (HTTP %d); again in %d s", status, RETRY_S);
     }
+    const unsigned stack_free = (unsigned)uxTaskGetStackHighWaterMark(NULL); // bytes on ESP-IDF
+    if (!stack_low || stack_free < stack_low) {
+        stack_low = stack_free;
+    }
     busy = false;
     vTaskDelete(NULL);
 }
@@ -136,6 +150,14 @@ static void check(void *arg)
         return;
     }
     tried_at = now;
+    const size_t free_now = esp_get_free_heap_size();
+    const size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (free_now < MIN_FREE || block < MIN_BLOCK) {
+        skips++;
+        ESP_LOGW(TAG, "skipped: %u KB free, largest block %u KB; again in %d s",
+                 (unsigned)(free_now / 1024), (unsigned)(block / 1024), RETRY_S);
+        return;
+    }
     busy = true;
     if (xTaskCreate(send_task, "cloud", STACK, (void *)(intptr_t)hour, 2, NULL) != pdPASS) {
         busy = false;
@@ -169,9 +191,11 @@ void cloud_json(jw_t *w)
     const int64_t up = esp_timer_get_time() / 1000000;
     jw_raw(w, "{\"url\":");
     jw_str(w, CONFIG_HOME_ENERGY_URL);
-    jw_fmt(w, ",\"sends\":%u,\"fails\":%u,\"last_http\":%d,\"last_bytes\":%d", sends, fails,
-           last_try_s ? last_http : 0, last_len);
+    jw_fmt(w, ",\"sends\":%u,\"fails\":%u,\"skips\":%u,\"last_http\":%d,\"last_bytes\":%d", sends,
+           fails, skips, last_try_s ? last_http : 0, last_len);
     jw_fmt(w, ",\"last_try_ago_s\":%lld,\"last_ok_ago_s\":%lld",
            last_try_s ? up - last_try_s : -1LL, last_ok_s ? up - last_ok_s : -1LL);
-    jw_fmt(w, ",\"heap_before\":%u,\"heap_min_after\":%u}", heap_before, heap_low);
+    jw_fmt(w,
+           ",\"heap_before\":%u,\"block_before\":%u,\"heap_min_after\":%u,\"stack_free_min\":%u}",
+           heap_before, block_before, heap_low, stack_low);
 }
