@@ -26,6 +26,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_netif_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -241,6 +242,22 @@ void energy_fresh(int dev)
     xSemaphoreGive(mu);
 }
 
+// Before a restart (an update over Wi-Fi, an unpair), save what is not saved
+// yet. Without this, each update lost up to SAVE_MS of energy. A power cut
+// still does: it gives no warning.
+static void save_at_restart(void)
+{
+    if (!mu || xSemaphoreTake(mu, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return;
+    }
+    if (dirty) {
+        save();
+        dirty = false;
+        ESP_LOGI(TAG, "saved before the restart");
+    }
+    xSemaphoreGive(mu);
+}
+
 void energy_start(void)
 {
     setenv("TZ", CONFIG_HOME_TZ, 1);
@@ -252,6 +269,7 @@ void energy_start(void)
     load();
     saved_ms = esp_timer_get_time() / 1000;
     mu = xSemaphoreCreateMutex();
+    esp_register_shutdown_handler(save_at_restart);
 }
 
 // --- JSON ---------------------------------------------------------------------

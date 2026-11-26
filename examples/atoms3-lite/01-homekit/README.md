@@ -33,6 +33,9 @@ The plugs, HomeKit, the energy, the API and `/panel` are the same code (`plugs.c
 | Update token | On the screen and the USB port | On the USB port only |
 | `/panel` asks for the token | With `prompt()` | With a field on the page: browsers inside apps have no `prompt()` |
 | Energy per day on `/panel` | Units in each cell | Plain numbers, units in the header, so it fits a phone |
+| After a click on `/panel` | Waits 10 s for a new read | Waits up to 30 s for the outlet to be as asked, with `...` on the button |
+| `/panel` every 5 s | Builds every button again | Builds them again only when an outlet changes. The readings are written in place |
+| Energy at an update or a restart | Up to 15 minutes lost | Saved just before the restart (a shutdown handler). A power cut still loses up to 15 minutes |
 | State | Screen tabs | The LED |
 | Built | Every shared component | Only `main` and what it needs (`COMPONENTS`) |
 
@@ -151,12 +154,13 @@ I (13536) plugs: first read: 3 of 3 devices answer
 - `/pair` while paired: it says so, and shows no code.
 - The API, with a script from a Mac on 2026-11-26 (109 checks, all passed): every endpoint, the 3 devices and 8 outlets, bad input (400), unknown paths (404), every bad form of the token (403, also on `/update` and `/home?unpair=1`), no CORS, the token never in an answer, and 40 requests 8 at a time (all answered in 2.2 s, no restart, 154 KB free at the lowest).
 - `/panel` in a browser, light and dark, at desktop and phone width: plugs, energy and the bridge show well, and a wrong token says so. The Apple TV shows as the home hub, connected to the Atom.
+- Switching from `/panel`: Trabajo usb on and off, about 3 s each, with `...` while it waits. The Trabajo strip sometimes stops answering for about 20 s after a switch. The panel now waits for it.
+- The energy across an update: the log says `energy: saved before the restart`, and the totals did not go down.
 - In esp-emu: Wi-Fi and HomeKit start (the smoke test).
 
 Not checked yet:
 
 - `/pair` with the button, and adding the bridge from zero with its QR code.
-- Switching an outlet from `/panel` or the API.
 - The other LED colors (red, blue, amber).
 - A whole day running: memory, and the Wi-Fi signal. The board joined `MOVISTAR_7B00` at -74 dBm, which is weak.
 - The energy history kept across the move, against the numbers on StackChan.

@@ -105,37 +105,62 @@ const sum = a => a.reduce((x, y) => x + y, 0);
 const n0 = v => v >= 10 ? String(Math.round(v)) : n1(v);
 const cents = v => (v * 100).toFixed(1);
 
-let plugData = null, busy = null;
+// busy is the outlet that waits for the plug after a click ({dev, sw}), or null.
+// shown is the outlets drawPlugs() last drew: the buttons are built again only
+// when an outlet changes, so a click never lands on a button that is being
+// replaced. The readings (watts, volts) change often and are written in place.
+let plugData = null, busy = null, shown = "";
 
 function drawPlugs() {
+  const now = JSON.stringify([plugData.devices.map(d => d.outlets), busy]);
+  if (now !== shown) {
+    shown = now;
+    buildPlugs();
+  }
+  plugData.devices.forEach((d, i) => {
+    const m = $("meta" + i);
+    m.className = d.error ? "bad" : "mute";
+    m.textContent = d.error || `${n1(d.watts)} W · ${n1(d.volts)} V · ${d.milliamps ?? "?"} mA · ${d.ip}`;
+  });
+}
+
+function buildPlugs() {
   const box = $("plugs");
   box.className = "";
   box.replaceChildren(...plugData.devices.map((d, i) => {
-    const meta = d.error ? el("span", { class: "bad" }, d.error)
-      : el("span", { class: "mute" }, `${n1(d.watts)} W · ${n1(d.volts)} V · ${d.milliamps ?? "?"} mA · ${d.ip}`);
+    const meta = el("span", { id: "meta" + i });
     const outs = d.outlets.map((o, k) => el("button", {
       class: o.on ? "on" : "",
       title: o.ap ? "Feeds the access point" : "",
       onclick: () => toggle(i, k, !o.on, o),
-    }, o.name + (o.on == null ? " ?" : o.on ? " on" : " off")));
-    if (busy != null) outs.forEach(b => b.disabled = true);
+    }, o.name + (busy && busy.dev === i && busy.sw === k ? " ..." : o.on == null ? " ?" : o.on ? " on" : " off")));
+    if (busy) outs.forEach(b => b.disabled = true);
     return el("div", { class: "dev" }, el("div", { class: "row" }, el("span", { class: "name" }, d.name), meta),
       el("div", { class: "outs" }, ...outs));
   }));
 }
 
 async function toggle(dev, sw, on, outlet) {
-  if (!on && outlet.ap && !confirm("This outlet feeds the access point. Switch it off?")) return;
+  if (!on && outlet.ap) {
+    // A browser inside an app may have no confirm(): then the answer is no.
+    let sure = false;
+    try { sure = confirm("This outlet feeds the access point. Switch it off?"); } catch (e) {}
+    if (!sure) return;
+  }
   try {
-    busy = plugData.reads;
+    busy = { dev, sw };
     drawPlugs();
     await api(`/api/plugs?dev=${dev}&sw=${sw}&on=${on ? 1 : 0}`, { method: "POST" });
-    // The order is queued: look again until the worker has read the plugs.
-    for (let i = 0; i < 20; i++) {
+    // The order is queued. Look again until the outlet is as asked, for up to
+    // 30 s: a power strip can stop answering for about 20 s after a switch,
+    // and a failed read also counts in "reads".
+    let done = false;
+    for (let i = 0; i < 60 && !done; i++) {
       await new Promise(r => setTimeout(r, 500));
       plugData = await api("/api/plugs");
-      if (plugData.reads !== busy) break;
+      done = plugData.devices[dev].outlets[sw].on === on;
     }
+    if (!done) $("msg").textContent = `${plugData.devices[dev].name}: no answer yet, it may still switch.`;
   } catch (e) { $("msg").textContent = e.message; }
   busy = null;
   drawPlugs();
