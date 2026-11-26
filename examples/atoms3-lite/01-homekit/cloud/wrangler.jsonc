@@ -10,6 +10,11 @@
   // The bridge sends with this secret: `wrangler secret put INGEST_TOKEN`.
   // For `wrangler dev`, put INGEST_TOKEN=... in .dev.vars (ignored by git).
   "routes": [{ "pattern": "energy.diegoromero.es", "custom_domain": true }],
+  // The Access application this Worker sits behind: /api/* checks its token (src/access.js).
+  "vars": {
+    "ACCESS_TEAM": "https://crafted4ai.cloudflareaccess.com",
+    "ACCESS_AUD": "e363422ac1f469ece35a5432db6bd663194e28ddbfc1ce9f44d26faf92c1e30f"
+  },
   "workers_dev": false,
   "preview_urls": false
 }

@@ -9,7 +9,11 @@
 // GET /api/days?from=2026-01-01&to=2026-12-31    Wh and EUR per device and day.
 // GET /api/prices                                The price table.
 // Everything else is the page in public/. Cloudflare Access guards it all but
-// /ingest.
+// /ingest. /api/* also checks the Access token itself (access.js), so a mistake
+// in the Access setup does not open the data. Access lets every path under
+// /ingest through, so anything there but /ingest itself is a 404.
+
+import { accessOk } from "./access.js";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const HOUR = /^\d{4}-\d{2}-\d{2}T\d{2}$/;
@@ -25,8 +29,16 @@ export default {
       if (url.pathname === "/ingest") {
         return req.method === "POST" ? await ingest(req, env) : text("POST only", 405);
       }
+      if (url.pathname.startsWith("/ingest")) {
+        return text("not found", 404);
+      }
       if (req.method !== "GET") {
         return text("GET only", 405);
+      }
+      // ACCESS_OFF=1 only in .dev.vars, for wrangler dev: there is no Access there.
+      if (url.pathname.startsWith("/api/") && env.ACCESS_OFF !== "1" &&
+          !(await accessOk(req, env.ACCESS_TEAM, env.ACCESS_AUD))) {
+        return text("no valid Access token", 403);
       }
       switch (url.pathname) {
         case "/api/hours":
