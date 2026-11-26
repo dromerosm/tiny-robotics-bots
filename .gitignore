@@ -12,3 +12,4 @@ parts/*/target/
 
 # Python
 __pycache__/
+.dev.vars*

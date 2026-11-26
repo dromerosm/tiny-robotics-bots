@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Home energy</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Home energy</h1>
+    <p class="sub">What the HomeKit bridge measured on each plug. Cost is the energy term only, with no taxes.</p>
+  </header>
+
+  <div class="filters" role="group" aria-label="Range">
+    <button data-days="7">7 days</button>
+    <button data-days="30" aria-pressed="true">30 days</button>
+    <button data-days="90">90 days</button>
+    <button data-days="365">1 year</button>
+  </div>
+
+  <section class="tiles" id="tiles" aria-live="polite"></section>
+
+  <section class="card">
+    <h2>Energy per day</h2>
+    <ul class="legend" id="legend"></ul>
+    <div class="chart" id="days-chart"></div>
+  </section>
+
+  <section class="card">
+    <h2>Energy per hour, last 48 hours</h2>
+    <div class="chart" id="hours-chart"></div>
+  </section>
+
+  <section class="card">
+    <h2>Totals for the range</h2>
+    <table id="totals"></table>
+  </section>
+
+  <section class="card">
+    <h2>Prices</h2>
+    <p class="sub">A price holds from its day until the next one. Change it in D1, and every cost above follows.</p>
+    <table id="prices"></table>
+  </section>
+  <p class="status" id="status"></p>
+</main>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+</body>
+</html>
