@@ -23,16 +23,21 @@ button{font:inherit;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;c
 button.on{background:var(--on)}button:disabled{opacity:.5;cursor:wait}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line)}
 td:first-child,th:first-child{text-align:left}th{color:var(--mute);font-weight:600}
-svg{width:100%;height:150px;display:block}
+td,th{white-space:nowrap}.wide{overflow-x:auto}
+table.tight{font-size:13px}tr.unit th{font-weight:400;font-size:11px;padding-top:0}table.tight tr:first-child th{border-bottom:0}table.tight td,table.tight th{padding:4px 3px}
+svg{width:100%;height:auto;display:block}
 .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;margin-top:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
 ul{margin:0;padding-left:18px}li{font-size:14px}
 #msg{color:var(--bad);min-height:1em}
+#login{display:flex;flex-wrap:wrap;gap:8px;align-items:center}#login[hidden]{display:none}
+#login input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
 </style>
 </head>
 <body>
 <main>
 <h1>Home Bridge</h1>
 <p id="msg"></p>
+<section id="login-box" hidden><h2>Token</h2><form id="login"><input id="tok" type="password" autocomplete="current-password" aria-label="Token" placeholder="token" size="20"><button class="on">Open</button><span class="mute">Printed on the bridge's USB port at boot.</span></form></section>
 <section><h2>Plugs</h2><div id="plugs" class="mute">Loading...</div></section>
 <section><h2>Energy</h2><div id="energy" class="mute">Loading...</div></section>
 <section><h2>Bridge</h2><div id="status" class="mute">Loading...</div></section>
@@ -53,29 +58,52 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 
+// The token comes from a field on the page, not prompt(): some browsers (the
+// ones inside apps) have no prompt(). It waits until the form is sent.
+let asking = null;
 function askToken() {
-  const t = prompt("Token (on the USB port of the bridge)");
-  if (t === null) return false;
-  token = t.trim();
-  try { localStorage.setItem("hk-token", token); } catch (e) {}
-  return true;
+  if (asking) return asking;
+  $("login-box").hidden = false;
+  $("tok").focus();
+  asking = new Promise(resolve => {
+    $("login").onsubmit = ev => {
+      ev.preventDefault();
+      const t = $("tok").value.trim();
+      if (!t) return;
+      token = t;
+      try { localStorage.setItem("hk-token", token); } catch (e) {}
+      $("tok").value = "";
+      $("login-box").hidden = true;
+      asking = null;
+      resolve();
+    };
+  });
+  return asking;
 }
 
 async function api(path, opts) {
-  for (let tries = 0; tries < 3; tries++) {
-    if (!token && !askToken()) throw new Error("no token");
+  for (;;) {
+    if (!token) await askToken();
     const r = await fetch(path, Object.assign({ headers: { "X-Token": token }, cache: "no-store" }, opts));
-    if (r.status === 403) { token = ""; continue; }
+    if (r.status === 403) {
+      token = "";
+      try { localStorage.removeItem("hk-token"); } catch (e) {}
+      $("msg").textContent = "Wrong token.";
+      continue;
+    }
     if (!r.ok && r.status !== 202) throw new Error(path + ": " + r.status + " " + (await r.text()));
     return r.json();
   }
-  throw new Error("wrong token");
 }
 
 const n1 = v => v == null ? "?" : (Math.round(v * 10) / 10).toString();
 const wh = v => v >= 1000 ? n1(v / 1000) + " kWh" : n1(v) + " Wh";
 const eur = v => (v < 0.995 ? (v * 100).toFixed(1) + " c" : v.toFixed(2) + " €");
 const sum = a => a.reduce((x, y) => x + y, 0);
+// For the day table: plain numbers, the units are in the header. Wh are
+// whole from 10 up, the cost is always in cents.
+const n0 = v => v >= 10 ? String(Math.round(v)) : n1(v);
+const cents = v => (v * 100).toFixed(1);
 
 let plugData = null, busy = null;
 
@@ -90,7 +118,7 @@ function drawPlugs() {
       title: o.ap ? "Feeds the access point" : "",
       onclick: () => toggle(i, k, !o.on, o),
     }, o.name + (o.on == null ? " ?" : o.on ? " on" : " off")));
-    if (busy) outs.forEach(b => b.disabled = true);
+    if (busy != null) outs.forEach(b => b.disabled = true);
     return el("div", { class: "dev" }, el("div", { class: "row" }, el("span", { class: "name" }, d.name), meta),
       el("div", { class: "outs" }, ...outs));
   }));
@@ -129,7 +157,7 @@ function chart(hours, names) {
     const h = slots.get(key);
     let y = H - pad;
     if (h) h.wh.forEach((v, d) => {
-      const bh = (v / max) * (H - pad - 4);
+      const bh = (v / max) * (H - pad - 16);
       const r = document.createElementNS(NS, "rect");
       r.setAttribute("x", 2 + i * bw); r.setAttribute("y", y - bh);
       r.setAttribute("width", Math.max(1, bw - 1)); r.setAttribute("height", bh);
@@ -142,14 +170,14 @@ function chart(hours, names) {
     if (t.getHours() % 6 === 0) {
       const lab = document.createElementNS(NS, "text");
       lab.setAttribute("x", 2 + i * bw); lab.setAttribute("y", H - 4);
-      lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "currentColor");
+      lab.setAttribute("font-size", "12"); lab.setAttribute("fill", "currentColor");
       lab.textContent = String(t.getHours()).padStart(2, "0") + "h";
       svg.append(lab);
     }
   }
   const top = document.createElementNS(NS, "text");
-  top.setAttribute("x", W - 2); top.setAttribute("y", 10); top.setAttribute("text-anchor", "end");
-  top.setAttribute("font-size", "10"); top.setAttribute("fill", "currentColor");
+  top.setAttribute("x", W - 2); top.setAttribute("y", 12); top.setAttribute("text-anchor", "end");
+  top.setAttribute("font-size", "12"); top.setAttribute("fill", "currentColor");
   top.textContent = "max " + wh(max) + "/h";
   svg.append(top);
   return svg;
@@ -167,13 +195,14 @@ async function loadEnergy() {
     el("td", {}, el("i", { style: `display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(${COLORS[i % 4]})` }), d.name),
     el("td", {}, wh(today[i] || 0)), el("td", {}, eur(todayEur[i] || 0)),
     el("td", {}, wh(d.total_wh)), el("td", {}, eur(d.total_eur))));
-  const days = e.days.slice(-14).reverse().map(d => el("tr", {}, el("td", {}, d.d),
-    ...d.wh.map(v => el("td", {}, wh(v))), el("td", {}, wh(sum(d.wh))), el("td", {}, eur(sum(d.eur)))));
+  const days = e.days.slice(-14).reverse().map(d => el("tr", {}, el("td", {}, d.d.slice(5)),
+    ...d.wh.map(v => el("td", {}, n0(v))), el("td", {}, n0(sum(d.wh))), el("td", {}, cents(sum(d.eur)))));
   box.replaceChildren(
-    el("table", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Today"), el("th", {}, "€"), el("th", {}, "Since start"), el("th", {}, "€")), ...rows),
+    el("div", { class: "wide" }, el("table", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Today"), el("th", {}, "€"), el("th", {}, "Since start"), el("th", {}, "€")), ...rows)),
     el("p", { class: "mute" }, "Last 48 hours"), chart(e.hours, names),
     el("p", { class: "mute" }, "Per day"),
-    el("table", {}, el("tr", {}, el("th", {}, "Day"), ...names.map(n => el("th", {}, n)), el("th", {}, "All"), el("th", {}, "€")), ...days),
+    el("div", { class: "wide" }, el("table", { class: "tight" }, el("tr", {}, el("th", {}, "Day"), ...names.map(n => el("th", {}, n)), el("th", {}, "All"), el("th", {}, "Cost")),
+      el("tr", { class: "unit" }, el("th", {}, ""), ...names.map(() => el("th", {}, "Wh")), el("th", {}, "Wh"), el("th", {}, "c")), ...days)),
     el("p", { class: "mute" }, `Added up on the bridge from each plug's power reading. Euros at ${e.price_eur_kwh} €/kWh, the bill's energy term with no taxes or power term. Clock: ${e.clock}`));
 }
 
