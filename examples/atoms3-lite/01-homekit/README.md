@@ -38,6 +38,7 @@ The plugs, HomeKit, the energy, the API and `/panel` are the same code (`plugs.c
 | Energy at an update or a restart | Up to 15 minutes lost | Saved just before the restart (a shutdown handler). A power cut still loses up to 15 minutes |
 | State | Screen tabs | The LED |
 | Built | Every shared component | Only `main` and what it needs (`COMPONENTS`) |
+| Energy history | 48 hours and 62 days, on the board | The same, plus every hour sent to the [home-energy](cloud/README.md) Worker, which keeps all of it with a price table (`cloud.c`) |
 
 The app is 1.1 MB. On the board, with the three plugs read and one controller paired, the lowest free memory since boot was 176 KB.
 
@@ -49,9 +50,13 @@ The firmware needs one env file with the Wi-Fi networks and the plugs. Build it 
 E=$(mktemp) && chmod 600 $E
 cat ../../../m5stack/wifi.env > $E && echo >> $E
 python3 ~/GitHub/home-iot/scripts/stackchan_env.py >> $E
+echo "HOME_ENERGY_URL=https://energy.diegoromero.es/ingest" >> $E
+sed -n 's/^INGEST_TOKEN=/HOME_ENERGY_TOKEN=/p' examples/atoms3-lite/01-homekit/cloud/.dev.vars.remote >> $E
 WIFI_ENV=$E scripts/build.sh examples/atoms3-lite/01-homekit
 rm $E
 ```
+
+Without `HOME_ENERGY_URL` the bridge sends nothing, and the history stays on the board. `cloud/.dev.vars.remote` holds the Worker's token and is not in git. `GET /api/status` shows the last sends under `cloud`: HTTP status, bytes, and the free memory before and after TLS.
 
 Output: `out/atoms3-lite-01-homekit-esp32s3.bin` (to flash over USB) and `examples/atoms3-lite/01-homekit/build/homekit.bin` (to send over Wi-Fi).
 

@@ -65,6 +65,7 @@ typedef struct {
 static store_t st;
 static meter_t meter[PLUGS_MAX_DEV];
 static SemaphoreHandle_t mu;
+static SemaphoreHandle_t json_mu; // one energy_json() at a time: the web page or the upload
 static int64_t saved_ms;
 static bool dirty;
 
@@ -269,6 +270,7 @@ void energy_start(void)
     load();
     saved_ms = esp_timer_get_time() / 1000;
     mu = xSemaphoreCreateMutex();
+    json_mu = xSemaphoreCreateMutex();
     esp_register_shutdown_handler(save_at_restart);
 }
 
@@ -301,7 +303,7 @@ static void dwh_list(jw_t *w, const uint32_t *dwh)
 
 void energy_json(jw_t *w)
 {
-    static store_t copy; // the web server's task only: one answer at a time
+    static store_t copy; // under json_mu
     char clock[24];
     uint32_t hour = 0, day = 0;
     const bool clock_ok = local_now(&hour, &day);
@@ -309,6 +311,7 @@ void energy_json(jw_t *w)
         jw_raw(w, "null");
         return;
     }
+    xSemaphoreTake(json_mu, portMAX_DELAY);
     xSemaphoreTake(mu, portMAX_DELAY);
     copy = st;
     xSemaphoreGive(mu);
@@ -319,7 +322,9 @@ void energy_json(jw_t *w)
            CONFIG_HOME_PRICE_UEUR_KWH % 1000000);
     for (int i = 0; i < plugs_count(); i++) {
         jw_raw(w, i ? "," : "");
-        jw_raw(w, "{\"name\":");
+        jw_raw(w, "{\"id\":");
+        jw_str(w, plugs_dev_id(i));
+        jw_raw(w, ",\"name\":");
         jw_str(w, plugs_dev_name(i));
         jw_raw(w, ",\"total_wh\":");
         jw_fmt(w, "%llu.%llu", copy.total_dwh[i] / 10, copy.total_dwh[i] % 10);
@@ -359,4 +364,5 @@ void energy_json(jw_t *w)
         first = false;
     }
     jw_raw(w, "]}");
+    xSemaphoreGive(json_mu);
 }

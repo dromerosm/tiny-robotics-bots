@@ -16,4 +16,12 @@ menu "01-homekit"
         help
             The energy term of the bill, with no taxes. The power term is a
             fixed cost of the contract, not of the plugs, so it is left out.
+    config HOME_ENERGY_URL
+        string "home-energy Worker: where to send the energy every hour (empty: never)"
+        default "$(HOME_ENERGY_URL)"
+        help
+            https://energy.diegoromero.es/ingest. From the env file, as the plugs.
+    config HOME_ENERGY_TOKEN
+        string "home-energy Worker: the token it checks (its INGEST_TOKEN secret)"
+        default "$(HOME_ENERGY_TOKEN)"
 endmenu

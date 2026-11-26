@@ -4,10 +4,15 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+static esp_err_t http_sink(void *ctx, const char *data, size_t n)
+{
+    return httpd_resp_send_chunk((httpd_req_t *)ctx, data, (ssize_t)n);
+}
+
 static void flush(jw_t *w)
 {
     if (w->n && w->err == ESP_OK) {
-        w->err = httpd_resp_send_chunk(w->req, w->buf, (ssize_t)w->n);
+        w->err = w->sink(w->ctx, w->buf, w->n);
     }
     w->n = 0;
 }
@@ -20,11 +25,17 @@ static void put(jw_t *w, char c)
     w->buf[w->n++] = c;
 }
 
-void jw_begin(jw_t *w, httpd_req_t *req)
+void jw_begin_sink(jw_t *w, jw_sink_t sink, void *ctx)
 {
-    w->req = req;
+    w->sink = sink;
+    w->ctx = ctx;
     w->n = 0;
     w->err = ESP_OK;
+}
+
+void jw_begin(jw_t *w, httpd_req_t *req)
+{
+    jw_begin_sink(w, http_sink, req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
@@ -81,7 +92,7 @@ esp_err_t jw_end(jw_t *w)
 {
     flush(w);
     if (w->err == ESP_OK) {
-        w->err = httpd_resp_send_chunk(w->req, NULL, 0);
+        w->err = w->sink(w->ctx, NULL, 0);
     }
     return ESP_OK; // a client that went away is not the server's error
 }

@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "bridge.h"
+#include "cloud.h"
 #include "energy.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -43,6 +44,8 @@ static esp_err_t status_get(httpd_req_t *req)
            esp_timer_get_time() / 1000000, (unsigned)esp_get_free_heap_size(),
            (unsigned)esp_get_minimum_free_heap_size());
     jw_str(&w, clock[0] ? clock : NULL);
+    jw_raw(&w, ",\"cloud\":");
+    cloud_json(&w);
     jw_fmt(&w, ",\"homekit\":{\"paired\":%d,\"network\":", bridge_paired());
     info_json(&w);
     // The bridge's own status, the same lines as GET /.

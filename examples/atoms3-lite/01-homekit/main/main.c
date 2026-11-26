@@ -21,6 +21,7 @@
 #include "api.h"
 #include "atom.h"
 #include "bridge.h"
+#include "cloud.h"
 #include "energy.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -185,6 +186,9 @@ void app_main(void)
         ESP_LOGW(TAG, "no plugs (set TUYA_DEVICES in the env file)");
     }
     energy_start();
+    if (cloud_start() != ESP_OK) {
+        ESP_LOGW(TAG, "no energy sends to the cloud");
+    }
     ESP_ERROR_CHECK(api_start());
     if (bridge_start() != ESP_OK) {
         ESP_LOGE(TAG, "HomeKit did not start");

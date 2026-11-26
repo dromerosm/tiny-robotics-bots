@@ -1,13 +1,18 @@
 // json: a small JSON writer that sends a chunked HTTP answer as it goes, so no
-// handler needs a buffer as big as its answer. See json.c.
+// handler needs a buffer as big as its answer. It can also write to any sink,
+// such as a buffer for an upload. See json.c.
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
 #include "esp_http_server.h"
 
+// Takes n bytes of the text. NULL and 0 at the end.
+typedef esp_err_t (*jw_sink_t)(void *ctx, const char *data, size_t n);
+
 typedef struct {
-    httpd_req_t *req;
+    jw_sink_t sink;
+    void *ctx;
     char buf[512];
     size_t n;
     esp_err_t err; // the first send error; after it nothing more is sent
@@ -15,6 +20,8 @@ typedef struct {
 
 // Start an answer: sets the JSON content type.
 void jw_begin(jw_t *w, httpd_req_t *req);
+// Start writing to a sink instead.
+void jw_begin_sink(jw_t *w, jw_sink_t sink, void *ctx);
 // Text as it is (for punctuation and numbers).
 void jw_raw(jw_t *w, const char *text);
 // printf, as it is. Up to 127 bytes per call.
