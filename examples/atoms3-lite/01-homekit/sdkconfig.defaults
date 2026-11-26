@@ -1,0 +1,30 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_LOG_COLORS=y
+# AtomS3 Lite: 8 MB of flash, two app slots for updates over Wi-Fi.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# A new app must mark itself valid, or the bootloader goes back to the old one.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Its own name on the network: http://bridge.local/
+CONFIG_TR_OTA_HOSTNAME="bridge"
+# Built for speed (-O2): HomeKit does its key math each time a controller
+# connects. The CPU stays at 160 MHz, because a bridge is on all day.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# No PSRAM on the ESP32-S3FN8. Tested on StackChan with PSRAM off: 136 KB of
+# internal RAM free at the lowest.
+CONFIG_SPIRAM=n
+# An IPv6 link-local address (tr_ota), so bridge.local resolves at once on
+# macOS. Skip the duplicate check: with it the address never became valid.
+CONFIG_LWIP_IPV6_DUP_DETECT_ATTEMPTS=0
+# HomeKit has its own web server. Port 80 is tr_ota's page and the API.
+CONFIG_HAP_HTTP_SERVER_PORT=8080
+# Up to 8 HomeKit connections (iPhones, the home hub), next to the web page,
+# the plugs and the broadcasts.
+CONFIG_LWIP_MAX_SOCKETS=16
+# The HomeKit SDK calls mbedTLS's own SHA-512. With hardware SHA, ESP-IDF 6
+# does not build it.
+CONFIG_MBEDTLS_HARDWARE_SHA=n
+# No console commands for mDNS: nothing here has a console, and with only
+# main in the build (COMPONENTS) the console component is not there.
+CONFIG_MDNS_ENABLE_CONSOLE_CLI=n

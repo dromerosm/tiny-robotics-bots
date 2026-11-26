@@ -66,7 +66,7 @@ The third network is a fallback, for a phone's hotspot. The robot joins it only 
 
 | | |
 | --- | --- |
-| Name | `stackchan.local` (mDNS) |
+| Name | `stackchan.local` (mDNS). Another device sets its own name with `CONFIG_TR_OTA_HOSTNAME`, for example `bridge` for `bridge.local` |
 | `GET /` | Status as plain text: firmware, slot and its state, uptime, why it last restarted, free memory, Wi-Fi (network, signal, channel, IP), plus lines the example adds |
 | `GET /log` | The last 4 KB of `ESP_LOG` lines, oldest first. Kept in RTC memory, so they survive a restart, a crash or a rollback (not a power cut). Each boot adds a line `--- boot, last restart: ... ---` |
 | `GET /favicon.ico`, `GET /apple-touch-icon.png` | The robot icon: an SVG for the browser tab, and a 180 x 180 PNG for Safari, which asks for it (also as `apple-touch-icon-precomposed.png`) when you save the page to the home screen. `touch-icon.py` draws the PNG from the same shapes as `favicon.svg` |

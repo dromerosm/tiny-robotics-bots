@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Bridge</title>
+<style>
+:root{--bg:#f6f6f8;--card:#fff;--fg:#1b1b20;--mute:#62626e;--line:#e2e2e8;--on:#2e9a52;--off:#c9c9d2;--bad:#c0392b;--bar:#3b74c4;
+--c0:#3b74c4;--c1:#d9822b;--c2:#2e9a52;--c3:#8e5cc4}
+@media (prefers-color-scheme:dark){:root{--bg:#121216;--card:#1c1c22;--fg:#ececf1;--mute:#a0a0ad;--line:#2c2c35;--off:#44444f;--bar:#6c9be0;
+--c0:#6c9be0;--c1:#e9a25c;--c2:#5cc27f;--c3:#b28ae6}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}
+h2{font-size:15px;margin:0 0 8px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+.dev{border-top:1px solid var(--line);padding:10px 0}.dev:first-of-type{border-top:0;padding-top:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;justify-content:space-between}
+.name{font-weight:600}.mute{color:var(--mute);font-size:13px}.bad{color:var(--bad);font-size:13px}
+.outs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+button{font:inherit;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;color:#fff;background:var(--off);min-width:84px}
+button.on{background:var(--on)}button:disabled{opacity:.5;cursor:wait}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line)}
+td:first-child,th:first-child{text-align:left}th{color:var(--mute);font-weight:600}
+svg{width:100%;height:150px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;margin-top:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+ul{margin:0;padding-left:18px}li{font-size:14px}
+#msg{color:var(--bad);min-height:1em}
+</style>
+</head>
+<body>
+<main>
+<h1>Home Bridge</h1>
+<p id="msg"></p>
+<section><h2>Plugs</h2><div id="plugs" class="mute">Loading...</div></section>
+<section><h2>Energy</h2><div id="energy" class="mute">Loading...</div></section>
+<section><h2>Bridge</h2><div id="status" class="mute">Loading...</div></section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const COLORS = ["--c0", "--c1", "--c2", "--c3"];
+let token = "";
+try { token = localStorage.getItem("hk-token") || ""; } catch (e) {}
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e[k] = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+
+function askToken() {
+  const t = prompt("Token (on the USB port of the bridge)");
+  if (t === null) return false;
+  token = t.trim();
+  try { localStorage.setItem("hk-token", token); } catch (e) {}
+  return true;
+}
+
+async function api(path, opts) {
+  for (let tries = 0; tries < 3; tries++) {
+    if (!token && !askToken()) throw new Error("no token");
+    const r = await fetch(path, Object.assign({ headers: { "X-Token": token }, cache: "no-store" }, opts));
+    if (r.status === 403) { token = ""; continue; }
+    if (!r.ok && r.status !== 202) throw new Error(path + ": " + r.status + " " + (await r.text()));
+    return r.json();
+  }
+  throw new Error("wrong token");
+}
+
+const n1 = v => v == null ? "?" : (Math.round(v * 10) / 10).toString();
+const wh = v => v >= 1000 ? n1(v / 1000) + " kWh" : n1(v) + " Wh";
+const eur = v => (v < 0.995 ? (v * 100).toFixed(1) + " c" : v.toFixed(2) + " €");
+const sum = a => a.reduce((x, y) => x + y, 0);
+
+let plugData = null, busy = null;
+
+function drawPlugs() {
+  const box = $("plugs");
+  box.className = "";
+  box.replaceChildren(...plugData.devices.map((d, i) => {
+    const meta = d.error ? el("span", { class: "bad" }, d.error)
+      : el("span", { class: "mute" }, `${n1(d.watts)} W · ${n1(d.volts)} V · ${d.milliamps ?? "?"} mA · ${d.ip}`);
+    const outs = d.outlets.map((o, k) => el("button", {
+      class: o.on ? "on" : "",
+      title: o.ap ? "Feeds the access point" : "",
+      onclick: () => toggle(i, k, !o.on, o),
+    }, o.name + (o.on == null ? " ?" : o.on ? " on" : " off")));
+    if (busy) outs.forEach(b => b.disabled = true);
+    return el("div", { class: "dev" }, el("div", { class: "row" }, el("span", { class: "name" }, d.name), meta),
+      el("div", { class: "outs" }, ...outs));
+  }));
+}
+
+async function toggle(dev, sw, on, outlet) {
+  if (!on && outlet.ap && !confirm("This outlet feeds the access point. Switch it off?")) return;
+  try {
+    busy = plugData.reads;
+    drawPlugs();
+    await api(`/api/plugs?dev=${dev}&sw=${sw}&on=${on ? 1 : 0}`, { method: "POST" });
+    // The order is queued: look again until the worker has read the plugs.
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      plugData = await api("/api/plugs");
+      if (plugData.reads !== busy) break;
+    }
+  } catch (e) { $("msg").textContent = e.message; }
+  busy = null;
+  drawPlugs();
+}
+
+function chart(hours, names) {
+  const NS = "http://www.w3.org/2000/svg", W = 480, H = 150, pad = 18;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Energy per hour, last 48 hours");
+  const max = Math.max(1, ...hours.map(h => h.wh.reduce((a, b) => a + b, 0)));
+  const bw = (W - 4) / 48;
+  const slots = new Map(hours.map(h => [h.t, h]));
+  const last = hours.length ? new Date(hours[hours.length - 1].t + ":00") : new Date();
+  for (let i = 0; i < 48; i++) {
+    const t = new Date(last.getTime() - (47 - i) * 3600e3);
+    const key = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}T${String(t.getHours()).padStart(2, "0")}`;
+    const h = slots.get(key);
+    let y = H - pad;
+    if (h) h.wh.forEach((v, d) => {
+      const bh = (v / max) * (H - pad - 4);
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", 2 + i * bw); r.setAttribute("y", y - bh);
+      r.setAttribute("width", Math.max(1, bw - 1)); r.setAttribute("height", bh);
+      r.setAttribute("fill", `var(${COLORS[d % 4]})`);
+      const tip = document.createElementNS(NS, "title");
+      tip.textContent = `${key}:00 ${names[d]} ${wh(v)}`;
+      r.append(tip); svg.append(r);
+      y -= bh;
+    });
+    if (t.getHours() % 6 === 0) {
+      const lab = document.createElementNS(NS, "text");
+      lab.setAttribute("x", 2 + i * bw); lab.setAttribute("y", H - 4);
+      lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "currentColor");
+      lab.textContent = String(t.getHours()).padStart(2, "0") + "h";
+      svg.append(lab);
+    }
+  }
+  const top = document.createElementNS(NS, "text");
+  top.setAttribute("x", W - 2); top.setAttribute("y", 10); top.setAttribute("text-anchor", "end");
+  top.setAttribute("font-size", "10"); top.setAttribute("fill", "currentColor");
+  top.textContent = "max " + wh(max) + "/h";
+  svg.append(top);
+  return svg;
+}
+
+async function loadEnergy() {
+  const e = await api("/api/energy");
+  const box = $("energy");
+  box.className = "";
+  const names = e.devices.map(d => d.name);
+  if (!e.clock) { box.replaceChildren(el("p", { class: "mute" }, "Waiting for the clock (SNTP).")); return; }
+  const last = e.days.length && e.days[e.days.length - 1].d === e.clock.slice(0, 10) ? e.days[e.days.length - 1] : null;
+  const today = last ? last.wh : names.map(() => 0), todayEur = last ? last.eur : names.map(() => 0);
+  const rows = e.devices.map((d, i) => el("tr", {},
+    el("td", {}, el("i", { style: `display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:var(${COLORS[i % 4]})` }), d.name),
+    el("td", {}, wh(today[i] || 0)), el("td", {}, eur(todayEur[i] || 0)),
+    el("td", {}, wh(d.total_wh)), el("td", {}, eur(d.total_eur))));
+  const days = e.days.slice(-14).reverse().map(d => el("tr", {}, el("td", {}, d.d),
+    ...d.wh.map(v => el("td", {}, wh(v))), el("td", {}, wh(sum(d.wh))), el("td", {}, eur(sum(d.eur)))));
+  box.replaceChildren(
+    el("table", {}, el("tr", {}, el("th", {}, "Device"), el("th", {}, "Today"), el("th", {}, "€"), el("th", {}, "Since start"), el("th", {}, "€")), ...rows),
+    el("p", { class: "mute" }, "Last 48 hours"), chart(e.hours, names),
+    el("p", { class: "mute" }, "Per day"),
+    el("table", {}, el("tr", {}, el("th", {}, "Day"), ...names.map(n => el("th", {}, n)), el("th", {}, "All"), el("th", {}, "€")), ...days),
+    el("p", { class: "mute" }, `Added up on the bridge from each plug's power reading. Euros at ${e.price_eur_kwh} €/kWh, the bill's energy term with no taxes or power term. Clock: ${e.clock}`));
+}
+
+async function loadStatus() {
+  const s = await api("/api/status");
+  const net = s.homekit.network;
+  const tvs = net.apple_tvs.map(t => el("li", {}, `${t.name} ${t.ip}${t.hub ? " (hub)" : ""}`));
+  const box = $("status");
+  box.className = "";
+  box.replaceChildren(
+    el("p", {}, `HomeKit: ${s.homekit.paired} paired · ${net.clients.length} connected now`),
+    el("ul", {}, ...net.clients.map(c => el("li", {}, c))),
+    el("p", {}, "Apple TV"), el("ul", {}, ...(tvs.length ? tvs : [el("li", { class: "mute" }, net.looking ? "looking..." : "none found")])),
+    el("p", {}, "Device"), el("ul", {}, ...s.robot.map(l => el("li", { class: "mute" }, l))));
+}
+
+async function tick(fn) {
+  try { await fn(); $("msg").textContent = ""; } catch (e) { $("msg").textContent = e.message; }
+}
+
+async function loadPlugs() { if (busy == null) { plugData = await api("/api/plugs"); drawPlugs(); } }
+
+(async () => {
+  await tick(loadPlugs);
+  if (!token) return;
+  tick(loadEnergy); tick(loadStatus);
+  setInterval(() => tick(loadPlugs), 5000);
+  setInterval(() => tick(loadStatus), 15000);
+  setInterval(() => tick(loadEnergy), 60000);
+})();
+</script>
+</body>
+</html>

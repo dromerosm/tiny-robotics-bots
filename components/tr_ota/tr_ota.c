@@ -25,7 +25,7 @@
 
 static const char *TAG = "tr_ota";
 
-#define HOSTNAME     "stackchan"
+#define HOSTNAME     CONFIG_TR_OTA_HOSTNAME // stackchan unless the example sets another
 #define TRIAL_WIFI_S 60 // an app on trial with no Wi-Fi after this goes back to the old app
 #define RETRY_MS     5000
 

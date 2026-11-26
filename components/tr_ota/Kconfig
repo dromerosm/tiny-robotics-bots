@@ -1,4 +1,9 @@
 menu "tr_ota home Wi-Fi"
+    # The name on the network: http://<name>.local/. Each device at home
+    # needs its own, or mDNS gives one of them another name.
+    config TR_OTA_HOSTNAME
+        string "Name on the network (mDNS and DHCP)"
+        default "stackchan"
     # The defaults come from environment variables, so no password is in git.
     # scripts/build.sh passes them from the file in WIFI_ENV (see README.md).
     # With no SSID set, the robot joins esp-emu's built-in network.

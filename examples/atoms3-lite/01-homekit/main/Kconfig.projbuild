@@ -1,0 +1,19 @@
+menu "01-homekit"
+    # From environment variables, as the Wi-Fi settings: scripts/build.sh
+    # passes them from the file in WIFI_ENV. Never in git.
+    config HOME_DEVICES
+        string "The plugs: name,version,ip,id,key-hex,dp:label:name[:ap],... separated by ;"
+        default "$(TUYA_DEVICES)"
+    config HOME_AP_SSID
+        string "Wi-Fi network fed by the :ap outlet (off for it is refused on that network)"
+        default "$(HOME_AP_SSID)"
+    config HOME_TZ
+        string "Time zone (POSIX TZ) for the energy per hour and per day"
+        default "CET-1CEST,M3.5.0,M10.5.0/3"
+    config HOME_PRICE_UEUR_KWH
+        int "Energy price, in millionths of a euro per kWh (163463 = 0.163463 EUR/kWh)"
+        default 163463
+        help
+            The energy term of the bill, with no taxes. The power term is a
+            fixed cost of the contract, not of the plugs, so it is left out.
+endmenu
