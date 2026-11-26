@@ -28,3 +28,7 @@ CONFIG_MBEDTLS_HARDWARE_SHA=n
 # No console commands for mDNS: nothing here has a console, and with only
 # main in the build (COMPONENTS) the console component is not there.
 CONFIG_MDNS_ENABLE_CONSOLE_CLI=n
+# Cloudflare sends GTS Root R4 cross-signed by GlobalSign Root CA, which is not
+# in the bundle. Without this the bundle checks only that old root and the send
+# to home-energy fails. It costs about 700 bytes of heap.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
