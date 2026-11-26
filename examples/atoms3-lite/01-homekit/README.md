@@ -173,6 +173,7 @@ I (13536) plugs: first read: 3 of 3 devices answer
 - The move from StackChan: the Atom has the same identity and its one controller. The Home app shows the 8 outlets with their rooms and names, and switching an outlet works (seen by the owner on 2026-11-26).
 - The LED: dim green with everything working (seen by the owner).
 - `/pair` while paired: it says so, and shows no code.
+- The button on the paired board (2026-11-26): each press writes `button: pairing page open for 120 s` in the log, and the LED flashes white and goes back to green, with no blue blinking. `/pair`, read inside the 120 s, still shows no code.
 - The API, with a script from a Mac on 2026-11-26 (109 checks, all passed): every endpoint, the 3 devices and 8 outlets, bad input (400), unknown paths (404), every bad form of the token (403, also on `/update` and `/home?unpair=1`), no CORS, the token never in an answer, and 40 requests 8 at a time (all answered in 2.2 s, no restart, 154 KB free at the lowest).
 - `/panel` in a browser, light and dark, at desktop and phone width: plugs, energy and the bridge show well, and a wrong token says so. The Apple TV shows as the home hub, connected to the Atom.
 - Switching from `/panel`: Trabajo usb on and off, about 3 s each, with `...` while it waits. The Trabajo strip sometimes stops answering for about 20 s after a switch. The panel now waits for it.
@@ -181,7 +182,12 @@ I (13536) plugs: first read: 3 of 3 devices answer
 
 Not checked yet:
 
-- `/pair` with the button, and adding the bridge from zero with its QR code.
+- `/pair` with the button, and adding the bridge from zero with its QR code. Do it on the second AtomS3 Lite, not on the real bridge: on the real one it would mean forgetting the pairing, and Home would lose the outlets' rooms, names and automations. The plan:
+  1. Build the same firmware with the host name `bridge-test`, one fake plug at 192.0.2.1 and no `HOME_ENERGY_URL`. Check it in esp-emu.
+  2. Flash it from zero over USB, so it makes its own identity and setup code.
+  3. Check `/pair`: 403 before the press; the QR after it, with the LED blinking blue; 403 again after 120 s. Decode the QR on the Mac and check it has the same code as the page.
+  4. In Home, make a new Home called "Test", scan the QR there and tap **Add Anyway**. `/pair` must then say it is paired. Delete the "Test" Home at the end: that removes the test accessory and leaves the real Home alone.
+  5. Erase the second Atom.
 - The other LED colors (red, blue, amber).
 - A whole day running: memory, and the Wi-Fi signal. The board joined `MOVISTAR_7B00` at -74 dBm, which is weak.
 - The energy history kept across the move, against the numbers on StackChan.
