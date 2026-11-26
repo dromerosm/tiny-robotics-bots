@@ -162,9 +162,9 @@ static void refresh(int i)
     d->ma = n < 0 ? -1 : tr_tuya_value(dps, n, 18);
     xSemaphoreGive(mu);
     if (n < 0 && d->err != was) { // say it once, not on every read
-        ESP_LOGW(TAG, "%s at %s: %s", d->name, d->ip, tr_tuya_err_text(n));
+        ESP_LOGW(TAG, "%s: %s", d->name, tr_tuya_err_text(n));
     } else if (n >= 0 && was) {
-        ESP_LOGI(TAG, "%s at %s answers", d->name, d->ip);
+        ESP_LOGI(TAG, "%s answers again", d->name);
     }
     reads = reads + 1;
     if (on_fresh) {
@@ -189,7 +189,7 @@ static void worker_task(void *arg)
     for (int i = 0; i < ndev; i++) {
         refresh(i);
     }
-    // No states or addresses here: GET /log has no token.
+    // No states or addresses in any log line: GET /log has no token.
     int answering = 0;
     for (int i = 0; i < ndev; i++) {
         answering += devs[i].err == 0;
@@ -212,8 +212,8 @@ static void worker_task(void *arg)
         plug_t *d = &devs[job.dev];
         if (job.kind == JOB_SET) {
             const int r = tr_tuya_set(&d->dev, d->sw[job.sw].dp, job.on);
-            ESP_LOGI(TAG, "%s %s %s: %s", d->name, d->sw[job.sw].name, job.on ? "on" : "off",
-                     tr_tuya_err_text(r));
+            ESP_LOGI(TAG, "%s %s: switch %s", d->name, d->sw[job.sw].name,
+                     r == 0 ? "sent" : tr_tuya_err_text(r));
         } else if (job.kind == JOB_MOVED) {
             // A broadcast is not proof. The new address is kept only if the
             // device there answers a read, which takes the local key.
@@ -224,9 +224,9 @@ static void worker_task(void *arg)
             xSemaphoreGive(mu);
             refresh(job.dev);
             if (d->err == 0) {
-                ESP_LOGI(TAG, "%s moved from %s to %s", d->name, old, d->ip);
+                ESP_LOGI(TAG, "%s moved to a new address", d->name);
             } else {
-                ESP_LOGW(TAG, "%s: no answer at %s either, staying at %s", d->name, job.ip, old);
+                ESP_LOGW(TAG, "%s: no answer at the new address either, staying", d->name);
                 xSemaphoreTake(mu, portMAX_DELAY);
                 copy(d->ip, sizeof(d->ip), old);
                 xSemaphoreGive(mu);
@@ -377,7 +377,7 @@ int plugs_state(int dev, int sw)
 bool plugs_set(int dev, int sw, bool on)
 {
     if (!on && devs[dev].sw[sw].ap && on_guarded_wifi()) {
-        ESP_LOGW(TAG, "%s %s stays on: it feeds the bridge's own Wi-Fi", devs[dev].name,
+        ESP_LOGW(TAG, "%s %s: refused, it feeds the bridge's own Wi-Fi", devs[dev].name,
                  devs[dev].sw[sw].name);
         return false;
     }

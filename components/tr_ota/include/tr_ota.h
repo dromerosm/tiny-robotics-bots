@@ -14,6 +14,9 @@
 //   the header "X-Token: <token>"; the token is shown only on the USB port)
 // - serves GET /log: the last 4 KB of ESP_LOG lines, kept across restarts
 //   (not power cuts). printf output is not in it, and neither is the token.
+// - answers 403 to any request whose Host header is not this device
+//   (<hostname>.local, its IP, or localhost), so a page on another site cannot
+//   read it through DNS rebinding
 // - marks an app on trial valid once it has Wi-Fi and the web server runs, or
 //   goes back to the old app if there is no Wi-Fi within 60 seconds
 #pragma once

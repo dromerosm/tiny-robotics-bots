@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_event.h"
@@ -359,6 +360,75 @@ static esp_err_t start_wifi(void)
     return ESP_OK;
 }
 
+// True if the request names this device in its Host header: <hostname>.local,
+// its IPv4 address, or localhost (the emulator), with or without a port. A web
+// page on another site can point its own name at our address (DNS rebinding)
+// and read our open pages through a visitor's browser; its requests still say
+// its own name in Host, so they stop here. No Host at all (HTTP/1.0) passes:
+// browsers always send one.
+static bool host_ok(httpd_req_t *req)
+{
+    char host[72] = "";
+    const size_t len = httpd_req_get_hdr_value_len(req, "Host");
+    if (len == 0) {
+        return true;
+    }
+    if (len >= sizeof(host) ||
+        httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) {
+        return false;
+    }
+    char *colon = strrchr(host, ':');
+    if (colon && host[0] != '[') {
+        *colon = 0; // drop the port
+    }
+    const size_t n = strlen(host);
+    if (n && host[n - 1] == '.') {
+        host[n - 1] = 0; // "bridge.local." is the same name
+    }
+    if (strcasecmp(host, HOSTNAME ".local") == 0 || strcmp(host, "localhost") == 0 ||
+        strcmp(host, "127.0.0.1") == 0) {
+        return true;
+    }
+    esp_netif_ip_info_t ip = {0};
+    char mine[16];
+    if (sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr) {
+        snprintf(mine, sizeof(mine), IPSTR, IP2STR(&ip.ip));
+        return strcmp(host, mine) == 0;
+    }
+    return false;
+}
+
+// Every handler, ours and the example's, runs behind host_ok. The real handler
+// and its user_ctx are kept in a table, and the server gets this one instead.
+#define MAX_GUARDED (6 + MAX_URIS)
+static httpd_uri_t guarded[MAX_GUARDED];
+static int guarded_count;
+
+static esp_err_t guard(httpd_req_t *req)
+{
+    const httpd_uri_t *real = req->user_ctx;
+    if (!host_ok(req)) {
+        ESP_LOGW(TAG, "%s: 403, Host is not this device", req->uri);
+        tr_ota_send_error(req, "403 Forbidden", "wrong Host\n");
+        return ESP_OK;
+    }
+    req->user_ctx = real->user_ctx;
+    return real->handler(req);
+}
+
+static esp_err_t register_guarded(const httpd_uri_t *uri)
+{
+    if (guarded_count >= MAX_GUARDED) {
+        return ESP_ERR_NO_MEM;
+    }
+    httpd_uri_t *real = &guarded[guarded_count++];
+    *real = *uri;
+    httpd_uri_t wrapped = *uri;
+    wrapped.handler = guard;
+    wrapped.user_ctx = real;
+    return httpd_register_uri_handler(server, &wrapped);
+}
+
 bool tr_ota_token_ok(httpd_req_t *req)
 {
     // Check the length first: the server cuts a longer value to fit the
@@ -578,22 +648,22 @@ static esp_err_t start_http(void)
     const httpd_uri_t update = {.uri = "/update", .method = HTTP_POST, .handler = update_handler};
     const httpd_uri_t info = {.uri = "/", .method = HTTP_GET, .handler = info_handler};
     const httpd_uri_t log = {.uri = "/log", .method = HTTP_GET, .handler = log_handler};
-    httpd_register_uri_handler(server, &update);
-    httpd_register_uri_handler(server, &info);
-    httpd_register_uri_handler(server, &log);
+    register_guarded(&update);
+    register_guarded(&info);
+    register_guarded(&log);
     const httpd_uri_t icon = {
         .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_handler};
-    httpd_register_uri_handler(server, &icon);
+    register_guarded(&icon);
     const httpd_uri_t touch[] = {
         {.uri = "/apple-touch-icon.png", .method = HTTP_GET, .handler = touch_icon_handler},
         {.uri = "/apple-touch-icon-precomposed.png",
          .method = HTTP_GET,
          .handler = touch_icon_handler},
     };
-    httpd_register_uri_handler(server, &touch[0]);
-    httpd_register_uri_handler(server, &touch[1]);
+    register_guarded(&touch[0]);
+    register_guarded(&touch[1]);
     for (int i = 0; i < extra_count; i++) {
-        httpd_register_uri_handler(server, &extra_uris[i]);
+        register_guarded(&extra_uris[i]);
     }
     return ESP_OK;
 }
@@ -604,7 +674,7 @@ esp_err_t tr_ota_add_uri(const httpd_uri_t *uri)
         return ESP_ERR_NO_MEM;
     }
     extra_uris[extra_count++] = *uri;
-    return server ? httpd_register_uri_handler(server, uri) : ESP_OK;
+    return server ? register_guarded(uri) : ESP_OK;
 }
 
 // stackchan.local, so we need not look up the address the router gave.
@@ -647,11 +717,13 @@ esp_err_t tr_ota_start(void)
         err = nvs_flash_init();
     }
     ESP_RETURN_ON_ERROR(err, TAG, "nvs");
+
+    err = start_wifi();
+    // After start_wifi: a new token needs esp_random(), which is only truly
+    // random once the radio runs. Before that it is a pseudo-random sequence.
     ESP_RETURN_ON_ERROR(load_token(), TAG, "token");
     // printf, not ESP_LOG: the token must not reach GET /log, which anyone on the network can read.
     printf("update token: %s\n", token);
-
-    err = start_wifi();
     if (err != ESP_OK) {
         // An app on trial is not marked valid here, so the next restart goes
         // back to the old app.

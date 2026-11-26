@@ -132,7 +132,7 @@ static void keep_results(mdns_result_t *results)
         ntv = n;
         version++;
         for (int i = 0; i < n; i++) {
-            ESP_LOGI("info", "Apple TV \"%s\" at %s", tvs[i].name, tvs[i].ip);
+            ESP_LOGI("info", "Apple TV \"%s\" found", tvs[i].name);
         }
     }
 }

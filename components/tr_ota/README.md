@@ -80,7 +80,9 @@ A browser that opens `/` goes to `/app` when the example has a page there. `curl
 
 `GET /log` only has `ESP_LOG` lines, not `printf` output. The token is printed with `printf` on purpose, so it never reaches `/log`, which anyone on the network can read. The Wi-Fi driver's own logs are cut to warnings, so the 4 KB hold more useful lines. The log does show the network name.
 
-The token is made at random on the first boot and saved in NVS. It is shown only on the USB port. A new flash over USB erases it and makes a new one.
+Every endpoint, ours and the example's, first checks the `Host` header. It must be `<hostname>.local`, the device's IP or `localhost` (the emulator), with or without a port. Anything else gets a 403. This stops DNS rebinding: a web page on another site points its own name at the robot's address and reads the open pages, like `/log`, through the visitor's browser. Its requests still carry its own name in `Host`. A request with no `Host` at all (HTTP/1.0) passes, because browsers always send one.
+
+The token is made at random on the first boot, after Wi-Fi starts (`esp_random()` is only truly random once the radio runs), and saved in NVS. It is shown only on the USB port. A new flash over USB erases it and makes a new one.
 
 ```bash
 curl -H "X-Token: <token>" --data-binary @examples/stackchan/<example>/build/<project>.bin http://stackchan.local/update

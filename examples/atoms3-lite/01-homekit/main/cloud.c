@@ -27,22 +27,22 @@
 
 static const char *TAG = "cloud";
 
-#define CHECK_US   (60 * 1000000LL)
-#define RETRY_S    600
-#define FROM_MIN   2     // minutes into the hour: the hour before is closed
-#define STACK      8192
-#define FIRST_BUF  8192
+#define CHECK_US  (60 * 1000000LL)
+#define RETRY_S   600
+#define FROM_MIN  2 // minutes into the hour: the hour before is closed
+#define STACK     8192
+#define FIRST_BUF 8192
 
 typedef struct {
     char *data;
     size_t len, cap;
 } buf_t;
 
-static volatile bool busy;     // a send task is running
-static time_t sent_hour;       // the UTC hour of the last good send (0: none)
-static time_t tried_at;        // when the last send started
+static volatile bool busy; // a send task is running
+static time_t sent_hour;   // the UTC hour of the last good send (0: none)
+static time_t tried_at;    // when the last send started
 // For GET /api/status. Written only by the send task.
-static int last_http;          // the last HTTP status, or -1 for a network error
+static int last_http;                 // the last HTTP status, or -1 for a network error
 static int64_t last_try_s, last_ok_s; // uptime in seconds (0: never)
 static unsigned sends, fails;
 static unsigned heap_before, heap_low; // free heap before the last send, lowest since boot after it
@@ -171,7 +171,7 @@ void cloud_json(jw_t *w)
     jw_str(w, CONFIG_HOME_ENERGY_URL);
     jw_fmt(w, ",\"sends\":%u,\"fails\":%u,\"last_http\":%d,\"last_bytes\":%d", sends, fails,
            last_try_s ? last_http : 0, last_len);
-    jw_fmt(w, ",\"last_try_ago_s\":%lld,\"last_ok_ago_s\":%lld", last_try_s ? up - last_try_s : -1LL,
-           last_ok_s ? up - last_ok_s : -1LL);
+    jw_fmt(w, ",\"last_try_ago_s\":%lld,\"last_ok_ago_s\":%lld",
+           last_try_s ? up - last_try_s : -1LL, last_ok_s ? up - last_ok_s : -1LL);
     jw_fmt(w, ",\"heap_before\":%u,\"heap_min_after\":%u}", heap_before, heap_low);
 }
