@@ -1,6 +1,6 @@
 # cores3: the CoreS3 power chips as a virtual part
 
-A [virtual part](https://github.com/espressif/esp-emulator/blob/main/docs/guides/PARTS.md) for Espressif's esp-emu (1.0.0 or later). It plays the two chips on the CoreS3 that [tr_board](../../components/tr_board) needs to give the body its 5 V. With it and [stackchan-body](../stackchan-body), the side LEDs light in the emulator. The [browser emulator](https://robotics.diegoromero.es/emulator/) loads both for every ESP32-S3 image, and [16-servos](../../examples/stackchan/16-servos) shows them (`led 255 80 0`).
+A [virtual part](https://github.com/espressif/esp-emulator/blob/main/docs/guides/PARTS.md) for Espressif's esp-emu (1.0.0 or later). It plays the two chips on the CoreS3 that [tr_board](../../components/tr_board) needs to give the body its 5 V. With it and [stackchan-body](../stackchan-body), the side LEDs light in the emulator. The [browser emulator](https://robotics.diegoromero.es/emulator/) loads both for the StackChan board (and `cores3` alone for the CoreS3 Lite), and [16-servos](../../examples/stackchan/16-servos) shows them (`led 255 80 0`).
 
 ## What it models
 

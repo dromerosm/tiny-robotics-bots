@@ -1,6 +1,6 @@
 # stackchan-body: StackChan's body as a virtual part
 
-A [virtual part](https://github.com/espressif/esp-emulator/blob/main/docs/guides/PARTS.md) for Espressif's esp-emu (1.0.0 or later). It plays the pieces of StackChan's body that the firmware talks to, so the real servo driver in [tr_board](../../components/tr_board) runs unchanged in the emulator. The [browser emulator](https://robotics.diegoromero.es/emulator/) loads it for every ESP32-S3 image, and [16-servos](../../examples/stackchan/16-servos) shows it.
+A [virtual part](https://github.com/espressif/esp-emulator/blob/main/docs/guides/PARTS.md) for Espressif's esp-emu (1.0.0 or later). It plays the pieces of StackChan's body that the firmware talks to, so the real servo driver in [tr_board](../../components/tr_board) runs unchanged in the emulator. The [browser emulator](https://robotics.diegoromero.es/emulator/) loads it for the StackChan board, and [16-servos](../../examples/stackchan/16-servos) shows it.
 
 ## What it models
 
