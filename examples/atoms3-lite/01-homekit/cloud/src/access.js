@@ -9,6 +9,7 @@
 
 const keys = new Map(); // kid -> CryptoKey
 let fetchedAt = 0;
+let loading = null; // the fetch under way, so requests at the same time wait for it
 
 function b64url(text) {
   const s = text.replace(/-/g, "+").replace(/_/g, "/");
@@ -16,20 +17,29 @@ function b64url(text) {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-async function key(team, kid, fetcher) {
-  // Fetch the keys again when the kid is new (Access rotates them), at most once a minute.
-  if (!keys.has(kid) && Date.now() - fetchedAt > 60_000) {
-    fetchedAt = Date.now();
-    const r = await fetcher(`${team}/cdn-cgi/access/certs`);
-    if (r.ok) {
-      const { keys: list = [] } = await r.json();
-      for (const jwk of list) {
-        if (jwk.kty === "RSA" && jwk.kid) {
-          keys.set(jwk.kid, await crypto.subtle.importKey(
-            "jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]));
-        }
+async function load(team, fetcher) {
+  const r = await fetcher(`${team}/cdn-cgi/access/certs`);
+  if (r.ok) {
+    const { keys: list = [] } = await r.json();
+    for (const jwk of list) {
+      if (jwk.kty === "RSA" && jwk.kid) {
+        keys.set(jwk.kid, await crypto.subtle.importKey(
+          "jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]));
       }
     }
+  }
+}
+
+async function key(team, kid, fetcher) {
+  // Fetch the keys again when the kid is new (Access rotates them), at most once a minute.
+  // The page asks for three things at once. In a new isolate, the second and the
+  // third request used to find no key and get a 403, so the page needed a reload.
+  if (!keys.has(kid) && !loading && Date.now() - fetchedAt > 60_000) {
+    fetchedAt = Date.now();
+    loading = load(team, fetcher).finally(() => (loading = null));
+  }
+  if (loading) {
+    await loading.catch(() => {});
   }
   return keys.get(kid);
 }
@@ -69,4 +79,5 @@ export async function accessOk(req, team, aud, fetcher = fetch, now = Date.now()
 export function _reset() {
   keys.clear();
   fetchedAt = 0;
+  loading = null;
 }
