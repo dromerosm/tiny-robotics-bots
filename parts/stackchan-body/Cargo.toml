@@ -1,5 +1,6 @@
-# A virtual part for esp-emu: StackChan's body (the PY32 IO expander and the
-# two head servos). README.md says what it models and how to build it.
+# A virtual part for esp-emu: StackChan's body (the PY32 IO expander, the two
+# head servos, the Si12T head touch and the INA226 battery monitor). README.md
+# says what it models and how to build it.
 #
 # Its own workspace, so it builds on its own.
 [workspace]

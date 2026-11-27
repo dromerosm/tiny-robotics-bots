@@ -151,9 +151,13 @@ impl Device for Cores3 {
     }
 
     fn on_input(&mut self, input: &str) {
-        let Some((name, value)) = set_value(input) else { return };
+        // The SDK's set_value takes only letters, digits and `-` in a name;
+        // the chips name their inputs with `_`. Both spellings work.
+        let input = input.replace('_', "-");
+        let Some((name, value)) = set_value(&input) else { return };
+        let name = name.replace('-', "_");
         for chip in self.chips() {
-            if chip.input(name, value) {
+            if chip.input(&name, value) {
                 break;
             }
         }
@@ -239,10 +243,30 @@ mod tests {
     }
 
     #[test]
+    fn a_touch_pulls_gpio21_low_until_the_firmware_reads_the_aw9523() {
+        let mut p = part();
+        i2c(&mut p, AW9523, &[0x00], 2); // M5Unified reads both ports at start
+        assert_eq!(p.poll(1), Some(drive(21, true, 1)));
+        p.on_input("set:touch-x=10");
+        p.on_input("set:touch-y=20");
+        p.on_input("set:touch=1");
+        assert_eq!(p.poll(2), Some(drive(21, false, 2)), "touch INT on P1_2 -> INTN low");
+        // M5GFX reads the touch, then the AW9523 ports when it finds no point.
+        assert_eq!(i2c(&mut p, FT6336, &[0x02], 1), Some(vec![1]));
+        i2c(&mut p, AW9523, &[0x01], 1);
+        assert_eq!(p.poll(3), Some(drive(21, true, 3)), "reading port 1 releases it");
+    }
+
+    #[test]
     fn inputs_reach_the_chip_that_owns_the_name() {
         let mut p = part();
         p.on_input("set:battery=42");
         assert_eq!(i2c(&mut p, AXP2101, &[0xA4], 1), Some(vec![42]));
+        p.on_input("set:touch-x=100");
+        p.on_input("set:touch_y=50");
+        p.on_input("set:touch=1");
+        let s = p.state().unwrap();
+        assert_eq!((s.get("touch_x"), s.get("touch_y"), s.get("touch")), (Some("100"), Some("50"), Some("1")), "both spellings");
         p.on_input("set:nobody=1"); // ignored
         p.on_input("press"); // not a set: ignored
     }

@@ -59,11 +59,6 @@ impl Axp2101 {
         let m = &self.regs.mem;
         (m[LDO_EN as usize] & 0x80 != 0).then(|| 500 + 100 * (m[DLDO1_V as usize] & 0x1F) as u32)
     }
-
-    /// ALDO3, which (with AW9523 P1_0) powers the camera and the light sensor.
-    pub fn aldo3_on(&self) -> bool {
-        self.regs.mem[LDO_EN as usize] & 0x04 != 0
-    }
 }
 
 impl Chip for Axp2101 {

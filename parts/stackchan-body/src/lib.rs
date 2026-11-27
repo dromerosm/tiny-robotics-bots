@@ -1,12 +1,16 @@
 //! StackChan's body as a virtual part for esp-emu: the PY32 IO expander that
-//! switches the servo power, and the two FEETECH SCS0009 head servos on the
-//! serial bus.
+//! switches the servo power, the two FEETECH SCS0009 head servos on the
+//! serial bus, the Si12T head touch and the INA226 battery monitor.
 //!
 //! The firmware talks to it as it talks to the robot:
 //!
 //! - I2C, address 0x6F: the PY32. Register 0x02 reads the version (0x41, as on
 //!   our robot). Bit 0 of register 0x05 (with bit 0 of 0x03, "output") is
 //!   VM_EN, the servo power. Every other register only stores what is written.
+//! - I2C, address 0x68: the Si12T head touch (`si12t`). Register 0x10 gives
+//!   the three zones (front, middle, back) from the inputs.
+//! - I2C, address 0x41: the INA226 battery monitor (`ina226`). Bus voltage and
+//!   shunt voltage from the inputs, with tr_board's scale.
 //! - UART, 1 Mbaud: the servos, ID 1 (yaw) and ID 2 (pitch). They speak the
 //!   SCS protocol: `FF FF id len inst params... checksum`. They answer only
 //!   while VM_EN is on, as on the robot.
@@ -14,8 +18,18 @@
 //! The protocol and the register map follow FEETECH's SCSCL driver, as used by
 //! M5Stack's StackChan-BSP. A move takes the time the firmware asks for, so
 //! the head turns in emulated time. The page reads the angles from `state()`.
+//!
+//! The page sets values with inputs: `set:head_front=3` (also `head_middle`,
+//! `head_back`, 0..3), `set:battery_mv=3700` and `set:battery_ma=120`
+//! (positive = discharging). The SDK's `set_value` only takes `-` in a name,
+//! so `set:head-front=3` and `set:battery-mv=3700` work too.
+
+mod ina226;
+mod si12t;
 
 use esp_part::prelude::*;
+use ina226::Ina226;
+use si12t::Si12t;
 
 /// The part's own pin names. The board wires them, for StackChan:
 /// `{ TX: 7, RX: 6, SDA: 12, SCL: 11 }`. The part's TX goes to the chip's RX.
@@ -192,6 +206,8 @@ struct Body {
     powered: bool,
     /// The colors the LEDs show, as RGB565, from the last show.
     leds: [u16; LEDS],
+    touch: Si12t,
+    battery: Ina226,
 }
 
 impl Default for Body {
@@ -213,6 +229,8 @@ impl Default for Body {
             tx_buf: Vec::new(),
             powered: false,
             leds: [0; LEDS],
+            touch: Si12t::default(),
+            battery: Ina226::default(),
         }
     }
 }
@@ -407,8 +425,8 @@ impl Device for Body {
     }
 
     fn claims(&self) -> Vec<Claim> {
-        let i2c = I2cClaim { addr: PY32_ADDR, scl_pin: self.scl, sda_pin: self.sda };
-        vec![serial(self.tx, self.rx), Claim { what: Some(claim::What::I2c(i2c)) }]
+        let i2c = |addr| Claim { what: Some(claim::What::I2c(I2cClaim { addr, scl_pin: self.scl, sda_pin: self.sda })) };
+        vec![serial(self.tx, self.rx), i2c(PY32_ADDR), i2c(si12t::ADDR), i2c(ina226::ADDR)]
     }
 
     fn on_pins(&mut self, _levels: u64, now_ns: u64) {
@@ -419,12 +437,26 @@ impl Device for Body {
         let (correlation_id, op) = (request.correlation_id, BusOp::I2c as i32);
         let mut reply = BusReply { correlation_id, op, ..Default::default() };
         let Some(bus_request::Op::I2c(i2c)) = &request.op else { return Some(reply) };
-        if i2c.addr != PY32_ADDR {
-            return Some(reply);
-        }
-        reply.data = self.py32_bus(i2c);
+        let read_len = i2c.read_len as usize;
+        reply.data = match i2c.addr {
+            PY32_ADDR => self.py32_bus(i2c),
+            si12t::ADDR => self.touch.transfer(&i2c.write, read_len),
+            ina226::ADDR => self.battery.transfer(&i2c.write, read_len, i2c.continues),
+            _ => return Some(reply), // not ours: no ACK
+        };
         reply.ack = true;
         Some(reply)
+    }
+
+    /// `set:head_<zone>=0..3`, `set:battery_mv=<mV>`, `set:battery_ma=<mA>`.
+    fn on_input(&mut self, input: &str) {
+        let input = input.replace('_', "-");
+        let Some((name, value)) = set_value(&input) else { return };
+        if let Some(zone) = name.strip_prefix("head-") {
+            self.touch.input(zone, value);
+        } else if let Some(what) = name.strip_prefix("battery-") {
+            self.battery.input(what, value);
+        }
     }
 
     fn on_uart(&mut self, data: &[u8]) {
@@ -457,7 +489,10 @@ impl Device for Body {
                 .set("yaw_torque", yaw.torque() as u8)
                 .set("pitch_torque", pitch.torque() as u8)
                 .set("moving", (yaw.moving(now) || pitch.moving(now)) as u8)
-                .set("leds", self.led_colors()),
+                .set("leds", self.led_colors())
+                .set("head", self.touch.head())
+                .set("battery_mv", self.battery.mv)
+                .set("battery_ma", self.battery.ma),
         )
     }
 }
@@ -477,7 +512,7 @@ impl Body {
 }
 
 // The chip's serial data arrives in pieces of up to 128 bytes, and the state
-// (with 12 LED colors) is about 200 bytes.
+// (with 12 LED colors, the head touch and the battery) is about 270 bytes.
 esp_part::export_part!(Body, buffer = 512);
 
 #[cfg(test)]
@@ -637,10 +672,110 @@ mod tests {
     }
 
     #[test]
-    fn claims_the_serial_line_and_the_py32() {
+    fn claims_the_serial_line_and_the_three_chips() {
         let claims = body().claims();
-        assert_eq!(claims.len(), 2);
+        assert_eq!(claims.len(), 4);
         let uart = UartClaim { tx_pin: Some(6), rx_pin: Some(7) };
         assert_eq!(claims[0], Claim { what: Some(claim::What::Uart(uart)) });
+        for (claim, addr) in claims[1..].iter().zip([0x6F, 0x68, 0x41]) {
+            let i2c = I2cClaim { addr, scl_pin: Some(11), sda_pin: Some(12) };
+            assert_eq!(claim, &Claim { what: Some(claim::What::I2c(i2c)) });
+        }
+    }
+
+    /// One I2C transaction through `on_bus`, as the emulator sends it. `None`
+    /// is a NACK.
+    fn bus(b: &mut Body, addr: u32, write: &[u8], read_len: u32, continues: bool) -> Option<Vec<u8>> {
+        let req = BusRequest {
+            correlation_id: 9,
+            op: Some(bus_request::Op::I2c(I2cTransaction {
+                addr,
+                write: write.to_vec(),
+                read_len,
+                continues,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let reply = b.on_bus(&req).unwrap();
+        assert_eq!(reply.correlation_id, 9);
+        reply.ack.then_some(reply.data)
+    }
+
+    #[test]
+    fn each_address_reaches_its_chip_and_others_nack() {
+        let mut b = body();
+        for addr in [0x6F, 0x68, 0x41] {
+            assert_eq!(bus(&mut b, addr, &[], 0, false), Some(vec![]), "probe {addr:#04x}");
+        }
+        assert_eq!(bus(&mut b, 0x6F, &[0x02], 1, false), Some(vec![0x41]));
+        assert_eq!(bus(&mut b, 0x41, &[0xFE], 2, false), Some(vec![0x54, 0x49]));
+        assert_eq!(bus(&mut b, 0x68, &[0x10], 1, false), Some(vec![0x00]));
+        for addr in [0x00, 0x0C, 0x10, 0x40, 0x69, 0x6C, 0x77] {
+            assert_eq!(bus(&mut b, addr, &[], 0, false), None, "{addr:#04x} is not the body's");
+        }
+    }
+
+    #[test]
+    fn m5unified_finds_no_imu_at_0x68() {
+        let mut b = body();
+        b.on_input("set:head_back=3");
+        // MPU6886_Class::begin reads WHO_AM_I (0x75): 0x19, 0x68 or 0x71 would be an MPU.
+        assert_eq!(bus(&mut b, 0x68, &[0x75], 1, false), Some(vec![0x00]));
+        // BMI270_Class::begin at 0x68 reads CHIP_ID (0x00) twice: 0x24 would be a BMI270.
+        assert_eq!(bus(&mut b, 0x68, &[0x00], 1, false), Some(vec![0x00]));
+        assert_eq!(bus(&mut b, 0x68, &[0x00], 1, false), Some(vec![0x00]));
+    }
+
+    #[test]
+    fn head_touch_inputs_and_state() {
+        let mut b = body();
+        assert_eq!(b.state().unwrap().get("head"), Some("0,0,0"));
+        b.on_input("set:head_front=1");
+        b.on_input("set:head-middle=3"); // the SDK's own spelling
+        b.on_input("set:head_back=2.4");
+        assert_eq!(b.state().unwrap().get("head"), Some("1,3,2"));
+        assert_eq!(bus(&mut b, 0x68, &[0x10], 1, false), Some(vec![2 << 4 | 3 << 2 | 1]));
+        b.on_input("set:head_left=1"); // not a zone: ignored
+        b.on_input("press"); // not a set: ignored
+        assert_eq!(b.state().unwrap().get("head"), Some("1,3,2"));
+    }
+
+    #[test]
+    fn battery_inputs_reach_tr_board() {
+        let mut b = body();
+        assert_eq!(b.state().unwrap().get("battery_mv"), Some("4000"));
+        assert_eq!(b.state().unwrap().get("battery_ma"), Some("96"));
+        b.on_input("set:battery_mv=3650");
+        b.on_input("set:battery_ma=-643");
+        assert_eq!(b.state().unwrap().get("battery_mv"), Some("3650"));
+        assert_eq!(b.state().unwrap().get("battery_ma"), Some("-643"));
+        // tr_battery_read(): bus then shunt, 2 bytes each, as C computes them.
+        let word = |v: Option<Vec<u8>>| v.map(|d| u16::from_be_bytes([d[0], d[1]])).unwrap();
+        let bus_raw = word(bus(&mut b, 0x41, &[0x02], 2, false)) as i32;
+        let shunt_raw = word(bus(&mut b, 0x41, &[0x01], 2, false)) as i16 as i32;
+        assert_eq!(bus_raw * 125 / 100, 3650);
+        assert_eq!(shunt_raw * 2500 / 10000, -643, "negative: charging");
+    }
+
+    #[test]
+    fn ina226_split_read_through_the_bus() {
+        let mut b = body();
+        assert_eq!(bus(&mut b, 0x41, &[0x02], 1, false), Some(vec![0x0C]));
+        assert_eq!(bus(&mut b, 0x41, &[], 1, true), Some(vec![0x80]), "4000 mV = 3200 = 0x0C80");
+        // A read with no write reads the register pointed at last.
+        assert_eq!(bus(&mut b, 0x41, &[], 2, false), Some(vec![0x0C, 0x80]));
+    }
+
+    #[test]
+    fn three_chips_keep_their_own_pointers() {
+        let mut b = body();
+        b.on_input("set:head_front=2");
+        bus(&mut b, 0x6F, &[0x02], 0, false);
+        bus(&mut b, 0x68, &[0x10], 0, false);
+        bus(&mut b, 0x41, &[0xFE], 0, false);
+        assert_eq!(bus(&mut b, 0x6F, &[], 1, false), Some(vec![0x41]));
+        assert_eq!(bus(&mut b, 0x68, &[], 1, false), Some(vec![0x02]));
+        assert_eq!(bus(&mut b, 0x41, &[], 2, false), Some(vec![0x54, 0x49]));
     }
 }
