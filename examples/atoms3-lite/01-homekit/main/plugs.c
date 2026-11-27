@@ -39,12 +39,18 @@ static const char *TAG = "plugs";
 
 #define POLL_MS  15000
 #define RETRY_MS 3000
+#define HOLD_MS  10000
 
 typedef struct {
     int dp;
     char name[24];
     bool ap;
     int on; // 1, 0, or -1 while not known
+    // The last order, held until a read shows it or HOLD_MS goes by: -1 when
+    // none. Without it, a read between two orders, or one the device answers
+    // with its old state, would show Home the outlet back as it was.
+    int want;
+    TickType_t want_until;
 } sw_t;
 
 typedef struct {
@@ -100,6 +106,7 @@ static bool parse_switch(plug_t *d, char *spec)
     }
     s->ap = flag && strcmp(flag, "ap") == 0;
     s->on = -1;
+    s->want = -1;
     return s->dp > 0;
 }
 
@@ -154,8 +161,15 @@ static void refresh(int i)
     plug_t *d = &devs[i];
     const int was = d->err;
     d->err = n < 0 ? n : 0;
+    const TickType_t now = xTaskGetTickCount();
     for (int k = 0; k < d->nsw; k++) {
-        d->sw[k].on = n < 0 ? -1 : tr_tuya_value(dps, n, d->sw[k].dp);
+        sw_t *s = &d->sw[k];
+        s->on = n < 0 ? -1 : tr_tuya_value(dps, n, s->dp);
+        if (s->want >= 0 && (s->on == s->want || (int32_t)(now - s->want_until) >= 0)) {
+            s->want = -1; // done, or given up: the read is the truth
+        } else if (s->want >= 0 && s->on >= 0) {
+            s->on = s->want;
+        }
     }
     d->watts10 = n < 0 ? -1 : tr_tuya_value(dps, n, 19);
     d->volts10 = n < 0 ? -1 : tr_tuya_value(dps, n, 20);
@@ -211,9 +225,19 @@ static void worker_task(void *arg)
         }
         plug_t *d = &devs[job.dev];
         if (job.kind == JOB_SET) {
-            const int r = tr_tuya_set(&d->dev, d->sw[job.sw].dp, job.on);
+            int r = tr_tuya_set(&d->dev, d->sw[job.sw].dp, job.on);
+            if (r != 0) {
+                // A power strip takes one connection at a time: often busy.
+                vTaskDelay(pdMS_TO_TICKS(500));
+                r = tr_tuya_set(&d->dev, d->sw[job.sw].dp, job.on);
+            }
             ESP_LOGI(TAG, "%s %s: switch %s", d->name, d->sw[job.sw].name,
                      r == 0 ? "sent" : tr_tuya_err_text(r));
+            if (r != 0) {
+                xSemaphoreTake(mu, portMAX_DELAY);
+                d->sw[job.sw].want = -1; // it did not happen: show the truth
+                xSemaphoreGive(mu);
+            }
         } else if (job.kind == JOB_MOVED) {
             // A broadcast is not proof. The new address is kept only if the
             // device there answers a read, which takes the local key.
@@ -381,8 +405,21 @@ bool plugs_set(int dev, int sw, bool on)
                  devs[dev].sw[sw].name);
         return false;
     }
+    // The hold goes first, so the worker never reads before it is there.
+    xSemaphoreTake(mu, portMAX_DELAY);
+    sw_t *s = &devs[dev].sw[sw];
+    const int was = s->want;
+    s->want = on;
+    s->want_until = xTaskGetTickCount() + pdMS_TO_TICKS(HOLD_MS);
+    xSemaphoreGive(mu);
     const job_t job = {.kind = JOB_SET, .dev = dev, .sw = sw, .on = on};
-    return xQueueSend(jobs, &job, 0) == pdTRUE;
+    if (xQueueSend(jobs, &job, 0) != pdTRUE) {
+        xSemaphoreTake(mu, portMAX_DELAY);
+        s->want = was;
+        xSemaphoreGive(mu);
+        return false;
+    }
+    return true;
 }
 
 unsigned plugs_reads(void)
