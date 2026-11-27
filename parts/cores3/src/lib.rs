@@ -25,6 +25,7 @@ mod aw88298;
 mod aw9523;
 mod axp2101;
 mod bm8563;
+mod bmm150;
 mod bmi270;
 mod chip;
 mod es7210;
